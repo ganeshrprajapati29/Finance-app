@@ -1,0 +1,13 @@
+body{ background:#0f172a; color:#e2e8f0; }
+.card{ background:#111827; border:1px solid #1f2937; }
+.table{ color:#e5e7eb; }
+.sidebar{ width:260px; min-height:100vh; background:#0b1220; border-right:1px solid #1f2937; position:fixed; left:0; top:0; padding:1rem; }
+.content{ margin-left:260px; padding:1rem; }
+.brand{ font-weight:800; font-size:1.2rem; letter-spacing:.5px; color:#60a5fa; }
+.btn-primary{ background:#2563eb; border-color:#2563eb; }
+.nav-link, a{ color:#93c5fd; }
+.header{ display:flex; align-items:center; justify-content:space-between; padding:.5rem 1rem; border-bottom:1px solid #1f2937; background:#0b1220; position:sticky; top:0; z-index:10; }
+.small{ color:#94a3b8; }
+.form-control, .form-select{ background:#0b1325; color:#e5e7eb; border-color:#1f2937; }
+input::placeholder{ color:#94a3b8; }
+.badge-soft{ background:#0b1325; border:1px solid #1f2937; color:#cbd5e1; }

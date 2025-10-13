@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "801682194",
+    "project_id": "khatu-pay",
+    "storage_bucket": "khatu-pay.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:801682194:android:2143b0faa201037996f9cb",
+        "android_client_info": {
+          "package_name": "com.finance.khatupay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAo0GvPeu3im-kymW4Xh6onzf8qfPhD_ts"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

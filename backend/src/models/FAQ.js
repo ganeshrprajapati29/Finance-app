@@ -1,0 +1,1 @@
+import mongoose from 'mongoose'; const faqSchema = new mongoose.Schema({ question:String, answer:String, category:String, order:Number, active:{type:Boolean,default:true} }, { timestamps:true }); export default mongoose.model('FAQ', faqSchema);

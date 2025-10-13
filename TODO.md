@@ -1,0 +1,4 @@
+- [ ] Update khatupay_app/lib/models/loan.dart to add schedule field and parsing
+- [ ] Fix khatupay_app/lib/ui/screens/loan_dashboard_page.dart to use object properties
+- [ ] Fix khatupay_app/lib/ui/screens/loan_detail_page.dart: add import, rename class, change state, fix accesses, format code
+- [ ] Run flutter analyze to verify fixes
