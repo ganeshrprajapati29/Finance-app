@@ -11,8 +11,8 @@ export default function Push(){
   useEffect(()=>{ (async()=>{ const u=await api.get('/admin/users'); setUsers(u.data.data) })() }, [])
 
   const send = async ()=>{
-    await api.post('/admin/push', { userId, title, body })
-    alert('Push attempted')
+    await api.post('/admin/push', userId === 'all' ? { title, body } : { userId, title, body })
+    alert('Notification sent')
   }
 
   return (
@@ -21,7 +21,7 @@ export default function Push(){
         <Row className="g-2">
           <Col md={4}>
             <Form.Select value={userId} onChange={e=>setUserId(e.target.value)}>
-              <option value="">Select user</option>
+              <option value="all">All Users</option>
               {users.map(u=><option key={u._id} value={u._id}>{u.name} ({u.email})</option>)}
             </Form.Select>
           </Col>

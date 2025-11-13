@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:khatupay_app/providers/auth_providers.dart';
 import '../../../services/auth_service.dart';
 import '../../../services/user_service.dart';
@@ -70,66 +71,97 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
       body: Center(
         child: SingleChildScrollView(
           child: Container(
-            width: 360,
-            padding: const EdgeInsets.all(24),
+            width: 360.w,
+            padding: EdgeInsets.all(24.w),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text(
+                Text(
                   'Khatu Pay',
                   style: TextStyle(
-                    fontSize: 28,
+                    fontSize: 28.sp,
                     fontWeight: FontWeight.bold,
+                    color: Colors.blueAccent,
                   ),
                 ),
-                const SizedBox(height: 24),
+                SizedBox(height: 24.h),
                 TextField(
                   controller: emailController,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined),
-                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.email_outlined, color: Colors.blueAccent),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent),
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                SizedBox(height: 16.h),
                 TextField(
                   controller: passwordController,
                   obscureText: true,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Password',
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.lock_outline, color: Colors.blueAccent),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent),
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                SizedBox(height: 16.h),
                 if (errorMessage != null)
                   Text(
                     errorMessage!,
-                    style: const TextStyle(color: Colors.red, fontSize: 14),
+                    style: TextStyle(color: Colors.red, fontSize: 14.sp),
                   ),
-                const SizedBox(height: 20),
+                SizedBox(height: 20.h),
                 ElevatedButton(
                   onPressed: isLoading ? null : _login,
                   style: ElevatedButton.styleFrom(
-                    minimumSize: const Size(double.infinity, 48),
+                    minimumSize: Size(double.infinity, 48.h),
+                    backgroundColor: Colors.blueAccent,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
                   ),
                   child: Text(
                     isLoading ? 'Logging in...' : 'Login',
-                    style: const TextStyle(fontSize: 16),
+                    style: TextStyle(fontSize: 16.sp),
                   ),
                 ),
-                const SizedBox(height: 10),
+                SizedBox(height: 10.h),
                 TextButton(
                   onPressed: () => router.go('/register'),
-                  child: const Text('Create account'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.green,
+                  ),
+                  child: Text(
+                    'Create account',
+                    style: TextStyle(fontSize: 14.sp),
+                  ),
                 ),
                 TextButton(
                   onPressed: () => router.go('/forgot'),
-                  child: const Text('Forgot password?'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.green,
+                  ),
+                  child: Text(
+                    'Forgot password?',
+                    style: TextStyle(fontSize: 14.sp),
+                  ),
                 ),
               ],
             ),

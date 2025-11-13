@@ -1,10 +1,15 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:dio/dio.dart';
 import '../../models/loan_application.dart';
 import '../../services/user_service.dart';
 import '../../services/loan_service.dart';
 import '../../routes/app_router.dart';
+import '../../core/api_client.dart';
+import '../../core/auth_storage.dart';
+import '../../core/config.dart';
 
 class LoanApplyWizardPage extends StatefulWidget {
   const LoanApplyWizardPage({super.key});
@@ -15,7 +20,7 @@ class _S extends State<LoanApplyWizardPage> {
   final _pg = PageController();
   int _step = 0;
   final draft = LoanApplicationDraft();
-  final _formKeys = List.generate(5, (_) => GlobalKey<FormState>());
+  final _formKeys = List.generate(6, (_) => GlobalKey<FormState>());
 
   // Controllers (Step 1)
   final nameC = TextEditingController(), emailC = TextEditingController(),
@@ -35,6 +40,10 @@ class _S extends State<LoanApplyWizardPage> {
   final r1n = TextEditingController(), r1r = TextEditingController(), r1m = TextEditingController();
   final r2n = TextEditingController(), r2r = TextEditingController(), r2m = TextEditingController();
   final r3n = TextEditingController(), r3r = TextEditingController(), r3m = TextEditingController();
+
+  // Step 6 bank details
+  final bankNameC = TextEditingController(), accountNumberC = TextEditingController(),
+        ifscCodeC = TextEditingController(), accountHolderNameC = TextEditingController();
 
   // Amount & tenure
   final amountC = TextEditingController(text: '10000');
@@ -58,14 +67,27 @@ class _S extends State<LoanApplyWizardPage> {
     setState(()=>uploading=true);
     try {
       final paths = [afPath, abPath, panPath, selfiePath].where((p)=>p.isNotEmpty).toList();
-      // Upload via existing KYC endpoint -> returns nothing, but files are saved on server
-      await UserService().uploadKyc(paths);
-      // In real impl, backend should return uploaded URLs; for now, assume /uploads/<filename>
-      draft.aadhaarFrontUrl = afPath.isNotEmpty ? '/uploads/${File(afPath).uri.pathSegments.last}' : null;
-      draft.aadhaarBackUrl  = abPath.isNotEmpty ? '/uploads/${File(abPath).uri.pathSegments.last}' : null;
-      draft.panUrl          = panPath.isNotEmpty ? '/uploads/${File(panPath).uri.pathSegments.last}' : null;
-      draft.selfieUrl       = selfiePath.isNotEmpty ? '/uploads/${File(selfiePath).uri.pathSegments.last}' : null;
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Documents uploaded')));
+      // Upload via Cloudinary endpoint
+      final dio = Dio(BaseOptions(baseUrl: AppConfig.baseUrl));
+      final response = await dio.post(
+        '/upload/cloudinary/many',
+        data: FormData.fromMap({
+          'files': paths.map((path) => MultipartFile.fromFileSync(path)).toList(),
+        }),
+        options: Options(headers: {'Authorization': 'Bearer ${await AuthStorage.getAccessToken()}'}),
+      );
+
+      if (response.data['success'] == true) {
+        final uploadedUrls = response.data['data'] as List;
+        // Map URLs back to draft based on order
+        int urlIndex = 0;
+        if (afPath.isNotEmpty) draft.aadhaarFrontUrl = uploadedUrls[urlIndex++]['url'];
+        if (abPath.isNotEmpty) draft.aadhaarBackUrl = uploadedUrls[urlIndex++]['url'];
+        if (panPath.isNotEmpty) draft.panUrl = uploadedUrls[urlIndex++]['url'];
+        if (selfiePath.isNotEmpty) draft.selfieUrl = uploadedUrls[urlIndex++]['url'];
+      }
+
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Documents uploaded to Cloudinary')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
     } finally { if (mounted) setState(()=>uploading=false); }
@@ -73,14 +95,14 @@ class _S extends State<LoanApplyWizardPage> {
 
   void _next() {
     if (_formKeys[_step].currentState?.validate() != true) return;
-    if (_step<4){ setState(()=>_step++); _pg.nextPage(duration: const Duration(milliseconds:300), curve: Curves.easeInOut); }
+    if (_step<5){ setState(()=>_step++); _pg.nextPage(duration: const Duration(milliseconds:300), curve: Curves.easeInOut); }
   }
   void _back(){
     if (_step>0){ setState(()=>_step--); _pg.previousPage(duration: const Duration(milliseconds:300), curve: Curves.easeInOut); }
   }
 
   Future<void> _submit() async {
-    if (_formKeys[4].currentState?.validate() != true) return;
+    if (_formKeys[5].currentState?.validate() != true) return;
     // bind draft
     draft
       ..name = nameC.text.trim()
@@ -107,7 +129,11 @@ class _S extends State<LoanApplyWizardPage> {
         LoanReference(name: r1n.text, relation: r1r.text, mobile: r1m.text),
         LoanReference(name: r2n.text, relation: r2r.text, mobile: r2m.text),
         LoanReference(name: r3n.text, relation: r3r.text, mobile: r3m.text),
-      ];
+      ]
+      ..bankName = bankNameC.text.trim()
+      ..accountNumber = accountNumberC.text.trim()
+      ..ifscCode = ifscCodeC.text.trim()
+      ..accountHolderName = accountHolderNameC.text.trim();
 
     setState(()=>submitting=true);
     try {
@@ -115,7 +141,7 @@ class _S extends State<LoanApplyWizardPage> {
       final id = await LoanService().applyDraft(draft);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Loan request submitted (#$id)')));
-      router.go('/loans'); // go to history
+      router.go('/apply-success/$id'); // go to success page
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Submit failed: $e')));
     } finally { if (mounted) setState(()=>submitting=false); }
@@ -124,29 +150,112 @@ class _S extends State<LoanApplyWizardPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Apply Loan')),
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        title: Text(
+          'Loan Application Wizard',
+          style: TextStyle(color: Colors.black, fontSize: 18.sp),
+        ),
+        iconTheme: const IconThemeData(color: Colors.black),
+      ),
       body: Column(
         children: [
-          LinearProgressIndicator(value: (_step+1)/5),
-          Expanded(
-            child: PageView(
-              controller: _pg, physics: const NeverScrollableScrollPhysics(),
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 8.h),
+            child: Column(
               children: [
-                _stepPersonal(), _stepQualification(), _stepEmployment(), _stepDocs(), _stepReferences(),
+                LinearProgressIndicator(
+                  value: (_step + 1) / 6,
+                  backgroundColor: Colors.grey.shade300,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                ),
+                SizedBox(height: 8.h),
+                Text(
+                  'Step ${_step + 1} of 6',
+                  style: TextStyle(
+                    fontSize: 14.sp,
+                    color: Colors.blueAccent,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Row(
+          Expanded(
+            child: PageView(
+              controller: _pg,
+              physics: const NeverScrollableScrollPhysics(),
               children: [
-                if (_step>0) OutlinedButton(onPressed: _back, child: const Text('Back')),
-                const Spacer(),
-                if (_step<4) ElevatedButton(onPressed: _next, child: const Text('Next')),
-                if (_step==4) ElevatedButton(onPressed: submitting? null: _submit, child: Text(submitting?'Submitting...':'Submit')),
+                _stepPersonal(),
+                _stepQualification(),
+                _stepEmployment(),
+                _stepDocs(),
+                _stepReferences(),
+                _stepBankDetails(),
               ],
             ),
-          )
+          ),
+          Container(
+            padding: EdgeInsets.all(16.w),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(top: BorderSide(color: Colors.grey.shade200)),
+            ),
+            child: Row(
+              children: [
+                if (_step > 0)
+                  OutlinedButton(
+                    onPressed: _back,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.blueAccent),
+                      foregroundColor: Colors.blueAccent,
+                      padding: EdgeInsets.symmetric(horizontal: 24.w, vertical: 12.h),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.r),
+                      ),
+                    ),
+                    child: Text(
+                      'Back',
+                      style: TextStyle(fontSize: 14.sp),
+                    ),
+                  ),
+                const Spacer(),
+                if (_step < 5)
+                  ElevatedButton(
+                    onPressed: _next,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blueAccent,
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.symmetric(horizontal: 24.w, vertical: 12.h),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.r),
+                      ),
+                    ),
+                    child: Text(
+                      'Next',
+                      style: TextStyle(fontSize: 14.sp),
+                    ),
+                  ),
+                if (_step == 5)
+                  ElevatedButton(
+                    onPressed: submitting ? null : _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.symmetric(horizontal: 24.w, vertical: 12.h),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.r),
+                      ),
+                    ),
+                    child: Text(
+                      submitting ? 'Submitting...' : 'Submit Application',
+                      style: TextStyle(fontSize: 14.sp),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -154,23 +263,62 @@ class _S extends State<LoanApplyWizardPage> {
 
   Widget _stepPersonal(){
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16), child: Form(key:_formKeys[0], child: Column(children: [
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[0], child: Column(children: [
+        Text(
+          'Personal Information',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 16.h),
         _f(nameC, 'Full Name', req:true),
         _f(emailC, 'Email', req:true, email:true),
         _f(mobileC, 'Mobile', req:true),
         _f(addrC, 'Address', req:true),
         _f(fatherC, 'Father Name', req:true),
         _f(motherC, 'Mother Name', req:true),
-        const SizedBox(height: 8),
-        Row(children:[Expanded(child:_f(amountC,'Amount (₹)', req:true, number:true)), const SizedBox(width:8), Expanded(child:_f(tenureC,'Tenure (months)', req:true, number:true))]),
+        SizedBox(height: 16.h),
+        Text(
+          'Loan Details',
+          style: TextStyle(
+            fontSize: 18.sp,
+            fontWeight: FontWeight.w600,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 8.h),
+        Row(children:[Expanded(child:_f(amountC,'Amount (₹)', req:true, number:true)), SizedBox(width:8.w), Expanded(child:_f(tenureC,'Tenure (months)', req:true, number:true))]),
         _f(purposeC, 'Purpose', req:true),
+        SizedBox(height: 16.h),
+        Text(
+          'Identification',
+          style: TextStyle(
+            fontSize: 18.sp,
+            fontWeight: FontWeight.w600,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 8.h),
+        _f(TextEditingController(), 'Aadhaar Number', req:true, number:true), // Placeholder, not saved
+        _f(TextEditingController(), 'PAN Number', req:true), // Placeholder, not saved
       ])),
     );
   }
 
   Widget _stepQualification(){
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16), child: Form(key:_formKeys[1], child: Column(children: [
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[1], child: Column(children: [
+        Text(
+          'Educational Qualification',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 16.h),
         _f(eduC, 'Highest Education (10th/12th/Graduate/PG/Other)', req:true),
         _f(streamC, 'Stream/Discipline'),
         _f(instC, 'Institution/College'),
@@ -180,7 +328,16 @@ class _S extends State<LoanApplyWizardPage> {
 
   Widget _stepEmployment(){
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16), child: Form(key:_formKeys[2], child: Column(children: [
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[2], child: Column(children: [
+        Text(
+          'Employment Details',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 16.h),
         _f(empTypeC, 'Employment Type (Salaried/Self/Student/Housewife/Unemployed)', req:true),
         _f(incomeC, 'Monthly Income (₹)', number:true),
         _f(employerC, 'Employer/Business Name'),
@@ -190,34 +347,101 @@ class _S extends State<LoanApplyWizardPage> {
   }
 
   Widget _docRow(String label, String path, void Function() onCam, void Function() onGallery){
-    return Card(child: ListTile(
-      title: Text(label),
-      subtitle: Text(path.isEmpty? 'Not selected' : path),
-      trailing: Wrap(spacing:8, children: [
-        IconButton(onPressed:onCam, icon: const Icon(Icons.camera_alt)),
-        IconButton(onPressed:onGallery, icon: const Icon(Icons.photo_library)),
-      ]),
-    ));
+    return Card(
+      color: Colors.white,
+      elevation: 2,
+      margin: EdgeInsets.only(bottom: 12.h),
+      child: ListTile(
+        title: Text(
+          label,
+          style: TextStyle(fontSize: 16.sp, fontWeight: FontWeight.w500),
+        ),
+        subtitle: Text(
+          path.isEmpty ? 'Not selected' : path.split('/').last,
+          style: TextStyle(fontSize: 12.sp, color: Colors.grey),
+        ),
+        trailing: Wrap(
+          spacing: 8.w,
+          children: [
+            IconButton(
+              onPressed: onCam,
+              icon: Icon(Icons.camera_alt, color: Colors.blueAccent, size: 24.sp),
+            ),
+            IconButton(
+              onPressed: onGallery,
+              icon: Icon(Icons.photo_library, color: Colors.green, size: 24.sp),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _stepDocs(){
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16), child: Form(key:_formKeys[3], child: Column(children: [
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[3], child: Column(children: [
+        Text(
+          'Document Upload',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 8.h),
+        Text(
+          'Please upload clear photos of your documents',
+          style: TextStyle(
+            fontSize: 14.sp,
+            color: Colors.grey,
+          ),
+        ),
+        SizedBox(height: 16.h),
         _docRow('Aadhaar Front', afPath, ()=>_pick(true, (p)=>afPath=p), ()=>_pick(false,(p)=>afPath=p)),
         _docRow('Aadhaar Back',  abPath, ()=>_pick(true, (p)=>abPath=p), ()=>_pick(false,(p)=>abPath=p)),
         _docRow('PAN',           panPath, ()=>_pick(true, (p)=>panPath=p), ()=>_pick(false,(p)=>panPath=p)),
         _docRow('Live Selfie',   selfiePath, ()=>_pick(true, (p)=>selfiePath=p), ()=>_pick(false,(p)=>selfiePath=p)),
-        const SizedBox(height:10),
-        ElevatedButton(onPressed: uploading? null: _uploadDocs, child: Text(uploading? 'Uploading...':'Upload Documents Now')),
+        SizedBox(height: 16.h),
+        ElevatedButton(
+          onPressed: uploading ? null : _uploadDocs,
+          style: ElevatedButton.styleFrom(
+            minimumSize: Size(double.infinity, 48.h),
+            backgroundColor: Colors.blueAccent,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8.r),
+            ),
+          ),
+          child: Text(
+            uploading ? 'Uploading...' : 'Upload Documents Now',
+            style: TextStyle(fontSize: 16.sp),
+          ),
+        ),
       ])),
     );
   }
 
   Widget _stepReferences(){
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16), child: Form(key:_formKeys[4], child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('At least 3 references required', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height:8),
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[4], child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+          'References',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 8.h),
+        Text(
+          'At least 3 references required',
+          style: TextStyle(
+            fontSize: 14.sp,
+            color: Colors.grey,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        SizedBox(height: 16.h),
         _refBlock('Reference 1', r1n, r1r, r1m),
         _refBlock('Reference 2', r2n, r2r, r2m),
         _refBlock('Reference 3', r3n, r3r, r3m),
@@ -226,15 +450,59 @@ class _S extends State<LoanApplyWizardPage> {
   }
 
   Widget _refBlock(String title, TextEditingController n, TextEditingController r, TextEditingController m){
-    return Card(child: Padding(
-      padding: const EdgeInsets.all(12), child: Column(children: [
-        Align(alignment: Alignment.centerLeft, child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600))),
-        const SizedBox(height:6),
-        _f(n, 'Name', req:true),
-        _f(r, 'Relation', req:true),
-        _f(m, 'Mobile', req:true),
-      ]),
-    ));
+    return Card(
+      color: Colors.white,
+      elevation: 2,
+      margin: EdgeInsets.only(bottom: 12.h),
+      child: Padding(
+        padding: EdgeInsets.all(16.w),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 16.sp,
+                fontWeight: FontWeight.w600,
+                color: Colors.blueAccent,
+              ),
+            ),
+            SizedBox(height: 12.h),
+            _f(n, 'Name', req:true),
+            _f(r, 'Relation', req:true),
+            _f(m, 'Mobile', req:true),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _stepBankDetails(){
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(16.w), child: Form(key:_formKeys[5], child: Column(children: [
+        Text(
+          'Bank Details',
+          style: TextStyle(
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        SizedBox(height: 8.h),
+        Text(
+          'Provide your bank account details for loan disbursement',
+          style: TextStyle(
+            fontSize: 14.sp,
+            color: Colors.grey,
+          ),
+        ),
+        SizedBox(height: 16.h),
+        _f(bankNameC, 'Bank Name', req:true),
+        _f(accountNumberC, 'Account Number', req:true, number:true),
+        _f(ifscCodeC, 'IFSC Code', req:true),
+        _f(accountHolderNameC, 'Account Holder Name', req:true),
+      ])),
+    );
   }
 
   Widget _f(TextEditingController c, String hint, {bool req=false, bool email=false, bool number=false}){
@@ -245,10 +513,23 @@ class _S extends State<LoanApplyWizardPage> {
       return null;
     }
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: TextFormField(controller: c, validator: v,
+      padding: EdgeInsets.only(bottom: 12.h),
+      child: TextFormField(
+        controller: c,
+        validator: v,
         keyboardType: number? TextInputType.number : (email? TextInputType.emailAddress : TextInputType.text),
-        decoration: InputDecoration(labelText: hint, border: const OutlineInputBorder()),
+        decoration: InputDecoration(
+          labelText: hint,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8.r),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: Colors.blueAccent),
+            borderRadius: BorderRadius.circular(8.r),
+          ),
+          contentPadding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
+        ),
+        style: TextStyle(fontSize: 14.sp),
       ),
     );
   }

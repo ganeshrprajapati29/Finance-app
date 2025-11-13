@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import bcrypt from 'bcryptjs';
-import rateLimit from 'express-rate-limit';
+// import rateLimit from 'express-rate-limit'; // Commented out for development
 import User from '../models/User.js';
 import Otp from '../models/Otp.js';
 import { ok, fail } from '../utils/response.js';
@@ -10,13 +10,13 @@ import { sendMail } from '../services/mailer.js';
 
 const router = Router();
 
-// 🧠 Prevent brute-force
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  standardHeaders: true,
-});
-router.use(authLimiter);
+// 🧠 Prevent brute-force (disabled for development)
+// const authLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000, // 15 minutes
+//   max: 100,
+//   standardHeaders: true,
+// });
+// router.use(authLimiter);
 
 // Utility: Generate random 6-digit OTP
 function genOTP() {

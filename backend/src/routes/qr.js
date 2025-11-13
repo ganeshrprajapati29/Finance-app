@@ -19,4 +19,5 @@ router.post('/', requireAuth, async (req,res,next)=>{
   }catch(e){ next(e) }
 });
 router.get('/:id', requireAuth, async (req,res,next)=>{ try{ const rec = await QRCodeModel.findById(req.params.id); if(!rec) return fail(res,'NOT_FOUND','QR not found',404); ok(res, rec); }catch(e){ next(e) } });
+router.get('/history', requireAuth, async (req,res,next)=>{ try{ const recs = await QRCodeModel.find({userId:req.user.uid}).sort({createdAt:-1}).limit(50); ok(res, recs); }catch(e){ next(e) } });
 export default router;

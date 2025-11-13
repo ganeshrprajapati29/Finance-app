@@ -17,9 +17,12 @@ class ApiClient {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-          final token = await AuthStorage.getAccessToken();
-          if (token != null) {
-            options.headers['Authorization'] = 'Bearer $token';
+          // Skip adding auth header for refresh endpoint
+          if (!options.path.contains('/auth/refresh')) {
+            final token = await AuthStorage.getAccessToken();
+            if (token != null) {
+              options.headers['Authorization'] = 'Bearer $token';
+            }
           }
           return handler.next(options);
         },

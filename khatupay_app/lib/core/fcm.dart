@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import '../routes/app_router.dart';
 
 // Background handler
 @pragma('vm:entry-point')
@@ -54,6 +55,14 @@ class FCM {
             content: Text(message.notification?.body ?? ''),
             actions: [
               TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  // Navigate to notifications page using router
+                  router.go('/notifications');
+                },
+                child: const Text('View'),
+              ),
+              TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
                 child: const Text('OK'),
               ),
@@ -61,6 +70,12 @@ class FCM {
           ),
         );
       }
+    });
+
+    // Handle when app is opened from notification
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      print('📱 App opened from notification: ${message.messageId}');
+      router.go('/notifications');
     });
   }
 }

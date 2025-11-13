@@ -6,15 +6,26 @@ import Loans from './pages/Loans.jsx'
 import Payments from './pages/Payments.jsx'
 import FAQs from './pages/FAQs.jsx'
 import Push from './pages/Push.jsx'
+import NotificationHistory from './pages/NotificationHistory.jsx'
+import Settings from './pages/Settings.jsx'
+import ChangePassword from './pages/ChangePassword.jsx'
+import Support from './pages/Support.jsx'
 import Audit from './pages/Audit.jsx'
 import NotFound from './pages/NotFound.jsx'
 import ProtectedRoute from './components/ProtectedRoute.jsx'
 import Layout from './components/Layout.jsx'
+import Employees from './pages/Employees.jsx'
+import EmployeeHistory from './pages/EmployeeHistory.jsx'
+import EmployeeLogin from './pages/EmployeeLogin.jsx'
+import EmployeeDashboard from './pages/EmployeeDashboard.jsx'
+import EmployeeProtectedRoute from './components/EmployeeProtectedRoute.jsx'
+import Withdrawals from './pages/Withdrawals.jsx'
 
 export default function App(){
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/employee/login" element={<EmployeeLogin />} />
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
@@ -23,7 +34,17 @@ export default function App(){
         <Route path="/payments" element={<Payments />} />
         <Route path="/faqs" element={<FAQs />} />
         <Route path="/push" element={<Push />} />
+        <Route path="/notification-history" element={<NotificationHistory />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/support" element={<Support />} />
+        <Route path="/change-password" element={<ChangePassword />} />
+        <Route path="/employees" element={<Employees />} />
+        <Route path="/employee-history" element={<EmployeeHistory />} />
+        <Route path="/withdrawals" element={<Withdrawals />} />
         <Route path="/audit" element={<Audit />} />
+      </Route>
+      <Route element={<EmployeeProtectedRoute />}>
+        <Route path="/employee/dashboard" element={<EmployeeDashboard />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>

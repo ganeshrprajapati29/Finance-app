@@ -12,18 +12,21 @@ import { getRazorpay } from '../services/razorpay.js';
 
 const router = express.Router();
 
-
-
-// 1) Create Razorpay Order (loan repayment / bill payment / generic)
+// 1) Create Razorpay Order (loan repayment / bill payment / P2P payment / generic)
 router.post('/razorpay/order', requireAuth, async (req, res, next) => {
   try {
-    const { amount, currency = 'INR', loanId = null, billId = null, notes = {} } =
+    const { amount, currency = 'INR', loanId = null, billId = null, installmentNo = null, isFullPayment = false, notes = {}, payeeVPA = null, payeeName = null, payeeNote = null } =
       await Joi.object({
         amount: Joi.number().min(1).required(),
         currency: Joi.string().default('INR'),
         loanId: Joi.string().allow(null, '').default(null),
         billId: Joi.string().allow(null, '').default(null),
-        notes: Joi.object().default({})
+        installmentNo: Joi.number().integer().allow(null).default(null),
+        isFullPayment: Joi.boolean().default(false),
+        notes: Joi.object().default({}),
+        payeeVPA: Joi.string().allow(null, '').default(null),
+        payeeName: Joi.string().allow(null, '').default(null),
+        payeeNote: Joi.string().allow(null, '').default(null)
       }).validateAsync(req.body);
 
     const rz = getRazorpay();
@@ -35,17 +38,19 @@ router.post('/razorpay/order', requireAuth, async (req, res, next) => {
       notes
     });
 
-    const type = loanId ? 'REPAYMENT' : (billId ? 'BILL' : 'OTHER');
+    const type = isFullPayment ? 'FULL_REPAYMENT' : (loanId ? 'REPAYMENT' : (billId ? 'BILL' : (payeeVPA ? 'P2P' : 'OTHER')));
     const payment = await Payment.create({
       userId: req.user.uid,
       loanId,
       billId,
+      installmentNo,
       type,
       amount,
       method: 'RAZORPAY',
       reference: order.id,
       status: 'PENDING',
-      gateway: { provider: 'razorpay', orderId: order.id }
+      gateway: { provider: 'razorpay', orderId: order.id },
+      payeeDetails: payeeVPA ? { vpa: payeeVPA, name: payeeName, note: payeeNote } : undefined
     });
 
     ok(res, { order, paymentId: payment._id, key_id: process.env.RAZORPAY_KEY_ID }, 'Order created');
@@ -80,16 +85,39 @@ router.post('/razorpay/verify', requireAuth, async (req, res, next) => {
     p.gateway.signature = razorpay_signature;
     await p.save();
 
-    // Link to next unpaid installment or bill
+    // Link to specific installment or bill
     if (p.loanId) {
       const loan = await Loan.findById(p.loanId);
       if (loan) {
-        const sched = loan.schedule.find(s => !s.paid);
-        if (sched) {
-          sched.paid = true;
-          sched.paidAt = new Date();
-          sched.paymentId = p._id;
+        if (p.type === 'FULL_REPAYMENT') {
+          // Mark all unpaid installments as paid
+          loan.schedule.forEach(s => {
+            if (!s.paid) {
+              s.paid = true;
+              s.paidAt = new Date();
+              s.paymentId = p._id;
+            }
+          });
+          loan.status = 'CLOSED';
           await loan.save();
+        } else if (p.installmentNo) {
+          // Pay specific installment
+          const sched = loan.schedule.find(s => s.installmentNo === p.installmentNo && !s.paid);
+          if (sched) {
+            sched.paid = true;
+            sched.paidAt = new Date();
+            sched.paymentId = p._id;
+            await loan.save();
+          }
+        } else {
+          // Fallback: pay next unpaid installment
+          const sched = loan.schedule.find(s => !s.paid);
+          if (sched) {
+            sched.paid = true;
+            sched.paidAt = new Date();
+            sched.paymentId = p._id;
+            await loan.save();
+          }
         }
       }
     } else if (p.billId) {
@@ -142,12 +170,35 @@ router.post(
           if (p.loanId) {
             const loan = await Loan.findById(p.loanId);
             if (loan) {
-              const sched = loan.schedule.find(s => !s.paid);
-              if (sched) {
-                sched.paid = true;
-                sched.paidAt = new Date();
-                sched.paymentId = p._id;
+              if (p.type === 'FULL_REPAYMENT') {
+                // Mark all unpaid installments as paid
+                loan.schedule.forEach(s => {
+                  if (!s.paid) {
+                    s.paid = true;
+                    s.paidAt = new Date();
+                    s.paymentId = p._id;
+                  }
+                });
+                loan.status = 'CLOSED';
                 await loan.save();
+              } else if (p.installmentNo) {
+                // Pay specific installment
+                const sched = loan.schedule.find(s => s.installmentNo === p.installmentNo && !s.paid);
+                if (sched) {
+                  sched.paid = true;
+                  sched.paidAt = new Date();
+                  sched.paymentId = p._id;
+                  await loan.save();
+                }
+              } else {
+                // Fallback: pay next unpaid installment
+                const sched = loan.schedule.find(s => !s.paid);
+                if (sched) {
+                  sched.paid = true;
+                  sched.paidAt = new Date();
+                  sched.paymentId = p._id;
+                  await loan.save();
+                }
               }
             }
           } else if (p.billId) {

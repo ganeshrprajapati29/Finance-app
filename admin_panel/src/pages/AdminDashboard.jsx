@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
-import axios from "axios";
+import api from "../api/axios";
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState({});
 
   useEffect(() => {
-    axios.get("/admin/stats").then((r) => setStats(r.data.data));
+    api.get("/admin/stats").then((r) => setStats(r.data.data));
   }, []);
 
   const chartData = [

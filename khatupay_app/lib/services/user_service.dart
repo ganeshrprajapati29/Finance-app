@@ -52,10 +52,12 @@ class UserService {
       await _dio.post(
         '/kyc/me/docs',
         data: form,
-        options: Options(headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'multipart/form-data',
-        }),
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'multipart/form-data',
+          },
+        ),
       );
     } on DioException catch (e) {
       throw e.response?.data['message'] ?? 'KYC upload failed';
@@ -73,6 +75,49 @@ class UserService {
       );
     } on DioException {
       // No need to throw, optional
+    }
+  }
+
+  /// 🔹 Search loan by ID and mobile number
+  Future<Map<String, dynamic>> searchLoanByIdAndMobile(String loanId, String mobile) async {
+    try {
+      final response = await _dio.post('/users/search-loan', data: {
+        'loanId': loanId,
+        'mobile': mobile,
+      });
+      if (response.data == null ||
+          response.data['data'] == null ||
+          response.data['ok'] == false) {
+        throw 'Loan not found';
+      }
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Failed to search loan';
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// 🔹 Search loans by mobile number
+  Future<List<Map<String, dynamic>>> searchLoansByMobile(String mobile) async {
+    try {
+      final response = await _dio.post('/users/search-loans', data: {
+        'mobile': mobile,
+      });
+      if (response.data == null ||
+          response.data['data'] == null ||
+          response.data['ok'] == false) {
+        return [];
+      }
+      final data = response.data['data'];
+      if (data is List) {
+        return data.map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+      return [];
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Failed to search loans';
+    } catch (e) {
+      rethrow;
     }
   }
 }

@@ -5,11 +5,17 @@ import '../core/config.dart';
 class PaymentService {
   final _dio = ApiClient.client;
 
-  Future<Map> createRazorpayOrder(num amount, {String? loanId, String? billId}) async {
+  Future<Map> createRazorpayOrder(num amount, {String? loanId, String? billId, int? installmentNo, bool? isFullPayment, String? payeeVPA, String? payeeName, String? payeeNote}) async {
     final r = await _dio.post('/payments/razorpay/order', data: {
-      'amount': amount, 'loanId': loanId, 'billId': billId
+      'amount': amount, 'loanId': loanId, 'billId': billId, 'installmentNo': installmentNo, 'isFullPayment': isFullPayment,
+      'payeeVPA': payeeVPA, 'payeeName': payeeName, 'payeeNote': payeeNote
     });
     return r.data['data']; // { order, paymentId, key_id }
+  }
+
+  /// 🔹 Create P2P payment order for scanned QR
+  Future<Map> createP2PPaymentOrder(num amount, String payeeVPA, String payeeName, {String? note}) async {
+    return createRazorpayOrder(amount, payeeVPA: payeeVPA, payeeName: payeeName, payeeNote: note);
   }
 
   Future<void> verifyRazorpay(String orderId, String paymentId, String signature) async {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../../services/loan_service.dart';
 import '../../models/loan.dart';
 import '../../routes/app_router.dart';
@@ -35,34 +36,122 @@ class _LoanDashboardPageState extends State<LoanDashboardPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('My Loans')),
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        title: Text(
+          'My Loans',
+          style: TextStyle(color: Colors.black, fontSize: 18.sp),
+        ),
+        iconTheme: const IconThemeData(color: Colors.black),
+      ),
       body: loading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(
+              child: CircularProgressIndicator(
+                color: Colors.blueAccent,
+              ),
+            )
           : loans.isEmpty
-              ? const Center(child: Text('No loans yet'))
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.account_balance_wallet,
+                        size: 80.sp,
+                        color: Colors.grey.shade400,
+                      ),
+                      SizedBox(height: 16.h),
+                      Text(
+                        'No loans yet',
+                        style: TextStyle(
+                          fontSize: 18.sp,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      SizedBox(height: 8.h),
+                      Text(
+                        'Apply for your first loan!',
+                        style: TextStyle(
+                          fontSize: 14.sp,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      SizedBox(height: 24.h),
+                      ElevatedButton(
+                        onPressed: () => router.push('/apply'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                          padding: EdgeInsets.symmetric(horizontal: 32.w, vertical: 12.h),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8.r),
+                          ),
+                        ),
+                        child: Text(
+                          'Apply Now',
+                          style: TextStyle(fontSize: 16.sp),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
               : ListView.builder(
+                  padding: EdgeInsets.symmetric(vertical: 8.h),
                   itemCount: loans.length,
                   itemBuilder: (ctx, i) {
                     final loan = loans[i];
                     final app = loan.application;
                     return Card(
-                      margin: const EdgeInsets.all(8),
+                      margin: EdgeInsets.symmetric(horizontal: 16.w, vertical: 8.h),
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12.r),
+                      ),
                       child: ListTile(
-                        title: Text('₹${app.amountRequested} - ${loan.status}'),
+                        contentPadding: EdgeInsets.all(16.w),
+                        title: Text(
+                          '₹${app.amountRequested} - ${loan.status}',
+                          style: TextStyle(
+                            fontSize: 16.sp,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                        ),
                         subtitle: Text(
                           'Tenure: ${app.tenureMonths} months\n'
                           'Purpose: ${app.purpose}',
+                          style: TextStyle(
+                            fontSize: 14.sp,
+                            color: Colors.grey.shade700,
+                          ),
                         ),
-                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                        onTap: () => router.push('/loan-detail/${loan.id}'),
+                        trailing: Icon(
+                          Icons.arrow_forward_ios,
+                          size: 16.sp,
+                          color: Colors.grey,
+                        ),
+                        onTap: () => router.push('/loan/${loan.id}'),
                       ),
                     );
                   },
                 ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => router.push('/apply-wizard'),
-        icon: const Icon(Icons.add),
-        label: const Text('Apply Loan'),
+        onPressed: () => router.push('/apply'),
+        icon: Icon(
+          Icons.add,
+          size: 20.sp,
+        ),
+        label: Text(
+          'Apply Loan',
+          style: TextStyle(fontSize: 14.sp),
+        ),
+        backgroundColor: Colors.blueAccent,
+        foregroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12.r),
+        ),
       ),
     );
   }

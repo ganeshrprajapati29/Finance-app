@@ -56,7 +56,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
   }
 });
 
-// 🟣 Disburse Loan (after approval)
+// 🟣 Disburse Loan (after approval) - includes fund transfer simulation
 router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
   try {
     const loan = await Loan.findById(req.params.id);
@@ -65,10 +65,34 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
     }
 
     const { txnId } = req.body;
+
+    // Simulate bank transfer to user's account
+    const withdrawalAmount = loan.decision.amountApproved;
+    const bankDetails = loan.application.bankDetails;
+
+    // Create withdrawal transaction record (simulated)
+    const withdrawalTxn = {
+      type: 'WITHDRAWAL',
+      amount: withdrawalAmount,
+      bankName: bankDetails.bankName,
+      accountNumber: bankDetails.accountNumber,
+      ifscCode: bankDetails.ifscCode,
+      accountHolderName: bankDetails.accountHolderName,
+      txnId: txnId || `WD-${Date.now()}`,
+      status: 'COMPLETED',
+      timestamp: new Date()
+    };
+
+    // Add withdrawal to loan record
+    if (!loan.transactions) loan.transactions = [];
+    loan.transactions.push(withdrawalTxn);
+
     loan.status = 'DISBURSED';
+    loan.disbursementDate = new Date();
     loan.schedule = createRepaymentSchedule(loan);
     await loan.save();
-    ok(res, loan, 'Loan disbursed successfully');
+
+    ok(res, loan, 'Loan disbursed successfully - funds transferred to user account');
   } catch (e) {
     next(e);
   }

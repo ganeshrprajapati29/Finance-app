@@ -48,6 +48,12 @@ class LoanApplicationDraft {
     LoanReference(name: '', relation: '', mobile: ''),
   ];
 
+  // Step 6: Bank Details
+  String bankName = '';
+  String accountNumber = '';
+  String ifscCode = '';
+  String accountHolderName = '';
+
   // Requested loan
   num amountRequested = 0;
   int tenureMonths = 12;
@@ -70,6 +76,12 @@ class LoanApplicationDraft {
       'panUrl': panUrl, 'selfieUrl': selfieUrl,
     },
     'references': references.map((r)=>r.toJson()).toList(),
+    'bankDetails': {
+      'bankName': bankName,
+      'accountNumber': accountNumber,
+      'ifscCode': ifscCode,
+      'accountHolderName': accountHolderName,
+    },
     'amountRequested': amountRequested,
     'tenureMonths': tenureMonths,
     'purpose': purpose,

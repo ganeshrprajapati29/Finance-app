@@ -13,6 +13,13 @@ const docSchema = new mongoose.Schema({
   selfieUrl: String
 }, { _id:false });
 
+const bankSchema = new mongoose.Schema({
+  bankName: String,
+  accountNumber: String,
+  ifscCode: String,
+  accountHolderName: String
+}, { _id:false });
+
 const applicationSchema = new mongoose.Schema({
   // Old fields
   amountRequested: Number,
@@ -31,6 +38,7 @@ const applicationSchema = new mongoose.Schema({
   },
   documents: docSchema,
   references: [refSchema],
+  bankDetails: bankSchema,
 }, { _id:false });
 
 const scheduleSchema = new mongoose.Schema({
@@ -44,6 +52,18 @@ const scheduleSchema = new mongoose.Schema({
   paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' }
 }, { _id:false });
 
+const transactionSchema = new mongoose.Schema({
+  type: { type: String, enum: ['WITHDRAWAL', 'REPAYMENT', 'PENALTY'], required: true },
+  amount: { type: Number, required: true },
+  bankName: String,
+  accountNumber: String,
+  ifscCode: String,
+  accountHolderName: String,
+  txnId: String,
+  status: { type: String, enum: ['PENDING', 'COMPLETED', 'FAILED'], default: 'COMPLETED' },
+  timestamp: { type: Date, default: Date.now }
+}, { _id: false });
+
 const loanSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref:'User', required: true },
   application: applicationSchema,
@@ -51,6 +71,8 @@ const loanSchema = new mongoose.Schema({
   decision: {
     amountApproved: Number, rateAPR: Number, tenureMonths: Number, decidedAt: Date, decidedBy: { type: mongoose.Schema.Types.ObjectId, ref:'User' }
   },
+  disbursementDate: Date,
+  transactions: [transactionSchema],
   schedule: [scheduleSchema],
 }, { timestamps: true });
 

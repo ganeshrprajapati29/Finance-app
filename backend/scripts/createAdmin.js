@@ -10,7 +10,7 @@ async function run() {
   const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/khatupay';
   await mongoose.connect(uri, {});
 
-  const email = 'admin@gmail.com';
+  const email = 'admin@example.com';
   const password = 'admin123!'; // change after first login
   const existing = await User.findOne({ email: email.toLowerCase() });
   if (existing) {
@@ -22,8 +22,8 @@ async function run() {
   const admin = new User({
     name: 'KhatuPay Admin',
     email: email.toLowerCase(),
-    mobile: '9999999999',
-    password: hash,
+    mobile: '9999999998',
+    passwordHash: hash,
     roles: ['admin'],
     emailVerified: true,
   });

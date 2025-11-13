@@ -4,6 +4,7 @@ import { requireAuth } from '../middlewares/auth.js';
 import { requireRole } from '../middlewares/role.js';
 import Ticket from '../models/SupportTicket.js';
 import { ok, fail } from '../utils/response.js';
+import { sendFCMToToken } from '../services/fcm.js';
 
 const router = Router();
 
@@ -15,6 +16,16 @@ router.post('/', requireAuth, async (req,res,next)=>{
       message: Joi.string().required()
     }).validateAsync(req.body);
     const t = await Ticket.create({ userId: req.user.uid, subject, message });
+
+    // Notify admin via FCM if enabled
+    const settings = await require('../models/Settings.js').findOne();
+    if (settings && settings.fcmEnabled) {
+      // Send notification to admin (assuming admin has FCM token stored)
+      // For now, we can send a general notification or to a specific admin token
+      // This is a placeholder; in a real app, you'd have admin FCM tokens
+      console.log('New support ticket created:', t.subject);
+    }
+
     ok(res, t, 'Ticket created');
   }catch(e){ next(e) }
 });
@@ -26,7 +37,7 @@ router.get('/me', requireAuth, async (req,res,next)=>{
 
 // admin manage
 router.get('/', requireAuth, requireRole(['admin']), async (req,res,next)=>{
-  try{ ok(res, await Ticket.find().sort({ createdAt:-1 })); }catch(e){ next(e) }
+  try{ ok(res, await Ticket.find().populate('userId', 'name email').sort({ createdAt:-1 })); }catch(e){ next(e) }
 });
 router.put('/:id', requireAuth, requireRole(['admin']), async (req,res,next)=>{
   try{

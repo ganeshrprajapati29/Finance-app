@@ -10,7 +10,7 @@ export async function requireAdmin(req, res, next) {
       return fail(res, 'NO_TOKEN', 'Missing auth token', 401);
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
 
     const user = await User.findById(decoded.uid);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
