@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import Loan from '../models/Loan.js';
+import Notification from '../models/Notification.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { uploadMany } from '../middlewares/upload.js';
 import { uploadToCloudinary } from '../services/cloudinary.js';
@@ -95,8 +96,18 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
       });
     }
 
+    // Generate 8-digit loan account number
+    const generateLoanAccountNumber = () => {
+      const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
+      const random = Math.floor(Math.random() * 100); // 2-digit random number
+      return (timestamp + random.toString().padStart(2, '0')).slice(-8); // Ensure exactly 8 digits
+    };
+
+    const loanAccountNumber = generateLoanAccountNumber();
+
     const loan = await Loan.create({
       userId: req.user.uid,
+      loanAccountNumber: loanAccountNumber,
       application: {
         amountRequested: payload.amountRequested,
         tenureMonths: payload.tenureMonths,
@@ -109,6 +120,22 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
         bankDetails: payload.bankDetails,
       },
       status: 'PENDING'
+    });
+
+    // Create notification for admin about new loan application
+    await Notification.create({
+      userId: req.user.uid,
+      title: 'New Loan Application Submitted',
+      message: `${payload.personal?.name || 'A user'} has submitted a loan application for ₹${payload.amountRequested} for ${payload.tenureMonths} months`,
+      type: 'loan',
+      priority: 'HIGH',
+      data: {
+        loanId: loan._id,
+        amountRequested: payload.amountRequested,
+        tenureMonths: payload.tenureMonths,
+        userName: payload.personal?.name,
+        userEmail: payload.personal?.email
+      }
     });
 
     ok(res, { loanId: loan._id }, 'Loan application submitted');

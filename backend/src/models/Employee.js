@@ -16,7 +16,11 @@ const employeeSchema = new mongoose.Schema({
     canSendNotifications: { type: Boolean, default: false },
     canViewAudit: { type: Boolean, default: false },
     canManageSettings: { type: Boolean, default: false },
+    canManageCollections: { type: Boolean, default: false },
+    canViewReports: { type: Boolean, default: false },
   },
+  department: { type: String, default: 'GENERAL' },
+  isActive: { type: Boolean, default: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 

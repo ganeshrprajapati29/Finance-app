@@ -2,7 +2,8 @@ import { Container, Nav, Navbar, NavDropdown } from 'react-bootstrap'
 import { Link, Outlet, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import api from '../api/axios.js'
-import { Menu, X, LogOut, Settings, Lock, User, Mail, Phone, ChevronDown, BarChart3, Users, FileText, CreditCard, Bell, HelpCircle, Send, History, MoreVertical, Users2 } from 'lucide-react'
+import NotificationBell from './NotificationBell.jsx'
+import { Menu, X, LogOut, Settings, Lock, User, Mail, Phone, ChevronDown, BarChart3, Users, FileText, CreditCard, Bell, HelpCircle, Send, History, MoreVertical, Users2, DollarSign, Gavel, Search, Calculator, Calendar, Zap, Edit, Split, AlertTriangle, Clock, MapPin, MessageSquare, UserCheck } from 'lucide-react'
 import 'bootstrap/dist/css/bootstrap.min.css'
 
 export default function Layout(){
@@ -34,8 +35,21 @@ export default function Layout(){
     { label: 'Dashboard', to: '/dashboard', icon: BarChart3 },
     { label: 'Users', to: '/users', icon: Users },
     { label: 'Loans', to: '/loans', icon: FileText },
+    { label: 'EMI / Repayment Control', to: '/emi-control', icon: Calendar },
     { label: 'Withdrawals', to: '/withdrawals', icon: CreditCard },
     { label: 'Payments', to: '/payments', icon: CreditCard },
+    { label: 'Reports', to: '/reports', icon: BarChart3 },
+    { label: 'Track Loan', to: '/track-loan', icon: Search },
+    { label: 'Loan Calculator', to: '/loan-calculator', icon: Calculator },
+    { label: 'Overdue Users', to: '/overdue-users', icon: AlertTriangle },
+    { label: 'Call Logs', to: '/call-logs', icon: Phone },
+    { label: 'Visit Logs', to: '/visit-logs', icon: MapPin },
+    { label: 'Warning SMS', to: '/warning-sms', icon: MessageSquare },
+    { label: 'Create Agent', to: '/create-agent', icon: Users2 },
+    { label: 'Agent Performance', to: '/agent-performance', icon: BarChart3 },
+    { label: 'PTP Tracking', to: '/ptp-tracking', icon: Clock },
+    { label: 'Loan Settlement', to: '/loan-settlement', icon: DollarSign },
+    { label: 'Legal Actions', to: '/legal-actions', icon: Gavel },
     { label: 'FAQs', to: '/faqs', icon: HelpCircle },
     { label: 'Push Notifications', to: '/push', icon: Send },
     { label: 'Notification History', to: '/notification-history', icon: History },
@@ -48,6 +62,14 @@ export default function Layout(){
   const employeeItems = [
     { label: 'Manage Employees', to: '/employees' },
     { label: 'Employee History', to: '/employee-history' },
+  ]
+
+  const emiItems = [
+    { label: 'Auto Debit Status', to: '/emi-control/auto-debit' },
+    { label: 'Manual Payment Update', to: '/emi-control/manual-payment' },
+    { label: 'Part Payment Support', to: '/emi-control/part-payment' },
+    { label: 'Penalty Charges Management', to: '/emi-control/penalty-management' },
+    { label: 'Extend EMI / Due Date Option', to: '/emi-control/extend-due-date' },
   ]
 
   return (
@@ -298,7 +320,10 @@ export default function Layout(){
           </Navbar.Brand>
           <Navbar.Toggle aria-controls="basic-navbar-nav" />
           <Navbar.Collapse id="basic-navbar-nav" className="justify-content-end">
-            <Nav style={{ gap: '12px' }}>
+            <Nav style={{ gap: '12px', alignItems: 'center' }}>
+              {/* Notification Bell */}
+              <NotificationBell />
+
               <NavDropdown
                 title={
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0F172A', whiteSpace: 'nowrap' }}>
@@ -347,6 +372,10 @@ export default function Layout(){
                   </div>
                 </NavDropdown.Item>
                 <NavDropdown.Divider />
+                <NavDropdown.Item as={Link} to="/profile" style={{ color: '#0F172A', fontWeight: '600' }}>
+                  <UserCheck size={16} style={{ marginRight: '8px' }} />
+                  Edit Profile
+                </NavDropdown.Item>
                 <NavDropdown.Item as={Link} to="/change-password" style={{ color: '#0F172A', fontWeight: '600' }}>
                   <Lock size={16} style={{ marginRight: '8px' }} />
                   Change Password

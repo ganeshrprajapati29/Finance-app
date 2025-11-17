@@ -151,6 +151,46 @@ router.get('/profile', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.put('/profile', async (req, res, next) => {
+  try {
+    const { name, email, mobile } = await Joi.object({
+      name: Joi.string().trim().min(2).max(50).required(),
+      email: Joi.string().email().lowercase().required(),
+      mobile: Joi.string().pattern(/^[6-9]\d{9}$/).optional().allow(''),
+    }).unknown(true).validateAsync(req.body);
+
+    const adminId = req.user.uid;
+
+    // Check if email is already taken by another user
+    const existingEmailUser = await User.findOne({ email, _id: { $ne: adminId } });
+    if (existingEmailUser) return fail(res, 'EMAIL_EXISTS', 'Email is already in use', 400);
+
+    // Check if mobile is already taken by another user (if provided)
+    if (mobile) {
+      const existingMobileUser = await User.findOne({ mobile, _id: { $ne: adminId } });
+      if (existingMobileUser) return fail(res, 'MOBILE_EXISTS', 'Mobile number is already in use', 400);
+    }
+
+    const updatedAdmin = await User.findByIdAndUpdate(
+      adminId,
+      { name, email, mobile: mobile || null },
+      { new: true, select: 'name email mobile roles' }
+    );
+
+    if (!updatedAdmin) return fail(res, 'NOT_FOUND', 'Admin not found', 404);
+
+    await AuditLog.create({
+      actorId: adminId,
+      action: 'UPDATE_PROFILE',
+      entityType: 'Admin',
+      entityId: adminId,
+      meta: { name, email, mobile },
+    });
+
+    ok(res, updatedAdmin, 'Profile updated successfully');
+  } catch (e) { next(e); }
+});
+
 /* ---------------- USERS ---------------- */
 router.get('/users', async (req, res, next) => {
   try {

@@ -1,43 +1,39 @@
-# TODO: UI Design for Khatu Pay Flutter App
+# Reports Section Testing Checklist
 
-## Overview
-Design all screens with a blue and green color theme, using flutter_screenutil for responsiveness.
+## Backend API Testing
+- [ ] Test `/api/reports/loans` endpoint with JSON format
+- [ ] Test `/api/reports/loans` endpoint with CSV format
+- [ ] Test `/api/reports/loans` endpoint with Excel format
+- [ ] Test `/api/reports/loans` endpoint with PDF format
+- [ ] Test `/api/reports/payments` endpoint with all formats
+- [ ] Test `/api/reports/bills` endpoint with all formats
+- [ ] Test `/api/reports/withdrawals` endpoint with all formats
+- [ ] Test date filtering (startDate/endDate) on all endpoints
+- [ ] Test admin authentication on all endpoints
+- [ ] Test error handling for invalid formats
 
-## Screens to Design
-- [x] Dashboard Page
-- [x] Login Page
-- [x] Register Page
-- [x] Verify Email Page
-- [x] Forgot Password Page
-- [x] Loan Apply Page
-- [x] Loan Apply Wizard Page
-- [x] Loan Apply Success Page
-- [x] Loans Page
-- [x] Loan Detail Page
-- [x] Loan Dashboard Page
-- [x] Pay Loan Page
-- [x] Withdraw Page
-- [ ] Payments Page
-- [ ] Bills Page
-- [ ] QR Page
-- [ ] QR Scanner Page
-- [ ] Profile Page
-- [ ] Settings Page
-- [ ] Notifications Page
-- [ ] Support Page
-- [ ] FAQ Page
+## Frontend UI Testing
+- [ ] Test Reports page navigation from sidebar
+- [ ] Test tab switching between report types
+- [ ] Test date filter inputs
+- [ ] Test format selection dropdown
+- [ ] Test Apply Filters button
+- [ ] Test data table display (first 100 records)
+- [ ] Test download buttons for CSV, Excel, PDF
+- [ ] Test loading states during data fetch
+- [ ] Test error states and messages
+- [ ] Test empty data scenarios
 
-## Color Theme
-- Primary: Blue (e.g., Colors.blueAccent)
-- Secondary: Green (e.g., Colors.green)
-- Background: White
-- Text: Black
+## Integration Testing
+- [ ] Test complete flow: select filters → fetch data → download file
+- [ ] Test file downloads actually work and contain correct data
+- [ ] Test date range filtering affects results correctly
+- [ ] Test different report types return appropriate data
+- [ ] Test authentication flow (login required)
 
-## Responsiveness
-- Use flutter_screenutil for all dimensions
-- Initialize ScreenUtil in main.dart
-
-## Implementation Steps
-1. Update main.dart to initialize ScreenUtil and set theme
-2. Update each screen file with responsive UI using blue/green theme
-3. Ensure all widgets use ScreenUtil for sizing
+## File Generation Testing
+- [ ] Verify CSV files download and open correctly
+- [ ] Verify Excel files download and contain proper formatting
+- [ ] Verify PDF files download and display correctly
+- [ ] Test file cleanup (temporary files deleted after download)
+- [ ] Test large dataset handling (pagination/truncation)

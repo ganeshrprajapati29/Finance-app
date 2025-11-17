@@ -16,7 +16,14 @@ router.use(requireAuth, requireRole(['admin']));
 // Get all employees
 router.get('/', async (req, res, next) => {
   try {
-    const employees = await Employee.find().sort({ createdAt: -1 });
+    const { role } = req.query;
+    let query = {};
+
+    if (role) {
+      query.roles = { $in: [role] };
+    }
+
+    const employees = await Employee.find(query).sort({ createdAt: -1 });
     ok(res, employees);
   } catch (e) { next(e); }
 });
@@ -24,11 +31,12 @@ router.get('/', async (req, res, next) => {
 // Create new employee
 router.post('/', async (req, res, next) => {
   try {
-    const { name, email, phone, password, permissions } = await Joi.object({
+    const { name, email, phone, password, permissions, roles } = await Joi.object({
       name: Joi.string().required(),
       email: Joi.string().email().required(),
       phone: Joi.string().required(),
       password: Joi.string().min(6).required(),
+      roles: Joi.array().items(Joi.string()).default(['employee']),
       permissions: Joi.object({
         canManageUsers: Joi.boolean().default(false),
         canManageLoans: Joi.boolean().default(false),
@@ -57,6 +65,7 @@ router.post('/', async (req, res, next) => {
       email: email.toLowerCase(),
       phone,
       passwordHash,
+      roles,
       permissions,
       createdBy: req.user.uid,
     });

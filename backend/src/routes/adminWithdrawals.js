@@ -25,7 +25,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
 
-    ok(res, { items: withdrawals, total });
+    ok(res, { items: withdrawals, total, data: withdrawals });
   } catch (e) { next(e); }
 });
 

@@ -41,6 +41,34 @@ const applicationSchema = new mongoose.Schema({
   bankDetails: bankSchema,
 }, { _id:false });
 
+const partPaymentSchema = new mongoose.Schema({
+  amount: Number,
+  paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
+  paymentDate: Date,
+  reference: String
+}, { _id: false });
+
+const extensionHistorySchema = new mongoose.Schema({
+  originalDueDate: Date,
+  newDueDate: Date,
+  reason: String,
+  notes: String,
+  approvedBy: String,
+  approvedAt: Date,
+  approvedByAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { _id: false });
+
+const penaltySchema = new mongoose.Schema({
+  installmentNo: Number,
+  amount: Number,
+  reason: String,
+  dueDate: Date,
+  status: { type: String, enum: ['PENDING', 'PAID', 'WAIVED'], default: 'PENDING' },
+  createdAt: { type: Date, default: Date.now },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  updatedAt: Date
+}, { _id: false });
+
 const scheduleSchema = new mongoose.Schema({
   installmentNo: Number,
   dueDate: Date,
@@ -49,7 +77,9 @@ const scheduleSchema = new mongoose.Schema({
   total: Number,
   paid: { type: Boolean, default: false },
   paidAt: Date,
-  paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' }
+  paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
+  partPayments: [partPaymentSchema],
+  extensionHistory: [extensionHistorySchema]
 }, { _id:false });
 
 const transactionSchema = new mongoose.Schema({
@@ -66,6 +96,7 @@ const transactionSchema = new mongoose.Schema({
 
 const loanSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref:'User', required: true },
+  loanAccountNumber: { type: String, unique: true },
   application: applicationSchema,
   status: { type: String, enum: ['PENDING','APPROVED','REJECTED','DISBURSED','CLOSED'], default: 'PENDING' },
   decision: {
@@ -74,6 +105,12 @@ const loanSchema = new mongoose.Schema({
   disbursementDate: Date,
   transactions: [transactionSchema],
   schedule: [scheduleSchema],
+  penalties: [penaltySchema],
+  autoDebit: {
+    enabled: { type: Boolean, default: false },
+    updatedAt: Date,
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }
 }, { timestamps: true });
 
 export default mongoose.model('Loan', loanSchema);

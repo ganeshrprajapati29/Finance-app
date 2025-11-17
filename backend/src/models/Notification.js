@@ -16,12 +16,22 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['loan', 'payment', 'kyc', 'info', 'general'],
+    enum: ['loan', 'payment', 'kyc', 'support', 'general'],
     default: 'general',
   },
   isRead: {
     type: Boolean,
     default: false,
+  },
+  status: {
+    type: String,
+    enum: ['PENDING', 'CLAIMED', 'RESOLVED'],
+    default: 'PENDING',
+  },
+  priority: {
+    type: String,
+    enum: ['HIGH', 'MEDIUM', 'LOW'],
+    default: 'MEDIUM',
   },
   data: {
     type: mongoose.Schema.Types.Mixed,

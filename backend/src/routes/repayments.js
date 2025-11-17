@@ -2,19 +2,22 @@ import { Router } from 'express';
 import Loan from '../models/Loan.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { ok, fail } from '../utils/response.js';
+import { binarySearchInstallment, linearSearchWithEarlyTermination } from '../utils/dsa.js';
 
 const router = Router();
 
-// Pay installment (mock)
+// Pay installment (mock) with DSA optimization
 router.post('/:loanId/pay/:installment', requireAuth, async (req, res, next) => {
   try {
     const { loanId, installment } = req.params;
+    const installmentNo = parseInt(installment);
+
     const loan = await Loan.findOne({ _id: loanId, userId: req.user.uid });
     if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
 
-    const inst = loan.schedule.find(
-      (x) => x.installmentNo === parseInt(installment)
-    );
+    // Use binary search for efficient installment lookup (O(log n) vs O(n))
+    const inst = binarySearchInstallment(loan.schedule, installmentNo);
+
     if (!inst) return fail(res, 'INVALID', 'Installment not found');
 
     if (inst.paid) return fail(res, 'ALREADY_PAID', 'Already paid');
