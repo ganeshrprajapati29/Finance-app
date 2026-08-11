@@ -43,6 +43,13 @@ const clubAPITransactionSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  paymentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment'
+  },
+  refund: {
+    type: mongoose.Schema.Types.Mixed
   }
 }, {
   timestamps: true

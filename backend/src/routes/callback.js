@@ -1,59 +1,62 @@
-import { Router } from 'express';
+import express from 'express';
 import ClubAPITransaction from './clubapi/models/transaction.js';
-import Transaction from '../models/Transaction.js';
+import { clubStatusToLocal, handleRechargeCallbackRefund } from '../services/rechargePaymentService.js';
 import { emitToUser } from '../realtime.js';
 
-const router = Router();
+const router = express.Router();
 
-function localStatus(payload = {}) {
-  const raw = String(payload.status || payload.txnStatus || payload.transactionStatus || '').toUpperCase();
-  const text = String(payload.resText || payload.message || '').toLowerCase();
-  if (raw === 'SUCCESS' || raw === 'COMPLETED' || /success|completed/.test(text)) return 'completed';
-  if (['FAILED', 'FAILURE', 'ERROR', 'CANCELLED', 'CANCELED'].includes(raw) || /fail|error|cancel|reject/.test(text)) return 'failed';
-  return 'processing';
+function callbackOrderId(payload = {}) {
+  return payload.orderId || payload.order_id || payload.ourSystemId || payload.ourSystemOrderId || '';
+}
+
+function emitClubTransaction(userId, transaction) {
+  if (!userId) return;
+  emitToUser(userId, 'clubapi:transaction_updated', {
+    urid: transaction.urid,
+    status: transaction.status,
+    type: transaction.type,
+    amount: transaction.amount,
+    transaction
+  });
 }
 
 router.get('/clubapi', (req, res) => {
   res.json({ success: true, message: 'ClubAPI callback endpoint is active' });
 });
 
-router.post(['/clubapi', '/recharge'], async (req, res) => {
+router.post('/clubapi', async (req, res, next) => {
   try {
-    const payload = { ...req.query, ...req.body };
-    const urid = payload.urid || payload.URID;
-    const status = localStatus(payload);
+    const payload = req.body || {};
+    const urid = payload.urid || payload.ourSystemId || payload.ourSystemOrderId || '';
+    const orderId = callbackOrderId(payload);
 
-    if (urid) {
-      const clubTransaction = await ClubAPITransaction.findOneAndUpdate(
-        { urid },
-        { status, response: payload },
-        { new: true }
-      );
+    const query = [];
+    if (urid) query.push({ urid });
+    if (orderId) {
+      query.push({ 'response.orderId': orderId });
+      query.push({ 'response.data.orderId': orderId });
+    }
 
-      if (clubTransaction?.userId) {
-        emitToUser(clubTransaction.userId, 'clubapi:transaction_updated', {
-          urid,
-          status: clubTransaction.status,
-          type: clubTransaction.type,
-          amount: clubTransaction.amount,
-          transaction: clubTransaction
-        });
+    const transaction = query.length ? await ClubAPITransaction.findOne({ $or: query }) : null;
+    if (transaction) {
+      transaction.status = clubStatusToLocal(payload);
+      transaction.response = {
+        ...(transaction.response?.toObject?.() || transaction.response || {}),
+        callback: payload,
+        callbackReceivedAt: new Date()
+      };
+      await transaction.save();
+
+      if (transaction.status === 'failed') {
+        await handleRechargeCallbackRefund(transaction);
       }
 
-      await Transaction.findOneAndUpdate(
-        { urid },
-        {
-          status: status === 'completed' ? 'success' : status === 'failed' ? 'failed' : 'processing',
-          clubapiResponse: payload,
-          updatedAt: new Date()
-        }
-      );
+      emitClubTransaction(transaction.userId, transaction);
     }
 
     res.json({ success: true, message: 'Callback received' });
   } catch (error) {
-    console.error('ClubAPI callback processing error:', error);
-    res.json({ success: false, message: 'Callback processing failed' });
+    next(error);
   }
 });
 

@@ -226,6 +226,12 @@ class ClubAPIController {
       const { type, operatorId, accountRef, amount, customerMobile, cbId, opvalue1, opvalue2, opvalue3, opvalue4, opvalue5 } = req.body;
       const userId = req.user?.uid || req.user?.id;
 
+      return res.status(402).json({
+        success: false,
+        code: 'PAYMENT_REQUIRED',
+        message: 'Please pay with Razorpay first. Recharge will start automatically after payment verification.'
+      });
+
       if (!type || !operatorId || !accountRef || !amount) {
         return res.status(400).json({
           success: false,
