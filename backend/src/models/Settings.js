@@ -11,7 +11,19 @@ const settingsSchema = new mongoose.Schema({
   loanDuration: { type: Number, default: 12 },
   fcmEnabled: { type: Boolean, default: false },
   emailEnabled: { type: Boolean, default: true },
-  smsEnabled: { type: Boolean, default: false }
+  smsEnabled: { type: Boolean, default: false },
+  clubapi: {
+    enabled: { type: Boolean, default: true },
+    baseUrl: { type: String, default: 'https://api.clubapi.in' },
+    callbackUrl: { type: String, default: 'https://khatupay.com/api/callback/clubapi' },
+    callbackId: { type: String, default: '' },
+    timeout: { type: Number, default: 30000 },
+    retryAttempts: { type: Number, default: 3 },
+    billFetchEnabled: { type: Boolean, default: true },
+    billPaymentEnabled: { type: Boolean, default: true },
+    mobileRechargeEnabled: { type: Boolean, default: true },
+    dthRechargeEnabled: { type: Boolean, default: true }
+  }
 }, { timestamps: true });
 
 export default mongoose.model('Settings', settingsSchema);

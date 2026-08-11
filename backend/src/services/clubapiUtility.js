@@ -1,5 +1,6 @@
 import axios from 'axios';
 import clubapiConfig from '../config/clubapi.js';
+import Settings from '../models/Settings.js';
 
 const apiClient = axios.create({
   baseURL: clubapiConfig.baseURL,
@@ -31,6 +32,15 @@ function cleanPayload(payload = {}) {
   );
 }
 
+async function getRuntimeClubAPIConfig() {
+  try {
+    const settings = await Settings.findOne().select('clubapi').lean();
+    return settings?.clubapi || {};
+  } catch {
+    return {};
+  }
+}
+
 async function postClub(endpoint, payload = {}) {
   return apiClient.post(endpoint, cleanPayload(withToken(payload)));
 }
@@ -49,8 +59,9 @@ function rejectClubError(data, fallbackMessage) {
 
 export async function callClubAPITransaction(payload = {}) {
   try {
+    const runtimeConfig = await getRuntimeClubAPIConfig();
     const response = await postClub('/transaction.php', {
-      cbId: clubapiConfig.callbackId,
+      cbId: runtimeConfig.callbackId || clubapiConfig.callbackId,
       ...payload
     });
     return rejectClubError(response.data, 'ClubAPI transaction failed');
