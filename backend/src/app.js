@@ -37,6 +37,7 @@ import adminCollections from './routes/adminCollections.js';
 import agents from './routes/agents.js';
 import clubapiRoutes from './routes/clubapi/routes.js';
 import utilityRoutes from './routes/utility.js';
+import callbackRoutes from './routes/callback.js';
 
 dotenv.config();
 const app = express();
@@ -83,6 +84,7 @@ app.use('/api/admin/collections', adminCollections);
 app.use('/api/admin/agents', agents);
 app.use('/api/clubapi', clubapiRoutes);
 app.use('/api/utility', utilityRoutes);
+app.use('/api/callback', callbackRoutes);
 app.use('/api', baseRoutes);
 
 app.use(notFound);
