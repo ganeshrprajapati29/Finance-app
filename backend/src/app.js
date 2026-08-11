@@ -35,6 +35,8 @@ import adminNotifications from './routes/adminNotifications.js';
 import adminEmiControl from './routes/adminEmiControl.js';
 import adminCollections from './routes/adminCollections.js';
 import agents from './routes/agents.js';
+import clubapiRoutes from './routes/clubapi/routes.js';
+import utilityRoutes from './routes/utility.js';
 
 dotenv.config();
 const app = express();
@@ -79,6 +81,8 @@ app.use('/api/admin/notifications', adminNotifications);
 app.use('/api/admin/emi-control', adminEmiControl);
 app.use('/api/admin/collections', adminCollections);
 app.use('/api/admin/agents', agents);
+app.use('/api/clubapi', clubapiRoutes);
+app.use('/api/utility', utilityRoutes);
 app.use('/api', baseRoutes);
 
 app.use(notFound);
