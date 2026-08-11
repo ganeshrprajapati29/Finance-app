@@ -49,7 +49,10 @@ function rejectClubError(data, fallbackMessage) {
 
 export async function callClubAPITransaction(payload = {}) {
   try {
-    const response = await postClub('/transaction.php', payload);
+    const response = await postClub('/transaction.php', {
+      cbId: clubapiConfig.callbackId,
+      ...payload
+    });
     return rejectClubError(response.data, 'ClubAPI transaction failed');
   } catch (error) {
     throw new Error(error.response?.data?.message || error.response?.data?.resText || error.message || 'ClubAPI transaction failed');
