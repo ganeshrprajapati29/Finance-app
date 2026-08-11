@@ -90,6 +90,7 @@ class PaymentService {
     required Function(String oid, String pid, String sig) onSuccess,
     required Function(String message) onFail,
   }) {
+    _razorpay.clear();
     final options = {
       'key': keyId ?? AppConfig.razorpayKey,
       'amount': (amount * 100).toInt(), // Amount in paise
