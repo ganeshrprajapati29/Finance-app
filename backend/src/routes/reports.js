@@ -12,6 +12,9 @@ import { ok, fail } from '../utils/response.js';
 import createCsvWriter from 'csv-writer';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 const router = Router();
 
@@ -25,18 +28,32 @@ const parseDateRange = (startDate, endDate) => {
   return { start, end };
 };
 
+const sendGeneratedFile = (res, filePath) => {
+  res.sendFile(filePath, (err) => {
+    if (err) {
+      console.error('Error sending file:', err);
+      return fail(res, 'FILE_ERROR', 'Error generating report', 500);
+    }
+    fs.unlink(filePath, (unlinkErr) => {
+      if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
+    });
+  });
+};
+
 // Helper function to generate CSV
 const generateCSV = async (data, headers, filename) => {
+  const filePath = path.join(os.tmpdir(), filename);
   const csvWriter = createCsvWriter.createObjectCsvWriter({
-    path: `/tmp/${filename}`,
+    path: filePath,
     header: headers
   });
   await csvWriter.writeRecords(data);
-  return `/tmp/${filename}`;
+  return filePath;
 };
 
 // Helper function to generate Excel
 const generateExcel = async (data, headers, filename, sheetName) => {
+  const filePath = path.join(os.tmpdir(), filename);
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet(sheetName);
 
@@ -48,16 +65,16 @@ const generateExcel = async (data, headers, filename, sheetName) => {
     worksheet.addRow(row);
   });
 
-  await workbook.xlsx.writeFile(`/tmp/${filename}`);
-  return `/tmp/${filename}`;
+  await workbook.xlsx.writeFile(filePath);
+  return filePath;
 };
 
 // Helper function to generate PDF
 const generatePDF = async (data, headers, filename, title) => {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument();
-    const filePath = `/tmp/${filename}`;
-    const stream = require('fs').createWriteStream(filePath);
+    const filePath = path.join(os.tmpdir(), filename);
+    const stream = fs.createWriteStream(filePath);
 
     doc.pipe(stream);
 
@@ -87,6 +104,134 @@ const generatePDF = async (data, headers, filename, title) => {
     stream.on('error', reject);
   });
 };
+
+router.get('/summary', async (req, res, next) => {
+  try {
+    const { startDate, endDate } = await Joi.object({
+      startDate: Joi.string().optional(),
+      endDate: Joi.string().optional()
+    }).validateAsync(req.query);
+
+    const { start, end } = parseDateRange(startDate, endDate);
+    const dateQuery = { createdAt: { $gte: start, $lte: end } };
+
+    const [users, loans, payments, bills, withdrawals] = await Promise.all([
+      User.find(dateQuery).select('status emailVerified walletBalance kyc createdAt'),
+      Loan.find(dateQuery).select('status application decision schedule createdAt'),
+      Payment.find(dateQuery).select('status type amount createdAt'),
+      Bill.find(dateQuery).select('status amount createdAt'),
+      WithdrawalRequest.find(dateQuery).select('status amount createdAt')
+    ]);
+
+    const confirmedPayments = payments.filter(p => ['CONFIRMED', 'success'].includes(p.status));
+    const pendingEmis = loans.flatMap(l => l.schedule || []).filter(emi => !emi.paid);
+    const overdueEmis = pendingEmis.filter(emi => emi.dueDate && new Date(emi.dueDate) < new Date());
+
+    ok(res, {
+      totals: {
+        users: users.length,
+        loans: loans.length,
+        payments: payments.length,
+        bills: bills.length,
+        withdrawals: withdrawals.length,
+        receivedAmount: confirmedPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0),
+        requestedLoanAmount: loans.reduce((sum, l) => sum + Number(l.application?.amountRequested || 0), 0),
+        approvedLoanAmount: loans.reduce((sum, l) => sum + Number(l.decision?.amountApproved || 0), 0),
+        withdrawalAmount: withdrawals.reduce((sum, w) => sum + Number(w.amount || 0), 0),
+        pendingEmis: pendingEmis.length,
+        overdueEmis: overdueEmis.length
+      },
+      status: {
+        loans: {
+          pending: loans.filter(l => l.status === 'PENDING').length,
+          approved: loans.filter(l => l.status === 'APPROVED').length,
+          disbursed: loans.filter(l => l.status === 'DISBURSED').length,
+          rejected: loans.filter(l => l.status === 'REJECTED').length,
+          closed: loans.filter(l => l.status === 'CLOSED').length
+        },
+        payments: {
+          confirmed: payments.filter(p => p.status === 'CONFIRMED').length,
+          pending: payments.filter(p => p.status === 'PENDING').length,
+          failed: payments.filter(p => p.status === 'FAILED').length
+        },
+        withdrawals: {
+          pending: withdrawals.filter(w => w.status === 'PENDING').length,
+          approved: withdrawals.filter(w => w.status === 'APPROVED').length,
+          rejected: withdrawals.filter(w => w.status === 'REJECTED').length
+        },
+        bills: {
+          pending: bills.filter(b => b.status === 'PENDING').length,
+          paid: bills.filter(b => b.status === 'PAID').length,
+          cancelled: bills.filter(b => b.status === 'CANCELLED').length
+        }
+      }
+    });
+  } catch (e) { next(e); }
+});
+
+// Users Report
+router.get('/users', async (req, res, next) => {
+  try {
+    const { startDate, endDate, format = 'json' } = await Joi.object({
+      startDate: Joi.string().optional(),
+      endDate: Joi.string().optional(),
+      format: Joi.string().valid('json', 'csv', 'excel', 'pdf').default('json')
+    }).validateAsync(req.query);
+
+    const { start, end } = parseDateRange(startDate, endDate);
+
+    const users = await User.find({
+      createdAt: { $gte: start, $lte: end }
+    }).select('-passwordHash').sort({ createdAt: -1 });
+
+    const data = users.map(user => ({
+      id: user._id.toString(),
+      name: user.name || 'N/A',
+      email: user.email || 'N/A',
+      mobile: user.mobile || 'N/A',
+      roles: (user.roles || []).join('|'),
+      status: user.status || 'active',
+      emailVerified: user.emailVerified ? 'Yes' : 'No',
+      walletBalance: user.walletBalance || 0,
+      loanLimit: user.loanLimit?.amount || 0,
+      createdAt: user.createdAt.toISOString().split('T')[0]
+    }));
+
+    const headers = [
+      { id: 'id', title: 'User ID' },
+      { id: 'name', title: 'Name' },
+      { id: 'email', title: 'Email' },
+      { id: 'mobile', title: 'Mobile' },
+      { id: 'roles', title: 'Roles' },
+      { id: 'status', title: 'Status' },
+      { id: 'emailVerified', title: 'Email Verified' },
+      { id: 'walletBalance', title: 'Wallet Balance' },
+      { id: 'loanLimit', title: 'Loan Limit' },
+      { id: 'createdAt', title: 'Created Date' }
+    ];
+
+    if (format === 'json') return ok(res, data);
+
+    const timestamp = new Date().toISOString().split('T')[0];
+    const filename = `users_report_${timestamp}`;
+    let filePath;
+    if (format === 'csv') {
+      filePath = await generateCSV(data, headers, `${filename}.csv`);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+    } else if (format === 'excel') {
+      filePath = await generateExcel(data, headers, `${filename}.xlsx`, 'Users Report');
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+    } else if (format === 'pdf') {
+      filePath = await generatePDF(data, headers, `${filename}.pdf`, 'Users Report');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
+    }
+
+    sendGeneratedFile(res, filePath);
+  } catch (e) { next(e); }
+});
 
 // Loans Report
 router.get('/loans', async (req, res, next) => {
@@ -155,7 +300,7 @@ router.get('/loans', async (req, res, next) => {
         return fail(res, 'FILE_ERROR', 'Error generating report', 500);
       }
       // Clean up file after sending
-      require('fs').unlink(filePath, (err) => {
+      fs.unlink(filePath, (err) => {
         if (err) console.error('Error deleting temp file:', err);
       });
     });
@@ -231,7 +376,7 @@ router.get('/payments', async (req, res, next) => {
         console.error('Error sending file:', err);
         return fail(res, 'FILE_ERROR', 'Error generating report', 500);
       }
-      require('fs').unlink(filePath, (err) => {
+      fs.unlink(filePath, (err) => {
         if (err) console.error('Error deleting temp file:', err);
       });
     });
@@ -311,7 +456,7 @@ router.get('/bills', async (req, res, next) => {
         console.error('Error sending file:', err);
         return fail(res, 'FILE_ERROR', 'Error generating report', 500);
       }
-      require('fs').unlink(filePath, (err) => {
+      fs.unlink(filePath, (err) => {
         if (err) console.error('Error deleting temp file:', err);
       });
     });
@@ -395,7 +540,7 @@ router.get('/withdrawals', async (req, res, next) => {
         console.error('Error sending file:', err);
         return fail(res, 'FILE_ERROR', 'Error generating report', 500);
       }
-      require('fs').unlink(filePath, (err) => {
+      fs.unlink(filePath, (err) => {
         if (err) console.error('Error deleting temp file:', err);
       });
     });

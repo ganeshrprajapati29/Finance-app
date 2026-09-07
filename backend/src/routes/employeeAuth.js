@@ -19,6 +19,8 @@ router.post('/login', async (req, res, next) => {
     const employee = await Employee.findOne({ email: email.toLowerCase() });
     if (!employee) return fail(res, 'INVALID_CREDENTIALS', 'Invalid credentials', 401);
 
+    if (!employee.passwordHash) return fail(res, 'INVALID_CREDENTIALS', 'Invalid credentials', 401);
+
     const okPwd = await bcrypt.compare(password, employee.passwordHash);
     if (!okPwd) return fail(res, 'INVALID_CREDENTIALS', 'Invalid credentials', 401);
 

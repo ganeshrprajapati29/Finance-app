@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400" role="img" aria-label="A digital loan application being approved and credited to a bank account">
+  <title>Digital loan application approved</title>
+
+  <defs>
+    <linearGradient id="la-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF7E8"/>
+      <stop offset="1" stop-color="#F7FAF9"/>
+    </linearGradient>
+    <linearGradient id="la-doc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F1F5F4"/>
+    </linearGradient>
+    <linearGradient id="la-badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+    <linearGradient id="la-bank" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#075E54"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="400" fill="url(#la-bg)"/>
+  <circle cx="78" cy="86" r="60" fill="#F59E0B" opacity="0.12"/>
+  <circle cx="574" cy="322" r="70" fill="#00A884" opacity="0.10"/>
+
+  <!-- Application document -->
+  <g transform="translate(64 62)">
+    <rect x="10" y="10" width="212" height="278" rx="18" fill="#0F766E" opacity="0.10"/>
+    <rect width="212" height="278" rx="18" fill="url(#la-doc)" stroke="#E5ECEA" stroke-width="2"/>
+
+    <!-- Doc header -->
+    <rect x="24" y="26" width="120" height="12" rx="6" fill="#0F766E"/>
+    <rect x="24" y="46" width="76" height="8" rx="4" fill="#64748B" opacity="0.45"/>
+
+    <!-- Amount block -->
+    <rect x="24" y="70" width="164" height="52" rx="12" fill="#E8F8F4"/>
+    <rect x="38" y="82" width="48" height="7" rx="3.5" fill="#0F766E" opacity="0.55"/>
+    <rect x="38" y="96" width="90" height="14" rx="6" fill="#0F766E"/>
+
+    <!-- Checklist -->
+    <g>
+      <circle cx="34" cy="146" r="9" fill="#16A34A"/>
+      <path d="M30 146l3 3 6-6" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <rect x="52" y="141" width="104" height="8" rx="4" fill="#0F172A" opacity="0.55"/>
+    </g>
+    <g>
+      <circle cx="34" cy="176" r="9" fill="#16A34A"/>
+      <path d="M30 176l3 3 6-6" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <rect x="52" y="171" width="126" height="8" rx="4" fill="#0F172A" opacity="0.55"/>
+    </g>
+    <g>
+      <circle cx="34" cy="206" r="9" fill="#16A34A"/>
+      <path d="M30 206l3 3 6-6" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <rect x="52" y="201" width="88" height="8" rx="4" fill="#0F172A" opacity="0.55"/>
+    </g>
+    <g>
+      <circle cx="34" cy="236" r="9" fill="#F59E0B"/>
+      <rect x="52" y="231" width="112" height="8" rx="4" fill="#64748B" opacity="0.4"/>
+    </g>
+  </g>
+
+  <!-- Approved stamp -->
+  <g transform="translate(214 226) rotate(-9)">
+    <rect width="150" height="52" rx="26" fill="url(#la-badge)"/>
+    <circle cx="30" cy="26" r="14" fill="#FFFFFF" opacity="0.22"/>
+    <path d="M24 26l5 5 9-10" stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <rect x="56" y="16" width="70" height="9" rx="4.5" fill="#FFFFFF"/>
+    <rect x="56" y="31" width="44" height="7" rx="3.5" fill="#FFFFFF" opacity="0.7"/>
+  </g>
+
+  <!-- Money transfer arc -->
+  <path d="M300 168C356 118 424 118 470 154" stroke="#00A884" stroke-width="4" stroke-linecap="round" stroke-dasharray="10 12" fill="none"/>
+  <path d="M462 140l16 14-18 12" stroke="#00A884" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- Bank / account -->
+  <g transform="translate(414 168)">
+    <rect x="8" y="10" width="164" height="126" rx="16" fill="#0F766E" opacity="0.10"/>
+    <rect width="164" height="126" rx="16" fill="url(#la-bank)"/>
+    <path d="M82 22 140 50H24z" fill="#FFFFFF" opacity="0.9"/>
+    <g fill="#FFFFFF" opacity="0.85">
+      <rect x="36" y="58" width="12" height="38" rx="3"/>
+      <rect x="62" y="58" width="12" height="38" rx="3"/>
+      <rect x="88" y="58" width="12" height="38" rx="3"/>
+      <rect x="114" y="58" width="12" height="38" rx="3"/>
+    </g>
+    <rect x="24" y="102" width="116" height="10" rx="5" fill="#FFFFFF" opacity="0.9"/>
+  </g>
+
+  <!-- Credited coins -->
+  <g>
+    <circle cx="392" cy="322" r="24" fill="#F59E0B"/>
+    <text x="392" y="332" font-family="Inter, Segoe UI, sans-serif" font-size="26" font-weight="700" fill="#FFFFFF" text-anchor="middle">₹</text>
+  </g>
+  <circle cx="440" cy="342" r="14" fill="#FCD34D"/>
+  <circle cx="352" cy="348" r="11" fill="#FCD34D"/>
+</svg>

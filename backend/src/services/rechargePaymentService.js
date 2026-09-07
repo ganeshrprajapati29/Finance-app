@@ -1,8 +1,9 @@
 import ClubAPITransaction from '../routes/clubapi/models/transaction.js';
 import Payment from '../models/Payment.js';
 import User from '../models/User.js';
+import Invoice from '../models/Invoice.js';
 import { generateURID, formatAmount, getTransactionType, validateResponse } from '../routes/clubapi/helper.js';
-import { callClubAPITransaction } from './clubapiUtility.js';
+import { callClubAPITransaction, payBbpsBill } from './clubapiUtility.js';
 import { getRazorpay } from './razorpay.js';
 import { emitToUser } from '../realtime.js';
 
@@ -31,6 +32,10 @@ function firstOrderId(data = {}) {
   return data.orderId || data.order_id || nested.orderId || nested.order_id || '';
 }
 
+function clubInvoiceNumber(prefix = 'KPBBPS') {
+  return `${prefix}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
+}
+
 function rechargeMetaFromPayment(payment) {
   const meta = payment.metadata?.recharge || {};
   return {
@@ -48,7 +53,25 @@ function rechargeMetaFromPayment(payment) {
   };
 }
 
-export async function refundRechargePayment(payment, reason = 'Recharge failed') {
+function billMetaFromPayment(payment) {
+  const meta = payment.metadata?.clubapiBill || {};
+  return {
+    billId: meta.billId,
+    operatorId: meta.operatorId || meta.bbpsId,
+    bbpsId: meta.bbpsId || meta.operatorId,
+    accountRef: meta.accountRef || meta.mobile,
+    mobile: meta.mobile || meta.accountRef,
+    amount: meta.amount || payment.amount,
+    customerMobile: meta.customerMobile,
+    opvalue1: meta.opvalue1,
+    opvalue2: meta.opvalue2,
+    opvalue3: meta.opvalue3,
+    opvalue4: meta.opvalue4,
+    opvalue5: meta.opvalue5
+  };
+}
+
+export async function refundClubAPIPayment(payment, reason = 'ClubAPI transaction failed') {
   if (!payment || payment.metadata?.refund?.status) return payment?.metadata?.refund || null;
 
   const refund = {
@@ -59,7 +82,7 @@ export async function refundRechargePayment(payment, reason = 'Recharge failed')
   };
 
   try {
-    if (payment.gateway?.paymentId) {
+    if ((payment.gateway?.provider || '').toLowerCase() === 'razorpay' && payment.gateway?.paymentId) {
       const rz = getRazorpay();
       const rzRefund = await rz.payments.refund(payment.gateway.paymentId, {
         amount: Math.round(Number(payment.amount || 0) * 100),
@@ -88,6 +111,21 @@ export async function refundRechargePayment(payment, reason = 'Recharge failed')
   return refund;
 }
 
+export const refundRechargePayment = refundClubAPIPayment;
+
+export async function refundUnprocessedServicePayment(payment, reason = 'Service could not be processed after payment') {
+  const refund = await refundClubAPIPayment(payment, reason);
+  emitToUser(payment.userId, 'payment:status_updated', {
+    paymentId: payment._id,
+    khatuPaymentId: payment.khatuPaymentId,
+    status: 'REFUNDED',
+    type: payment.type,
+    amount: payment.amount,
+    refund
+  });
+  return refund;
+}
+
 export async function processPaidRecharge(payment) {
   if (!payment) throw new Error('Payment not found');
   if (payment.type !== 'RECHARGE') throw new Error('Payment is not a recharge payment');
@@ -101,7 +139,10 @@ export async function processPaidRecharge(payment) {
   const recharge = rechargeMetaFromPayment(payment);
   const required = ['type', 'operatorId', 'accountRef', 'amount'];
   for (const field of required) {
-    if (!recharge[field]) throw new Error(`Recharge ${field} is missing`);
+    if (!recharge[field]) {
+      const refund = await refundUnprocessedServicePayment(payment, `Recharge ${field} is missing`);
+      return { transaction: null, refund, error: `Recharge ${field} is missing` };
+    }
   }
 
   const urid = generateURID();
@@ -162,7 +203,7 @@ export async function processPaidRecharge(payment) {
 
     let refund = null;
     if (transaction.status === 'failed') {
-      refund = await refundRechargePayment(payment, 'Recharge failed at ClubAPI');
+      refund = await refundClubAPIPayment(payment, 'Recharge failed at ClubAPI');
       transaction.refund = refund;
       await transaction.save();
     } else {
@@ -174,7 +215,120 @@ export async function processPaidRecharge(payment) {
   } catch (error) {
     transaction.status = 'failed';
     transaction.response = { message: error.message };
-    const refund = await refundRechargePayment(payment, error.message || 'Recharge request failed');
+    const refund = await refundClubAPIPayment(payment, error.message || 'Recharge request failed');
+    transaction.refund = refund;
+    await transaction.save();
+    emitClubTransaction(payment.userId, transaction);
+    return { transaction, refund, error: error.message };
+  }
+}
+
+export async function processPaidBbpsBill(payment) {
+  if (!payment) throw new Error('Payment not found');
+  if (payment.type !== 'BBPS_BILL') throw new Error('Payment is not a BBPS bill payment');
+  if (!['CONFIRMED', 'REFUNDED'].includes(payment.status)) throw new Error('Payment is not confirmed');
+
+  if (payment.metadata?.clubapiTransactionId) {
+    const existing = await ClubAPITransaction.findById(payment.metadata.clubapiTransactionId);
+    if (existing) return { transaction: existing, refund: payment.metadata?.refund || null, reused: true };
+  }
+
+  const bill = billMetaFromPayment(payment);
+  const required = ['amount', 'bbpsId', 'mobile', 'customerMobile'];
+  for (const field of required) {
+    if (!bill[field]) {
+      const refund = await refundUnprocessedServicePayment(payment, `Bill payment ${field} is missing`);
+      return { transaction: null, refund, error: `Bill payment ${field} is missing` };
+    }
+  }
+
+  const urid = generateURID();
+  const amount = Number(formatAmount(bill.amount));
+  const transaction = await ClubAPITransaction.create({
+    urid,
+    type: 'bill_payment',
+    status: 'processing',
+    amount,
+    provider: bill.bbpsId,
+    accountRef: bill.mobile,
+    customerMobile: bill.customerMobile,
+    billId: bill.billId,
+    userId: payment.userId,
+    paymentId: payment._id
+  });
+
+  payment.metadata = {
+    ...(payment.metadata?.toObject?.() || payment.metadata || {}),
+    clubapiTransactionId: transaction._id,
+    billProcessedAt: new Date(),
+    clubapiBill: {
+      ...bill,
+      urid
+    }
+  };
+  await payment.save();
+  emitClubTransaction(payment.userId, transaction);
+
+  try {
+    const response = validateResponse(await payBbpsBill({
+      urid,
+      bbpsId: bill.bbpsId,
+      mobile: bill.mobile,
+      customerMobile: bill.customerMobile,
+      amount: String(amount),
+      opvalue1: bill.opvalue1,
+      opvalue2: bill.opvalue2,
+      opvalue3: bill.opvalue3,
+      opvalue4: bill.opvalue4,
+      opvalue5: bill.opvalue5
+    }));
+
+    transaction.status = clubStatusToLocal(response);
+    transaction.response = response;
+    await transaction.save();
+
+    payment.metadata = {
+      ...(payment.metadata?.toObject?.() || payment.metadata || {}),
+      clubapiBill: {
+        ...(payment.metadata?.clubapiBill || {}),
+        orderId: firstOrderId(response),
+        clubapiStatus: transaction.status,
+        response
+      }
+    };
+
+    let refund = null;
+    if (transaction.status === 'failed') {
+      refund = await refundClubAPIPayment(payment, 'BBPS bill payment failed at ClubAPI');
+      transaction.refund = refund;
+      await transaction.save();
+    } else {
+      await payment.save();
+    }
+
+    if (transaction.status === 'completed' && payment.userId) {
+      await Invoice.create({
+        invoiceNumber: clubInvoiceNumber('KPBBPS'),
+        userId: payment.userId,
+        amount,
+        taxableAmount: 0,
+        cgst: 0,
+        sgst: 0,
+        igst: 0,
+        status: 'PAID',
+        invoiceType: 'BBPS',
+        description: `BBPS bill payment - ${bill.bbpsId}`,
+        notes: `Transaction ID: ${urid} | Bill ID: ${bill.billId || ''} | Account: ${bill.mobile}`,
+        items: [{ description: `BBPS bill payment - ${bill.bbpsId}`, quantity: 1, rate: amount, total: amount }]
+      });
+    }
+
+    emitClubTransaction(payment.userId, transaction);
+    return { transaction, refund, response };
+  } catch (error) {
+    transaction.status = 'failed';
+    transaction.response = { message: error.message };
+    const refund = await refundClubAPIPayment(payment, error.message || 'BBPS bill payment request failed');
     transaction.refund = refund;
     await transaction.save();
     emitClubTransaction(payment.userId, transaction);
@@ -186,7 +340,7 @@ export async function handleRechargeCallbackRefund(transaction) {
   if (!transaction || transaction.status !== 'failed' || !transaction.paymentId) return null;
   const payment = await Payment.findById(transaction.paymentId);
   if (!payment || payment.metadata?.refund?.status) return payment?.metadata?.refund || null;
-  const refund = await refundRechargePayment(payment, 'Recharge failed by ClubAPI callback');
+  const refund = await refundClubAPIPayment(payment, 'ClubAPI transaction failed by callback');
   transaction.refund = refund;
   await transaction.save();
   return refund;

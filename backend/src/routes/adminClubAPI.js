@@ -2,7 +2,9 @@ import express from 'express';
 import Joi from 'joi';
 import axios from 'axios';
 import ClubAPITransaction from '../models/ClubAPITransaction.js';
+import ClubAPIFundRequest from '../models/ClubAPIFundRequest.js';
 import Settings from '../models/Settings.js';
+import AuditLog from '../models/AuditLog.js';
 import { requireAdmin } from '../middlewares/adminAuth.js';
 import { ok, fail } from '../utils/response.js';
 import clubapiConfig from '../config/clubapi.js';
@@ -39,6 +41,17 @@ const defaultClubapiSettings = {
   dthRechargeEnabled: true
 };
 
+const providerBankOptions = [
+  {
+    label: 'P2P Wallet - ICICI 1145',
+    accountNumber: '114505002084',
+    ifsc: 'ICIC0001145',
+    accountName: 'RECHAPI PRIVATE LIMITED',
+    walletType: 'P2P',
+    minimumAmount: 1000
+  }
+];
+
 async function getSettingsDocument() {
   let settings = await Settings.findOne();
   if (!settings) settings = new Settings();
@@ -53,6 +66,450 @@ function presentClubapiSettings(settings) {
     tokenConfigured: Boolean(clubapiConfig.token)
   };
 }
+
+function pickFirstNumber(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue;
+    const number = Number(String(value).replace(/,/g, ''));
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function normalizeBalanceResponse(data = {}) {
+  const nested = data.data && typeof data.data === 'object' ? data.data : {};
+  const balanceObject = data.balance && typeof data.balance === 'object' ? data.balance : {};
+  const buyerBalance = balanceObject.buyer && typeof balanceObject.buyer === 'object' ? balanceObject.buyer : {};
+  const sellerBalance = balanceObject.seller && typeof balanceObject.seller === 'object' ? balanceObject.seller : {};
+  const balance = pickFirstNumber(
+    data.balance,
+    data.bal,
+    data.buyerP2PBal,
+    data.points,
+    data.walletBalance,
+    data.availableBalance,
+    data.mainBalance,
+    nested.balance,
+    nested.bal,
+    nested.buyerP2PBal,
+    nested.points,
+    nested.walletBalance,
+    nested.availableBalance,
+    nested.mainBalance,
+    buyerBalance.buyer_total,
+    buyerBalance.buyer_p2p,
+    buyerBalance.buyer_p2a,
+    sellerBalance.seller_total
+  );
+  const status = String(data.status || nested.status || '').toUpperCase();
+  const message = data.message || data.resText || nested.message || nested.resText || '';
+
+  return {
+    status: status || (balance !== null ? 'SUCCESS' : ''),
+    message,
+    balance,
+    balanceText: balance !== null ? `Rs. ${balance.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : 'N/A',
+    buyer: {
+      p2p: pickFirstNumber(buyerBalance.buyer_p2p),
+      p2a: pickFirstNumber(buyerBalance.buyer_p2a),
+      total: pickFirstNumber(buyerBalance.buyer_total)
+    },
+    seller: {
+      p2p: pickFirstNumber(sellerBalance.seller_p2p),
+      p2a: pickFirstNumber(sellerBalance.seller_p2a),
+      total: pickFirstNumber(sellerBalance.seller_total)
+    },
+    points: pickFirstNumber(data.points, nested.points),
+    tokenConfigured: Boolean(clubapiConfig.token),
+    callbackIdConfigured: Boolean(clubapiConfig.callbackId),
+    checkedAt: new Date().toISOString(),
+    raw: data
+  };
+}
+
+function normalizeProviderText(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (typeof value === 'object') {
+    return value.message || value.msg || value.resText || value.error || JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function normalizeFundProviderResponse(data = {}) {
+  const text = normalizeProviderText(data);
+  const statusValue = String(data?.status || data?.data?.status || '').toUpperCase();
+  const failed = /invalid|failed|error|login|session|unauthor/i.test(`${statusValue} ${text}`);
+  const success = /success|submitted|request/i.test(`${statusValue} ${text}`) && !failed;
+  return {
+    ok: success,
+    status: success ? 'SUBMITTED' : 'FAILED',
+    message: text || (success ? 'Fund request submitted to provider' : 'Provider fund request failed'),
+    raw: data
+  };
+}
+
+function normalizeProviderFundRow(row, index) {
+  if (Array.isArray(row)) {
+    return {
+      id: row[0] || index + 1,
+      date: row[0] || row[1] || '',
+      accountNumber: row[1] || row[2] || '',
+      amount: row[2] || row[3] || '',
+      transactionDate: row[3] || row[4] || '',
+      method: row[4] || row[5] || '',
+      refNumber: row[5] || row[6] || '',
+      status: row[6] || row[7] || '',
+      walletType: row[7] || row[8] || '',
+      updateTime: row[8] || row[9] || '',
+      remark: row[9] || row[10] || '',
+      raw: row
+    };
+  }
+  const source = row && typeof row === 'object' ? row : {};
+  return {
+    id: source.id || source.ID || source.sr || source._id || index + 1,
+    date: source.date || source.DATE || source.createdAt || source.created_at || source.requestDate || '',
+    accountNumber: source.accountNumber || source.account_number || source.ACCOUNT_NUMBER || source.bank || source.account || '',
+    amount: source.amount || source.AMOUNT || '',
+    transactionDate: source.transactionDate || source.transDate || source.TRANSDATE || source.transaction_date || '',
+    method: source.method || source.METHOD || source.paymentMode || '',
+    refNumber: source.refNumber || source.REFNUMBER || source.bankRefNumber || source.utrNumber || source.utr || '',
+    status: source.status || source.STATUS || '',
+    walletType: source.walletType || source.WALLETTYPE || source.wallet_type || '',
+    updateTime: source.updateTime || source.UPDATETIME || source.updatedAt || source.updated_at || '',
+    remark: source.remark || source.REMARK || source.message || '',
+    raw: row
+  };
+}
+
+function normalizeProviderFundList(data) {
+  const rows = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data?.aaData)
+        ? data.aaData
+        : Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data?.rows)
+            ? data.rows
+            : [];
+
+  return {
+    items: rows.map(normalizeProviderFundRow),
+    total: Number(data?.recordsTotal || data?.recordsFiltered || data?.total || rows.length || 0),
+    message: normalizeProviderText(data) || 'Provider fund requests fetched',
+    raw: data
+  };
+}
+
+async function fetchFundRequestsFromProvider(query = {}) {
+  const params = new URLSearchParams();
+  if (query.start) params.set('start', String(query.start));
+  if (query.length) params.set('length', String(query.length));
+  if (query.search) params.set('search[value]', String(query.search));
+
+  const headers = {
+    Accept: 'application/json, text/javascript, */*; q=0.01',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'X-Requested-With': 'XMLHttpRequest',
+    Referer: 'https://clubapi.in/account/buyer_fund_request.php'
+  };
+  if (clubapiConfig.fundRequestCookie) headers.Cookie = clubapiConfig.fundRequestCookie;
+
+  const response = await axios.post(clubapiConfig.fundRequestListURL, params.toString(), {
+    headers,
+    timeout: Number(process.env.CLUBAPI_FUND_REQUEST_TIMEOUT || 30000),
+    responseType: 'text',
+    transformResponse: [(data) => {
+      try {
+        return JSON.parse(data);
+      } catch {
+        return data;
+      }
+    }]
+  });
+
+  const text = normalizeProviderText(response.data);
+  if (typeof response.data === 'string' && /login|password|sign in|logout/i.test(text) && !/fund|amount|wallet/i.test(text)) {
+    throw new Error('ClubAPI panel session expire/missing hai. Fresh panel cookie set karein.');
+  }
+
+  return normalizeProviderFundList(response.data);
+}
+
+async function submitFundRequestToProvider(payload) {
+  const params = new URLSearchParams({
+    amount: String(payload.amount),
+    bankRefNumber: payload.utrNumber,
+    transactionDate: payload.paymentDate,
+    bank: payload.bankAccountNumber,
+    method: String(payload.paymentMode || '').toLowerCase(),
+    walletType: payload.walletType
+  });
+
+  const headers = {
+    Accept: 'application/json, text/javascript, */*; q=0.01',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'X-Requested-With': 'XMLHttpRequest',
+    Referer: 'https://clubapi.in/account/buyer_fund_request.php'
+  };
+  if (clubapiConfig.fundRequestCookie) headers.Cookie = clubapiConfig.fundRequestCookie;
+
+  const response = await axios.post(clubapiConfig.fundRequestURL, params.toString(), {
+    headers,
+    timeout: Number(process.env.CLUBAPI_FUND_REQUEST_TIMEOUT || 30000),
+    responseType: 'text',
+    transformResponse: [(data) => {
+      try {
+        return JSON.parse(data);
+      } catch {
+        return data;
+      }
+    }]
+  });
+
+  return normalizeFundProviderResponse(response.data);
+}
+
+router.get('/balance', requireAdmin, async (req, res) => {
+  try {
+    const settings = await getSettingsDocument();
+    const balance = await getBalance();
+    ok(res, {
+      ...normalizeBalanceResponse(balance),
+      settings: presentClubapiSettings(settings),
+      fundRequest: {
+        providerConfigured: Boolean(clubapiConfig.fundRequestURL),
+        sessionConfigured: Boolean(clubapiConfig.fundRequestCookie),
+        banks: providerBankOptions
+      }
+    }, 'ClubAPI balance fetched');
+  } catch (error) {
+    fail(res, 'CLUBAPI_BALANCE_FAILED', error.message || 'ClubAPI balance fetch failed', 400);
+  }
+});
+
+const fundRequestSchema = Joi.object({
+  amount: Joi.number().min(1).required(),
+  paymentMode: Joi.string().valid('UPI', 'IMPS', 'NEFT', 'RTGS', 'BANK_TRANSFER', 'CASH_DEPOSIT', 'OTHER').default('IMPS'),
+  utrNumber: Joi.string().trim().min(8).max(80).required(),
+  paymentDate: Joi.date().default(() => new Date()),
+  bankAccountNumber: Joi.string().trim().min(6).max(30).default(providerBankOptions[0].accountNumber),
+  walletType: Joi.string().valid('P2P', 'P2A').default('P2P'),
+  proofUrl: Joi.string().trim().allow('', null).max(500),
+  remarks: Joi.string().trim().allow('', null).max(1000),
+  status: Joi.string().valid('DRAFT', 'SUBMITTED', 'PENDING').default('SUBMITTED')
+});
+
+router.get('/fund-requests', requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status = '',
+      search = '',
+      startDate,
+      endDate
+    } = req.query;
+
+    const query = {};
+    if (status) query.status = status;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+    if (search) {
+      const safe = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(safe, 'i');
+      query.$or = [{ utrNumber: regex }, { providerReference: regex }, { remarks: regex }];
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const [items, total, stats] = await Promise.all([
+      ClubAPIFundRequest.find(query)
+        .populate('requestedBy', 'name email mobile')
+        .populate('reviewedBy', 'name email mobile')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      ClubAPIFundRequest.countDocuments(query),
+      ClubAPIFundRequest.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            amount: { $sum: '$amount' }
+          }
+        }
+      ])
+    ]);
+
+    ok(res, {
+      items,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      pages: Math.ceil(total / Number(limit)) || 1,
+      stats
+    });
+  } catch (error) {
+    fail(res, 'FUND_REQUESTS_FAILED', error.message || 'Fund requests load failed', 500);
+  }
+});
+
+router.post('/fund-requests', requireAdmin, async (req, res) => {
+  try {
+    const payload = await fundRequestSchema.validateAsync(req.body);
+    const bankOption = providerBankOptions.find((bank) => bank.accountNumber === payload.bankAccountNumber);
+    const minimumAmount = bankOption?.minimumAmount || 1;
+    if (Number(payload.amount) < minimumAmount) {
+      return fail(res, 'FUND_REQUEST_MIN_AMOUNT', `Minimum fund request amount Rs. ${minimumAmount} hai`, 400);
+    }
+
+    let balanceBefore = {};
+    try {
+      balanceBefore = normalizeBalanceResponse(await getBalance());
+    } catch (error) {
+      balanceBefore = { status: 'FAILED', message: error.message };
+    }
+
+    let provider = null;
+    try {
+      provider = await submitFundRequestToProvider({
+        ...payload,
+        paymentDate: new Date(payload.paymentDate).toISOString().slice(0, 10)
+      });
+    } catch (error) {
+      const providerMessage = error.response?.data || error.message || 'Provider fund request submit failed';
+      provider = {
+        ok: false,
+        status: 'FAILED',
+        message: normalizeProviderText(providerMessage),
+        raw: error.response?.data || { message: error.message, status: error.response?.status }
+      };
+    }
+
+    if (!provider.ok) {
+      return fail(res, 'FUND_REQUEST_PROVIDER_FAILED', provider.message || 'Provider ne fund request accept nahi kiya', 400);
+    }
+
+    const request = await ClubAPIFundRequest.create({
+      ...payload,
+      status: provider.status,
+      providerSubmitted: true,
+      providerReference: provider.raw?.id || provider.raw?.requestId || provider.raw?.reference || '',
+      providerResponse: provider.raw,
+      proofUrl: payload.proofUrl || '',
+      remarks: payload.remarks || '',
+      balanceBefore,
+      requestedBy: req.admin.id
+    });
+
+    await AuditLog.create({
+      actorId: req.admin.id,
+      action: 'CREATE_CLUBAPI_FUND_REQUEST',
+      entityType: 'ClubAPIFundRequest',
+      entityId: request._id.toString(),
+      meta: {
+        amount: request.amount,
+        paymentMode: request.paymentMode,
+        utrNumber: request.utrNumber,
+        bankAccountNumber: request.bankAccountNumber,
+        walletType: request.walletType,
+        status: request.status
+      }
+    });
+
+    ok(res, request, provider.message || 'Fund request submitted successfully');
+  } catch (error) {
+    fail(res, 'FUND_REQUEST_CREATE_FAILED', error.message || 'Fund request save failed', 400);
+  }
+});
+
+router.get('/fund-requests/provider', requireAdmin, async (req, res) => {
+  try {
+    const payload = await Joi.object({
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(20),
+      search: Joi.string().trim().allow('', null).default('')
+    }).validateAsync(req.query);
+    const data = await fetchFundRequestsFromProvider({
+      start: (payload.page - 1) * payload.limit,
+      length: payload.limit,
+      search: payload.search
+    });
+    ok(res, {
+      ...data,
+      page: payload.page,
+      limit: payload.limit,
+      sessionConfigured: Boolean(clubapiConfig.fundRequestCookie)
+    });
+  } catch (error) {
+    fail(res, 'FUND_REQUEST_PROVIDER_LIST_FAILED', error.message || 'Provider fund request list load nahi ho payi', 400);
+  }
+});
+
+router.get('/fund-requests/:id', requireAdmin, async (req, res) => {
+  try {
+    const request = await ClubAPIFundRequest.findById(req.params.id)
+      .populate('requestedBy', 'name email mobile')
+      .populate('reviewedBy', 'name email mobile');
+    if (!request) return fail(res, 'NOT_FOUND', 'Fund request not found', 404);
+    ok(res, request);
+  } catch (error) {
+    fail(res, 'FUND_REQUEST_DETAIL_FAILED', error.message || 'Fund request detail failed', 500);
+  }
+});
+
+router.put('/fund-requests/:id/status', requireAdmin, async (req, res) => {
+  try {
+    const payload = await Joi.object({
+      status: Joi.string().valid('DRAFT', 'SUBMITTED', 'PENDING', 'APPROVED', 'REJECTED', 'FAILED').required(),
+      reviewedNote: Joi.string().trim().allow('', null).max(1000),
+      providerReference: Joi.string().trim().allow('', null).max(120),
+      providerResponse: Joi.object().default({})
+    }).validateAsync(req.body);
+
+    const request = await ClubAPIFundRequest.findById(req.params.id);
+    if (!request) return fail(res, 'NOT_FOUND', 'Fund request not found', 404);
+
+    request.status = payload.status;
+    request.reviewedNote = payload.reviewedNote || '';
+    request.providerReference = payload.providerReference || request.providerReference || '';
+    request.providerResponse = payload.providerResponse || {};
+    request.reviewedBy = req.admin.id;
+    request.reviewedAt = new Date();
+
+    if (payload.status === 'APPROVED' || payload.status === 'REJECTED' || payload.status === 'FAILED') {
+      try {
+        request.balanceAfter = normalizeBalanceResponse(await getBalance());
+      } catch (error) {
+        request.balanceAfter = { status: 'FAILED', message: error.message };
+      }
+    }
+
+    await request.save();
+    await AuditLog.create({
+      actorId: req.admin.id,
+      action: 'UPDATE_CLUBAPI_FUND_REQUEST',
+      entityType: 'ClubAPIFundRequest',
+      entityId: request._id.toString(),
+      meta: {
+        status: request.status,
+        providerReference: request.providerReference,
+        reviewedNote: request.reviewedNote
+      }
+    });
+
+    ok(res, request, 'Fund request status updated');
+  } catch (error) {
+    fail(res, 'FUND_REQUEST_STATUS_FAILED', error.message || 'Fund request update failed', 400);
+  }
+});
 
 router.get('/settings', requireAdmin, async (req, res) => {
   try {

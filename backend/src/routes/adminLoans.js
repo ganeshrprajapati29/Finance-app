@@ -4,6 +4,7 @@ import Notification from '../models/Notification.js';
 import { requireAdmin } from '../middlewares/adminAuth.js';
 import { ok, fail } from '../utils/response.js';
 import { quickSort, mergeSort, PriorityQueue } from '../utils/dsa.js';
+import { notifyUserSmart } from '../services/smartNotifications.js';
 
 const router = Router();
 
@@ -56,7 +57,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
         rateAPR,
         tenureMonths,
         decidedAt: new Date(),
-        decidedBy: req.admin.uid,
+        decidedBy: req.admin.id,
       };
 
       // Create notification for user about loan approval
@@ -77,7 +78,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
       loan.status = 'REJECTED';
       loan.decision = {
         decidedAt: new Date(),
-        decidedBy: req.admin.uid,
+        decidedBy: req.admin.id,
       };
 
       // Create notification for user about loan rejection
@@ -96,6 +97,28 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     }
 
     await loan.save();
+    if (decision === 'APPROVED') {
+      await notifyUserSmart(loan.userId, 'loan_approved', {
+        persist: false,
+        loanId: loan._id,
+        loanAccountNumber: loan.loanAccountNumber,
+        amount: amountApproved,
+        data: {
+          loanId: String(loan._id),
+          amountApproved,
+          rateAPR,
+          tenureMonths,
+        },
+      });
+    } else if (decision === 'REJECTED') {
+      await notifyUserSmart(loan.userId, 'loan_rejected', {
+        persist: false,
+        loanId: loan._id,
+        data: {
+          loanId: String(loan._id),
+        },
+      });
+    }
     ok(res, loan, `Loan ${decision.toLowerCase()} successfully`);
   } catch (e) {
     next(e);
@@ -138,6 +161,16 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
     loan.schedule = createRepaymentSchedule(loan);
     await loan.save();
 
+    await notifyUserSmart(loan.userId, 'loan_disbursed', {
+      loanId: loan._id,
+      loanAccountNumber: loan.loanAccountNumber,
+      amount: withdrawalAmount,
+      data: {
+        loanId: String(loan._id),
+        txnId: withdrawalTxn.txnId,
+      },
+    });
+
     ok(res, loan, 'Loan disbursed successfully - funds transferred to user account');
   } catch (e) {
     next(e);
@@ -149,9 +182,10 @@ function createRepaymentSchedule(loan) {
   const amt = loan.decision?.amountApproved || 0;
   const rate = loan.decision?.rateAPR || 12;
   const monthlyRate = rate / 12 / 100;
-  const emi =
-    (amt * monthlyRate * Math.pow(1 + monthlyRate, emiCount)) /
-    (Math.pow(1 + monthlyRate, emiCount) - 1);
+  const emi = monthlyRate > 0
+    ? (amt * monthlyRate * Math.pow(1 + monthlyRate, emiCount)) /
+      (Math.pow(1 + monthlyRate, emiCount) - 1)
+    : amt / emiCount;
 
   const schedule = [];
   for (let i = 1; i <= emiCount; i++) {

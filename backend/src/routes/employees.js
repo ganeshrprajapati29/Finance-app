@@ -16,27 +16,50 @@ router.use(requireAuth, requireRole(['admin']));
 // Get all employees
 router.get('/', async (req, res, next) => {
   try {
-    const { role } = req.query;
+    const { role, search = '', page = 1, limit = 20 } = req.query;
     let query = {};
 
     if (role) {
       query.roles = { $in: [role] };
     }
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { department: { $regex: search, $options: 'i' } }
+      ];
+    }
 
-    const employees = await Employee.find(query).sort({ createdAt: -1 });
-    ok(res, employees);
+    const [employees, total] = await Promise.all([
+      Employee.find(query)
+        .sort({ createdAt: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit)),
+      Employee.countDocuments(query)
+    ]);
+
+    ok(res, {
+      items: employees,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      pages: Math.ceil(total / Number(limit)) || 1
+    });
   } catch (e) { next(e); }
 });
 
 // Create new employee
 router.post('/', async (req, res, next) => {
   try {
-    const { name, email, phone, password, permissions, roles } = await Joi.object({
+    const { name, email, phone, password, permissions, roles, department, agentProfile } = await Joi.object({
       name: Joi.string().required(),
       email: Joi.string().email().required(),
       phone: Joi.string().required(),
       password: Joi.string().min(6).required(),
       roles: Joi.array().items(Joi.string()).default(['employee']),
+      department: Joi.string().default('GENERAL'),
+      agentProfile: Joi.object().unknown(true).default({}),
       permissions: Joi.object({
         canManageUsers: Joi.boolean().default(false),
         canManageLoans: Joi.boolean().default(false),
@@ -45,6 +68,8 @@ router.post('/', async (req, res, next) => {
         canSendNotifications: Joi.boolean().default(false),
         canViewAudit: Joi.boolean().default(false),
         canManageSettings: Joi.boolean().default(false),
+        canManageCollections: Joi.boolean().default(false),
+        canViewReports: Joi.boolean().default(false),
       }).default({
         canManageUsers: false,
         canManageLoans: false,
@@ -53,6 +78,8 @@ router.post('/', async (req, res, next) => {
         canSendNotifications: false,
         canViewAudit: false,
         canManageSettings: false,
+        canManageCollections: false,
+        canViewReports: false,
       }),
     }).validateAsync(req.body);
 
@@ -67,6 +94,8 @@ router.post('/', async (req, res, next) => {
       passwordHash,
       roles,
       permissions,
+      department,
+      agentProfile,
       createdBy: req.user.uid,
     });
 
@@ -83,7 +112,7 @@ router.post('/', async (req, res, next) => {
       action: 'CREATE_EMPLOYEE',
       entityType: 'Employee',
       entityId: employee._id.toString(),
-      meta: { name, email, permissions },
+      meta: { name, email, department, permissions },
     });
 
     ok(res, employee, 'Employee created successfully');
@@ -96,9 +125,12 @@ router.post('/', async (req, res, next) => {
 // Update employee
 router.put('/:id', async (req, res, next) => {
   try {
-    const { name, phone, permissions, status } = await Joi.object({
+    const { name, phone, permissions, status, roles, department, agentProfile } = await Joi.object({
       name: Joi.string().optional(),
       phone: Joi.string().optional(),
+      roles: Joi.array().items(Joi.string()).optional(),
+      department: Joi.string().optional(),
+      agentProfile: Joi.object().unknown(true).optional(),
       permissions: Joi.object({
         canManageUsers: Joi.boolean(),
         canManageLoans: Joi.boolean(),
@@ -107,15 +139,25 @@ router.put('/:id', async (req, res, next) => {
         canSendNotifications: Joi.boolean(),
         canViewAudit: Joi.boolean(),
         canManageSettings: Joi.boolean(),
+        canManageCollections: Joi.boolean(),
+        canViewReports: Joi.boolean(),
       }).optional(),
       status: Joi.string().valid('active', 'inactive').optional(),
     }).validateAsync(req.body);
 
-    const employee = await Employee.findByIdAndUpdate(
-      req.params.id,
-      { name, phone, permissions, status },
-      { new: true }
-    );
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (phone !== undefined) update.phone = phone;
+    if (roles !== undefined) update.roles = roles;
+    if (department !== undefined) update.department = department;
+    if (agentProfile !== undefined) update.agentProfile = agentProfile;
+    if (permissions !== undefined) update.permissions = permissions;
+    if (status !== undefined) {
+      update.status = status;
+      update.isActive = status === 'active';
+    }
+
+    const employee = await Employee.findByIdAndUpdate(req.params.id, update, { new: true });
 
     if (!employee) return fail(res, 'NOT_FOUND', 'Employee not found', 404);
 
@@ -124,10 +166,41 @@ router.put('/:id', async (req, res, next) => {
       action: 'UPDATE_EMPLOYEE',
       entityType: 'Employee',
       entityId: employee._id.toString(),
-      meta: { name, phone, permissions, status },
+      meta: update,
     });
 
     ok(res, employee, 'Employee updated successfully');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
+    next(err);
+  }
+});
+
+router.put('/:id/status', async (req, res, next) => {
+  try {
+    const { isActive, status } = await Joi.object({
+      isActive: Joi.boolean().optional(),
+      status: Joi.string().valid('active', 'inactive').optional()
+    }).validateAsync(req.body);
+
+    const nextStatus = status || (isActive ? 'active' : 'inactive');
+    const employee = await Employee.findByIdAndUpdate(
+      req.params.id,
+      { isActive: nextStatus === 'active', status: nextStatus },
+      { new: true }
+    );
+
+    if (!employee) return fail(res, 'NOT_FOUND', 'Employee not found', 404);
+
+    await AuditLog.create({
+      actorId: req.user.uid,
+      action: 'UPDATE_EMPLOYEE_STATUS',
+      entityType: 'Employee',
+      entityId: employee._id.toString(),
+      meta: { status: nextStatus }
+    });
+
+    ok(res, employee, 'Employee status updated successfully');
   } catch (err) {
     if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
     next(err);

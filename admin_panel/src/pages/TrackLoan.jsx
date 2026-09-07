@@ -1,651 +1,619 @@
-import React, { useState, useEffect } from 'react';
-import axios from '../api/axios';
+import React, { useMemo, useState } from 'react';
+import { Alert, Badge, Button, Col, Form, InputGroup, Modal, ProgressBar, Row, Table } from 'react-bootstrap';
+import {
+  AlertTriangle,
+  Banknote,
+  CalendarClock,
+  CheckCircle2,
+  Clock3,
+  CreditCard,
+  Download,
+  Eye,
+  FileSpreadsheet,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  UserRound,
+  WalletCards,
+  XCircle
+} from 'lucide-react';
+import api from '../api/axios';
+
+const formatCurrency = (amount) => {
+  const value = Number(amount || 0);
+  return `Rs. ${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+};
+
+const formatDate = (date) => {
+  if (!date) return 'N/A';
+  return new Date(date).toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+};
+
+const statusMeta = {
+  PENDING: { bg: 'warning', label: 'Pending' },
+  APPROVED: { bg: 'info', label: 'Approved' },
+  DISBURSED: { bg: 'success', label: 'Disbursed' },
+  ACTIVE: { bg: 'success', label: 'Active' },
+  CLOSED: { bg: 'secondary', label: 'Closed' },
+  REJECTED: { bg: 'danger', label: 'Rejected' },
+  OVERDUE: { bg: 'danger', label: 'Overdue' },
+  CONFIRMED: { bg: 'success', label: 'Confirmed' },
+  FAILED: { bg: 'danger', label: 'Failed' }
+};
+
+const getInstallmentStatus = (installment) => {
+  if (installment?.paid) return { bg: 'success', label: 'Paid', icon: CheckCircle2 };
+  if (installment?.dueDate && new Date(installment.dueDate) < new Date()) {
+    return { bg: 'danger', label: 'Overdue', icon: XCircle };
+  }
+  return { bg: 'warning', label: 'Pending', icon: Clock3 };
+};
+
+const downloadCsv = (rows, filename) => {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [
+    headers.join(','),
+    ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? '').replace(/"/g, '""')}"`).join(','))
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const StatTile = ({ icon: Icon, label, value, tone = 'blue', subtext }) => (
+  <div className={`track-stat track-stat-${tone}`}>
+    <div className="track-stat-icon"><Icon size={20} /></div>
+    <div>
+      <div className="track-stat-label">{label}</div>
+      <div className="track-stat-value">{value}</div>
+      {subtext && <div className="track-stat-subtext">{subtext}</div>}
+    </div>
+  </div>
+);
+
+const StatusBadge = ({ status }) => {
+  const key = String(status || 'PENDING').toUpperCase();
+  const meta = statusMeta[key] || { bg: 'secondary', label: status || 'N/A' };
+  return <Badge bg={meta.bg}>{meta.label}</Badge>;
+};
 
 const TrackLoan = () => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [loanData, setLoanData] = useState(null);
+  const [query, setQuery] = useState('');
+  const [loan, setLoan] = useState(null);
+  const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [paymentsLoading, setPaymentsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [showPayments, setShowPayments] = useState(false);
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) {
-      setError('Please enter a loan account number or email');
+  const schedule = useMemo(() => loan?.schedule || [], [loan]);
+  const paymentRows = payments.length ? payments : loan?.recentPayments || [];
+
+  const summary = useMemo(() => {
+    const paid = schedule.filter((item) => item.paid).length;
+    const overdue = schedule.filter((item) => !item.paid && item.dueDate && new Date(item.dueDate) < new Date()).length;
+    const pending = Math.max(schedule.length - paid - overdue, 0);
+    const total = Number(loan?.totals?.total || 0);
+    const paidAmount = Number(loan?.paid?.total || 0);
+    return {
+      paid,
+      overdue,
+      pending,
+      progress: total > 0 ? Math.min(Math.round((paidAmount / total) * 100), 100) : 0
+    };
+  }, [loan, schedule]);
+
+  const searchLoan = async (term) => {
+    if (!term) {
+      setError('Loan account, loan ID, email, mobile ya customer name enter karein.');
       return;
     }
 
-    setLoading(true);
-    setError('');
-
     try {
-      const response = await axios.get(`/admin/track-loan/search?query=${encodeURIComponent(searchQuery)}`);
-      setLoanData(response.data);
+      setLoading(true);
+      setError('');
+      setLoan(null);
+      setPayments([]);
+      const res = await api.get(`/admin/track-loan/search?query=${encodeURIComponent(term)}`);
+      setLoan(res.data?.data || null);
+      setPayments(res.data?.data?.recentPayments || []);
     } catch (err) {
-      setError(err.response?.data?.message || 'Loan not found');
-      setLoanData(null);
+      setError(err.response?.data?.message || 'Loan details load nahi ho paayi.');
     } finally {
       setLoading(false);
     }
   };
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR'
-    }).format(amount || 0);
+  const handleSearch = async (event) => {
+    event.preventDefault();
+    await searchLoan(query.trim());
   };
 
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString('en-IN');
+  const handleRefresh = async () => {
+    await searchLoan(loan?.loanAccountNumber || query.trim());
   };
 
-  const getStatusColor = (status) => {
-    const colors = {
-      'PENDING': { backgroundColor: '#fef3c7', color: '#92400e' },
-      'APPROVED': { backgroundColor: '#dbeafe', color: '#1e40af' },
-      'REJECTED': { backgroundColor: '#fee2e2', color: '#dc2626' },
-      'DISBURSED': { backgroundColor: '#dcfce7', color: '#166534' },
-      'CLOSED': { backgroundColor: '#f3f4f6', color: '#374151' },
-      'PAID': { backgroundColor: '#dcfce7', color: '#166534' },
-      'OVERDUE': { backgroundColor: '#fee2e2', color: '#dc2626' }
-    };
-    return colors[status] || { backgroundColor: '#f3f4f6', color: '#374151' };
+  const fetchPayments = async () => {
+    if (!loan?._id) return;
+    try {
+      setPaymentsLoading(true);
+      const res = await api.get(`/admin/track-loan/${loan._id}/payments`);
+      setPayments(res.data?.data || []);
+      setShowPayments(true);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Payment history load nahi ho paayi.');
+    } finally {
+      setPaymentsLoading(false);
+    }
+  };
+
+  const exportSchedule = () => {
+    downloadCsv(
+      schedule.map((item) => {
+        const status = getInstallmentStatus(item);
+        return {
+          installment: item.installmentNo,
+          dueDate: formatDate(item.dueDate),
+          principal: item.principal || 0,
+          interest: item.interest || 0,
+          total: item.total || 0,
+          status: status.label,
+          paidAt: formatDate(item.paidAt)
+        };
+      }),
+      `${loan?.loanAccountNumber || 'loan'}-emi-schedule.csv`
+    );
+  };
+
+  const exportPayments = () => {
+    downloadCsv(
+      paymentRows.map((item) => ({
+        date: formatDate(item.createdAt),
+        installment: item.installmentNo || item.metadata?.installmentNo || '',
+        amount: item.amount || 0,
+        status: item.status || '',
+        method: item.method || '',
+        type: item.type || '',
+        reference: item.reference || item.gateway?.paymentId || item.gateway?.orderId || ''
+      })),
+      `${loan?.loanAccountNumber || 'loan'}-payment-history.csv`
+    );
   };
 
   return (
-    <div style={{
-      padding: '24px',
-      backgroundColor: '#f8fafc',
-      minHeight: '100vh',
-      fontFamily: 'system-ui, -apple-system, sans-serif'
-    }}>
-      <div style={{ marginBottom: '32px' }}>
-        <h1 style={{
-          fontSize: '28px',
-          fontWeight: 'bold',
-          color: '#1f2937',
-          marginBottom: '8px'
-        }}>Track Loan</h1>
-        <p style={{
-          color: '#6b7280',
-          fontSize: '16px'
-        }}>Search and monitor loan details by account number or email</p>
+    <div className="track-page">
+      <div className="track-header">
+        <div>
+          <div className="track-eyebrow">Loan Operations</div>
+          <h1>Track Loan</h1>
+          <p>Loan account, borrower profile, EMI schedule, overdue amount aur payment history ek jagah.</p>
+        </div>
+        <Button variant="light" className="track-refresh" onClick={handleRefresh} disabled={loading || !loan}>
+          <RefreshCw size={16} /> Refresh
+        </Button>
       </div>
 
-      {/* Search Form */}
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '12px',
-        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-        padding: '24px',
-        marginBottom: '24px'
-      }}>
-        <form onSubmit={handleSearch} style={{ display: 'flex', gap: '16px' }}>
-          <div style={{ flex: 1 }}>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Enter loan account number or user email"
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                border: '1px solid #d1d5db',
-                borderRadius: '8px',
-                fontSize: '16px',
-                outline: 'none',
-                transition: 'border-color 0.2s, box-shadow 0.2s'
-              }}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#3b82f6';
-                e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
-              required
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: loading ? '#9ca3af' : '#2563eb',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              fontSize: '16px',
-              fontWeight: '500',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              transition: 'background-color 0.2s'
-            }}
-            onMouseOver={(e) => {
-              if (!loading) e.target.style.backgroundColor = '#1d4ed8';
-            }}
-            onMouseOut={(e) => {
-              if (!loading) e.target.style.backgroundColor = '#2563eb';
-            }}
-          >
-            {loading ? (
-              <>
-                <div style={{
-                  width: '16px',
-                  height: '16px',
-                  border: '2px solid #ffffff',
-                  borderTop: '2px solid transparent',
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite'
-                }}></div>
-                Searching...
-              </>
-            ) : (
-              <>
-                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                Search
-              </>
-            )}
-          </button>
-        </form>
-
-        {error && (
-          <div style={{
-            marginTop: '16px',
-            padding: '16px',
-            backgroundColor: '#fef2f2',
-            border: '1px solid #fecaca',
-            borderRadius: '8px',
-            display: 'flex',
-            alignItems: 'center'
-          }}>
-            <svg width="20" height="20" fill="none" stroke="#dc2626" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span style={{
-              marginLeft: '8px',
-              color: '#dc2626',
-              fontSize: '14px'
-            }}>{error}</span>
-          </div>
-        )}
+      <div className="track-search-panel">
+        <Form onSubmit={handleSearch}>
+          <Row className="g-3 align-items-end">
+            <Col lg={9}>
+              <Form.Label>Search loan</Form.Label>
+              <InputGroup>
+                <InputGroup.Text><Search size={18} /></InputGroup.Text>
+                <Form.Control
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Loan account, loan ID, email, mobile, ya customer name"
+                  disabled={loading}
+                />
+              </InputGroup>
+            </Col>
+            <Col lg={3}>
+              <Button type="submit" className="w-100 track-primary-btn" disabled={loading}>
+                {loading ? <span className="spinner-border spinner-border-sm" /> : <Search size={17} />}
+                {loading ? 'Searching...' : 'Search Loan'}
+              </Button>
+            </Col>
+          </Row>
+        </Form>
       </div>
 
-      {/* Loan Details */}
-      {loanData && (
-        <div style={{
-          backgroundColor: 'white',
-          borderRadius: '12px',
-          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-          overflow: 'hidden'
-        }}>
-          {/* Header */}
-          <div style={{
-            borderBottom: '1px solid #e5e7eb',
-            padding: '24px'
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'flex-start'
-            }}>
-              <div>
-                <h2 style={{
-                  fontSize: '20px',
-                  fontWeight: '600',
-                  color: '#1f2937'
-                }}>
-                  Loan Account: {loanData.loanAccountNumber}
-                </h2>
-                <p style={{
-                  color: '#6b7280',
-                  marginTop: '4px',
-                  fontSize: '14px'
-                }}>
-                  {loanData.user?.name || 'N/A'} • {loanData.user?.email || 'N/A'}
-                </p>
-              </div>
-              <span style={{
-                padding: '4px 12px',
-                borderRadius: '9999px',
-                fontSize: '12px',
-                fontWeight: '500',
-                ...getStatusColor(loanData.status)
-              }}>
-                {loanData.status}
-              </span>
-            </div>
-          </div>
+      {error && (
+        <Alert variant="danger" className="track-alert" dismissible onClose={() => setError('')}>
+          <AlertTriangle size={18} /> {error}
+        </Alert>
+      )}
 
-          {/* Tabs */}
-          <div style={{ borderBottom: '1px solid #e5e7eb' }}>
-            <nav style={{ display: 'flex' }}>
-              {['overview', 'schedule', 'payments', 'overdue'].map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  style={{
-                    padding: '12px 24px',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    borderBottom: activeTab === tab ? '2px solid #3b82f6' : '2px solid transparent',
-                    color: activeTab === tab ? '#2563eb' : '#6b7280',
-                    backgroundColor: 'transparent',
-                    border: 'none',
-                    cursor: 'pointer',
-                    transition: 'color 0.2s'
-                  }}
-                  onMouseOver={(e) => {
-                    if (activeTab !== tab) e.target.style.color = '#374151';
-                  }}
-                  onMouseOut={(e) => {
-                    if (activeTab !== tab) e.target.style.color = '#6b7280';
-                  }}
-                >
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Tab Content */}
-          <div style={{ padding: '24px' }}>
-            {activeTab === 'overview' && (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-                gap: '24px'
-              }}>
-                {/* Loan Summary Cards */}
-                <div style={{
-                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                  color: 'white',
-                  padding: '20px',
-                  borderRadius: '12px'
-                }}>
-                  <h3 style={{
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    opacity: 0.9,
-                    marginBottom: '8px'
-                  }}>Total Amount</h3>
-                  <p style={{
-                    fontSize: '24px',
-                    fontWeight: 'bold'
-                  }}>{formatCurrency(loanData.totals?.total)}</p>
-                </div>
-
-                <div style={{
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                  color: 'white',
-                  padding: '20px',
-                  borderRadius: '12px'
-                }}>
-                  <h3 style={{
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    opacity: 0.9,
-                    marginBottom: '8px'
-                  }}>Paid Amount</h3>
-                  <p style={{
-                    fontSize: '24px',
-                    fontWeight: 'bold'
-                  }}>{formatCurrency(loanData.paid?.total)}</p>
-                </div>
-
-                <div style={{
-                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                  color: 'white',
-                  padding: '20px',
-                  borderRadius: '12px'
-                }}>
-                  <h3 style={{
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    opacity: 0.9,
-                    marginBottom: '8px'
-                  }}>Outstanding</h3>
-                  <p style={{
-                    fontSize: '24px',
-                    fontWeight: 'bold'
-                  }}>{formatCurrency(loanData.outstanding?.total)}</p>
-                </div>
-
-                <div style={{
-                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
-                  color: 'white',
-                  padding: '20px',
-                  borderRadius: '12px'
-                }}>
-                  <h3 style={{
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    opacity: 0.9,
-                    marginBottom: '8px'
-                  }}>Overdue Amount</h3>
-                  <p style={{
-                    fontSize: '24px',
-                    fontWeight: 'bold'
-                  }}>{formatCurrency(loanData.overdue?.amount)}</p>
-                </div>
-
-                {/* Next Payment Due */}
-                {loanData.nextDue && (
-                  <div style={{
-                    gridColumn: 'span 2',
-                    backgroundColor: '#fefce8',
-                    border: '1px solid #fde047',
-                    padding: '20px',
-                    borderRadius: '12px'
-                  }}>
-                    <h3 style={{
-                      fontSize: '14px',
-                      fontWeight: '500',
-                      color: '#92400e',
-                      marginBottom: '8px'
-                    }}>Next Payment Due</h3>
-                    <p style={{
-                      fontSize: '18px',
-                      fontWeight: '600',
-                      color: '#78350f'
-                    }}>
-                      {formatCurrency(loanData.nextDue.total)} on {formatDate(loanData.nextDue.dueDate)}
-                    </p>
-                  </div>
-                )}
-
-                {/* Pay Now Button */}
-                <div style={{
-                  gridColumn: 'span 2',
-                  display: 'flex',
-                  justifyContent: 'flex-end'
-                }}>
-                  <button style={{
-                    padding: '12px 24px',
-                    backgroundColor: '#16a34a',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    fontSize: '16px',
-                    fontWeight: '500',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    transition: 'background-color 0.2s'
-                  }}
-                  onMouseOver={(e) => e.target.style.backgroundColor = '#15803d'}
-                  onMouseOut={(e) => e.target.style.backgroundColor = '#16a34a'}
-                  >
-                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" />
-                    </svg>
-                    Pay Now
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'schedule' && (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{
-                  minWidth: '100%',
-                  borderCollapse: 'collapse'
-                }}>
-                  <thead style={{ backgroundColor: '#f9fafb' }}>
-                    <tr>
-                      <th style={{
-                        padding: '12px 24px',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontWeight: '500',
-                        color: '#6b7280',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderBottom: '1px solid #e5e7eb'
-                      }}>Installment</th>
-                      <th style={{
-                        padding: '12px 24px',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontWeight: '500',
-                        color: '#6b7280',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderBottom: '1px solid #e5e7eb'
-                      }}>Due Date</th>
-                      <th style={{
-                        padding: '12px 24px',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontWeight: '500',
-                        color: '#6b7280',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderBottom: '1px solid #e5e7eb'
-                      }}>Amount</th>
-                      <th style={{
-                        padding: '12px 24px',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontWeight: '500',
-                        color: '#6b7280',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderBottom: '1px solid #e5e7eb'
-                      }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody style={{ backgroundColor: 'white' }}>
-                    {loanData.schedule.map((installment, index) => (
-                      <tr key={index} style={{
-                        backgroundColor: installment.paid ? '#f0fdf4' : new Date(installment.dueDate) < new Date() ? '#fef2f2' : 'white'
-                      }}>
-                        <td style={{
-                          padding: '16px 24px',
-                          whiteSpace: 'nowrap',
-                          fontSize: '14px',
-                          fontWeight: '500',
-                          color: '#111827',
-                          borderBottom: '1px solid #e5e7eb'
-                        }}>{installment.installmentNo}</td>
-                        <td style={{
-                          padding: '16px 24px',
-                          whiteSpace: 'nowrap',
-                          fontSize: '14px',
-                          color: '#6b7280',
-                          borderBottom: '1px solid #e5e7eb'
-                        }}>{formatDate(installment.dueDate)}</td>
-                        <td style={{
-                          padding: '16px 24px',
-                          whiteSpace: 'nowrap',
-                          fontSize: '14px',
-                          color: '#111827',
-                          borderBottom: '1px solid #e5e7eb'
-                        }}>{formatCurrency(installment.total)}</td>
-                        <td style={{
-                          padding: '16px 24px',
-                          whiteSpace: 'nowrap',
-                          borderBottom: '1px solid #e5e7eb'
-                        }}>
-                          <span style={{
-                            padding: '4px 8px',
-                            fontSize: '12px',
-                            fontWeight: '500',
-                            borderRadius: '9999px',
-                            ...getStatusColor(installment.paid ? 'PAID' : new Date(installment.dueDate) < new Date() ? 'OVERDUE' : 'PENDING')
-                          }}>
-                            {installment.paid ? 'Paid' : new Date(installment.dueDate) < new Date() ? 'Overdue' : 'Pending'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {activeTab === 'payments' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 style={{
-                  fontSize: '18px',
-                  fontWeight: '500',
-                  color: '#111827'
-                }}>Payment History</h3>
-                {loanData.recentPayments.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {loanData.recentPayments.map((payment, index) => (
-                      <div key={index} style={{
-                        backgroundColor: '#f9fafb',
-                        padding: '16px',
-                        borderRadius: '8px'
-                      }}>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'flex-start'
-                        }}>
-                          <div>
-                            <p style={{
-                              fontWeight: '500',
-                              color: '#111827'
-                            }}>
-                              {formatCurrency(payment.amount)}
-                            </p>
-                            <p style={{
-                              fontSize: '14px',
-                              color: '#6b7280',
-                              marginTop: '4px'
-                            }}>
-                              {formatDate(payment.createdAt)}
-                            </p>
-                          </div>
-                          <span style={{
-                            padding: '4px 8px',
-                            fontSize: '12px',
-                            fontWeight: '500',
-                            backgroundColor: '#dcfce7',
-                            color: '#166534',
-                            borderRadius: '9999px'
-                          }}>
-                            {payment.status}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p style={{ color: '#6b7280' }}>No payments found</p>
-                )}
-              </div>
-            )}
-
-            {activeTab === 'overdue' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 style={{
-                  fontSize: '18px',
-                  fontWeight: '500',
-                  color: '#111827'
-                }}>Overdue Installments</h3>
-                {loanData.overdue.installments.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {loanData.overdue.installments.map((installment, index) => (
-                      <div key={index} style={{
-                        backgroundColor: '#fef2f2',
-                        border: '1px solid #fecaca',
-                        padding: '16px',
-                        borderRadius: '8px'
-                      }}>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'flex-start'
-                        }}>
-                          <div>
-                            <p style={{
-                              fontWeight: '500',
-                              color: '#dc2626'
-                            }}>
-                              Installment #{installment.installmentNo}
-                            </p>
-                            <p style={{
-                              fontSize: '14px',
-                              color: '#dc2626',
-                              marginTop: '4px'
-                            }}>
-                              Due: {formatDate(installment.dueDate)}
-                            </p>
-                          </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <p style={{
-                              fontWeight: '500',
-                              color: '#dc2626'
-                            }}>
-                              {formatCurrency(installment.total)}
-                            </p>
-                            <p style={{
-                              fontSize: '14px',
-                              color: '#dc2626',
-                              marginTop: '4px'
-                            }}>
-                              {Math.ceil((new Date() - new Date(installment.dueDate)) / (1000 * 60 * 60 * 24))} days overdue
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    <div style={{
-                      backgroundColor: '#fef2f2',
-                      border: '1px solid #fca5a5',
-                      padding: '16px',
-                      borderRadius: '8px'
-                    }}>
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}>
-                        <span style={{
-                          fontWeight: '500',
-                          color: '#dc2626'
-                        }}>Total Overdue Amount:</span>
-                        <span style={{
-                          fontSize: '20px',
-                          fontWeight: 'bold',
-                          color: '#dc2626'
-                        }}>
-                          {formatCurrency(loanData.overdue?.amount)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{
-                    backgroundColor: '#f0fdf4',
-                    border: '1px solid #bbf7d0',
-                    padding: '16px',
-                    borderRadius: '8px'
-                  }}>
-                    <p style={{ color: '#166534' }}>No overdue installments</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+      {!loan && !loading && (
+        <div className="track-empty">
+          <Search size={44} />
+          <h3>Start with a loan search</h3>
+          <p>Loan account number, borrower email, mobile number, name, ya loan ID se exact details fetch kar sakte hain.</p>
         </div>
       )}
 
-      <style jsx>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
+      {loan && (
+        <>
+          <Row className="g-3">
+            <Col xl={3} md={6}>
+              <StatTile icon={Banknote} label="Approved Amount" value={formatCurrency(loan.decision?.amountApproved || loan.application?.amountRequested)} tone="blue" subtext={`${loan.decision?.rateAPR || 0}% APR`} />
+            </Col>
+            <Col xl={3} md={6}>
+              <StatTile icon={WalletCards} label="Paid Amount" value={formatCurrency(loan.paid?.total)} tone="green" subtext={`${summary.paid}/${schedule.length} EMI paid`} />
+            </Col>
+            <Col xl={3} md={6}>
+              <StatTile icon={CreditCard} label="Outstanding" value={formatCurrency(loan.outstanding?.total)} tone="amber" subtext={`${summary.progress}% recovered`} />
+            </Col>
+            <Col xl={3} md={6}>
+              <StatTile icon={ShieldAlert} label="Overdue" value={formatCurrency(loan.overdue?.amount)} tone={summary.overdue ? 'red' : 'green'} subtext={`${summary.overdue} overdue EMI`} />
+            </Col>
+          </Row>
+
+          <Row className="g-3 mt-1">
+            <Col xl={7}>
+              <div className="track-card">
+                <div className="track-card-head">
+                  <div>
+                    <h2>{loan.loanAccountNumber || 'Loan Account'}</h2>
+                    <p>{loan.user?.name || loan.application?.personal?.name || 'Customer'} - {loan.user?.mobile || loan.application?.personal?.mobile || 'No mobile'}</p>
+                  </div>
+                  <StatusBadge status={loan.status} />
+                </div>
+
+                <div className="track-progress-block">
+                  <div className="d-flex justify-content-between">
+                    <span>Repayment Progress</span>
+                    <strong>{summary.progress}%</strong>
+                  </div>
+                  <ProgressBar now={summary.progress} variant={summary.overdue ? 'danger' : 'success'} />
+                </div>
+
+                <div className="track-info-grid">
+                  <div><span>Customer Email</span><strong>{loan.user?.email || loan.application?.personal?.email || 'N/A'}</strong></div>
+                  <div><span>Loan Status</span><strong><StatusBadge status={loan.status} /></strong></div>
+                  <div><span>Tenure</span><strong>{loan.decision?.tenureMonths || loan.application?.tenureMonths || 0} months</strong></div>
+                  <div><span>Disbursed On</span><strong>{formatDate(loan.disbursementDate)}</strong></div>
+                  <div><span>Purpose</span><strong>{loan.application?.purpose || 'N/A'}</strong></div>
+                  <div><span>Applied On</span><strong>{formatDate(loan.createdAt)}</strong></div>
+                </div>
+              </div>
+            </Col>
+
+            <Col xl={5}>
+              <div className="track-card h-100">
+                <div className="track-card-head">
+                  <div>
+                    <h2>Next Due</h2>
+                    <p>Upcoming EMI and risk status</p>
+                  </div>
+                  <CalendarClock size={24} />
+                </div>
+
+                {loan.nextDue ? (
+                  <div className="track-nextdue">
+                    <div>
+                      <span>EMI #{loan.nextDue.installmentNo}</span>
+                      <strong>{formatCurrency(loan.nextDue.total)}</strong>
+                    </div>
+                    <div>
+                      <span>Due Date</span>
+                      <strong>{formatDate(loan.nextDue.dueDate)}</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="track-complete">
+                    <CheckCircle2 size={36} />
+                    <strong>No upcoming EMI</strong>
+                    <span>Loan may be closed or schedule is not generated yet.</span>
+                  </div>
+                )}
+
+                <div className="track-mini-stats">
+                  <span><CheckCircle2 size={15} /> Paid: {summary.paid}</span>
+                  <span><Clock3 size={15} /> Pending: {summary.pending}</span>
+                  <span><XCircle size={15} /> Overdue: {summary.overdue}</span>
+                </div>
+              </div>
+            </Col>
+          </Row>
+
+          <Row className="g-3 mt-1">
+            <Col xl={4}>
+              <div className="track-card h-100">
+                <div className="track-card-head compact">
+                  <h2><UserRound size={20} /> Borrower Details</h2>
+                </div>
+                <div className="track-detail-list">
+                  <div><span>Name</span><strong>{loan.application?.personal?.name || loan.user?.name || 'N/A'}</strong></div>
+                  <div><span>Father</span><strong>{loan.application?.personal?.fatherName || 'N/A'}</strong></div>
+                  <div><span>Address</span><strong>{loan.application?.personal?.address || 'N/A'}</strong></div>
+                  <div><span>Income</span><strong>{formatCurrency(loan.application?.employment?.monthlyIncome)}</strong></div>
+                  <div><span>Employment</span><strong>{loan.application?.employment?.employmentType || 'N/A'}</strong></div>
+                </div>
+              </div>
+            </Col>
+            <Col xl={4}>
+              <div className="track-card h-100">
+                <div className="track-card-head compact">
+                  <h2><CreditCard size={20} /> Bank Details</h2>
+                </div>
+                <div className="track-detail-list">
+                  <div><span>Bank</span><strong>{loan.application?.bankDetails?.bankName || 'N/A'}</strong></div>
+                  <div><span>Account Holder</span><strong>{loan.application?.bankDetails?.accountHolderName || 'N/A'}</strong></div>
+                  <div><span>Account No.</span><strong>{loan.application?.bankDetails?.accountNumber || 'N/A'}</strong></div>
+                  <div><span>IFSC</span><strong>{loan.application?.bankDetails?.ifscCode || 'N/A'}</strong></div>
+                </div>
+              </div>
+            </Col>
+            <Col xl={4}>
+              <div className="track-card h-100">
+                <div className="track-card-head compact">
+                  <h2><FileSpreadsheet size={20} /> Quick Actions</h2>
+                </div>
+                <div className="track-actions">
+                  <Button variant="outline-primary" onClick={() => setShowSchedule(true)} disabled={!schedule.length}>
+                    <Eye size={16} /> View EMI Schedule
+                  </Button>
+                  <Button variant="outline-success" onClick={fetchPayments} disabled={paymentsLoading}>
+                    <WalletCards size={16} /> {paymentsLoading ? 'Loading...' : 'Payment History'}
+                  </Button>
+                  <Button variant="outline-secondary" onClick={exportSchedule} disabled={!schedule.length}>
+                    <Download size={16} /> Export Schedule
+                  </Button>
+                  <Button variant="outline-secondary" onClick={exportPayments} disabled={!paymentRows.length}>
+                    <Download size={16} /> Export Payments
+                  </Button>
+                </div>
+              </div>
+            </Col>
+          </Row>
+
+          <div className="track-card mt-3">
+            <div className="track-card-head">
+              <div>
+                <h2>EMI Schedule</h2>
+                <p>Latest installment status and due dates</p>
+              </div>
+              <Button size="sm" variant="outline-primary" onClick={() => setShowSchedule(true)} disabled={!schedule.length}>
+                <Eye size={15} /> Full View
+              </Button>
+            </div>
+            <div className="table-responsive">
+              <Table hover className="track-table mb-0">
+                <thead>
+                  <tr>
+                    <th>EMI</th>
+                    <th>Due Date</th>
+                    <th>Principal</th>
+                    <th>Interest</th>
+                    <th>Total</th>
+                    <th>Status</th>
+                    <th>Paid On</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {schedule.slice(0, 8).map((item) => {
+                    const status = getInstallmentStatus(item);
+                    const Icon = status.icon;
+                    return (
+                      <tr key={item.installmentNo}>
+                        <td>#{item.installmentNo}</td>
+                        <td>{formatDate(item.dueDate)}</td>
+                        <td>{formatCurrency(item.principal)}</td>
+                        <td>{formatCurrency(item.interest)}</td>
+                        <td><strong>{formatCurrency(item.total)}</strong></td>
+                        <td><Badge bg={status.bg}><Icon size={13} /> {status.label}</Badge></td>
+                        <td>{formatDate(item.paidAt)}</td>
+                      </tr>
+                    );
+                  })}
+                  {!schedule.length && (
+                    <tr><td colSpan="7" className="text-center text-muted py-4">EMI schedule abhi generate nahi hua.</td></tr>
+                  )}
+                </tbody>
+              </Table>
+            </div>
+          </div>
+
+          <div className="track-card mt-3">
+            <div className="track-card-head">
+              <div>
+                <h2>Recent Payments</h2>
+                <p>Confirmed, pending, and failed repayment activity</p>
+              </div>
+              <Button size="sm" variant="outline-success" onClick={fetchPayments}>
+                <WalletCards size={15} /> View All
+              </Button>
+            </div>
+            <div className="table-responsive">
+              <Table hover className="track-table mb-0">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Installment</th>
+                    <th>Method</th>
+                    <th>Reference</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paymentRows.slice(0, 6).map((item) => (
+                    <tr key={item._id}>
+                      <td>{formatDate(item.createdAt)}</td>
+                      <td><strong>{formatCurrency(item.amount)}</strong></td>
+                      <td>{item.installmentNo || item.metadata?.installmentNo || '-'}</td>
+                      <td>{item.method || '-'}</td>
+                      <td className="track-ref">{item.reference || item.gateway?.paymentId || item.gateway?.orderId || '-'}</td>
+                      <td><StatusBadge status={item.status} /></td>
+                    </tr>
+                  ))}
+                  {!paymentRows.length && (
+                    <tr><td colSpan="6" className="text-center text-muted py-4">Payment history available nahi hai.</td></tr>
+                  )}
+                </tbody>
+              </Table>
+            </div>
+          </div>
+        </>
+      )}
+
+      <Modal show={showSchedule} onHide={() => setShowSchedule(false)} size="xl" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>EMI Schedule - {loan?.loanAccountNumber}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="table-responsive">
+            <Table hover className="track-table">
+              <thead>
+                <tr>
+                  <th>EMI</th>
+                  <th>Due Date</th>
+                  <th>Principal</th>
+                  <th>Interest</th>
+                  <th>Total</th>
+                  <th>Status</th>
+                  <th>Paid On</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedule.map((item) => {
+                  const status = getInstallmentStatus(item);
+                  const Icon = status.icon;
+                  return (
+                    <tr key={item.installmentNo}>
+                      <td>#{item.installmentNo}</td>
+                      <td>{formatDate(item.dueDate)}</td>
+                      <td>{formatCurrency(item.principal)}</td>
+                      <td>{formatCurrency(item.interest)}</td>
+                      <td><strong>{formatCurrency(item.total)}</strong></td>
+                      <td><Badge bg={status.bg}><Icon size={13} /> {status.label}</Badge></td>
+                      <td>{formatDate(item.paidAt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </Table>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="outline-secondary" onClick={exportSchedule} disabled={!schedule.length}>
+            <Download size={16} /> Export CSV
+          </Button>
+          <Button variant="secondary" onClick={() => setShowSchedule(false)}>Close</Button>
+        </Modal.Footer>
+      </Modal>
+
+      <Modal show={showPayments} onHide={() => setShowPayments(false)} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Payment History - {loan?.loanAccountNumber}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="table-responsive">
+            <Table hover className="track-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Amount</th>
+                  <th>Type</th>
+                  <th>Method</th>
+                  <th>Status</th>
+                  <th>Reference</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paymentRows.map((item) => (
+                  <tr key={item._id}>
+                    <td>{formatDate(item.createdAt)}</td>
+                    <td><strong>{formatCurrency(item.amount)}</strong></td>
+                    <td>{item.type || '-'}</td>
+                    <td>{item.method || '-'}</td>
+                    <td><StatusBadge status={item.status} /></td>
+                    <td className="track-ref">{item.reference || item.gateway?.paymentId || item.gateway?.orderId || '-'}</td>
+                  </tr>
+                ))}
+                {!paymentRows.length && (
+                  <tr><td colSpan="6" className="text-center text-muted py-4">Payment history available nahi hai.</td></tr>
+                )}
+              </tbody>
+            </Table>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="outline-secondary" onClick={exportPayments} disabled={!paymentRows.length}>
+            <Download size={16} /> Export CSV
+          </Button>
+          <Button variant="secondary" onClick={() => setShowPayments(false)}>Close</Button>
+        </Modal.Footer>
+      </Modal>
+
+      <style>{`
+        .track-page { color: #0f172a; }
+        .track-header { background: linear-gradient(135deg, #0f172a 0%, #155e75 52%, #047857 100%); border-radius: 18px; padding: 28px; color: #fff; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18); }
+        .track-header h1 { margin: 2px 0 8px; font-size: 30px; font-weight: 850; letter-spacing: 0; }
+        .track-header p { margin: 0; max-width: 780px; color: rgba(255,255,255,0.78); font-weight: 500; }
+        .track-eyebrow { font-size: 12px; text-transform: uppercase; font-weight: 800; color: #99f6e4; }
+        .track-refresh { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; white-space: nowrap; }
+        .track-search-panel, .track-card, .track-empty { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); }
+        .track-search-panel { padding: 18px; margin: 18px 0; }
+        .track-search-panel label { font-size: 13px; font-weight: 800; color: #334155; }
+        .track-primary-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 800; background: #0f766e; border-color: #0f766e; }
+        .track-alert { display: flex; align-items: center; gap: 8px; }
+        .track-empty { text-align: center; padding: 54px 20px; color: #64748b; }
+        .track-empty svg { color: #0f766e; margin-bottom: 12px; }
+        .track-empty h3 { color: #0f172a; font-size: 22px; font-weight: 850; }
+        .track-stat { min-height: 112px; border-radius: 14px; padding: 18px; display: flex; gap: 14px; align-items: flex-start; border: 1px solid #e2e8f0; background: #fff; box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06); }
+        .track-stat-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; flex-shrink: 0; }
+        .track-stat-blue .track-stat-icon { background: #2563eb; }
+        .track-stat-green .track-stat-icon { background: #059669; }
+        .track-stat-amber .track-stat-icon { background: #d97706; }
+        .track-stat-red .track-stat-icon { background: #dc2626; }
+        .track-stat-label { font-size: 12px; color: #64748b; font-weight: 800; text-transform: uppercase; }
+        .track-stat-value { font-size: 20px; font-weight: 850; margin-top: 2px; color: #0f172a; }
+        .track-stat-subtext { font-size: 12px; color: #64748b; margin-top: 3px; font-weight: 700; }
+        .track-card { padding: 20px; }
+        .track-card-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 18px; }
+        .track-card-head.compact { margin-bottom: 12px; }
+        .track-card-head h2 { margin: 0; font-size: 19px; font-weight: 850; display: flex; align-items: center; gap: 8px; }
+        .track-card-head p { margin: 4px 0 0; color: #64748b; font-weight: 600; }
+        .track-progress-block { padding: 15px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 16px; font-size: 13px; font-weight: 800; color: #334155; }
+        .track-progress-block .progress { height: 10px; margin-top: 10px; }
+        .track-info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .track-info-grid div, .track-detail-list div { padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; min-width: 0; }
+        .track-info-grid span, .track-detail-list span, .track-nextdue span { display: block; font-size: 12px; color: #64748b; font-weight: 800; text-transform: uppercase; }
+        .track-info-grid strong, .track-detail-list strong { display: block; margin-top: 4px; color: #0f172a; overflow-wrap: anywhere; }
+        .track-nextdue { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .track-nextdue div { padding: 18px; border-radius: 12px; background: #ecfeff; border: 1px solid #a5f3fc; }
+        .track-nextdue strong { display: block; margin-top: 8px; font-size: 20px; }
+        .track-complete { min-height: 132px; display: grid; place-items: center; text-align: center; color: #64748b; }
+        .track-complete svg { color: #059669; }
+        .track-complete strong { color: #0f172a; }
+        .track-mini-stats { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+        .track-mini-stats span { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 12px; font-weight: 800; color: #334155; }
+        .track-detail-list { display: grid; gap: 10px; }
+        .track-actions { display: grid; gap: 10px; }
+        .track-actions .btn, .track-card-head .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 800; }
+        .track-table thead th { background: #f8fafc; color: #475569; font-size: 12px; text-transform: uppercase; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+        .track-table td { vertical-align: middle; color: #334155; font-weight: 600; }
+        .track-table .badge { display: inline-flex; align-items: center; gap: 5px; }
+        .track-ref { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @media (max-width: 768px) {
+          .track-header { flex-direction: column; padding: 22px; }
+          .track-header h1 { font-size: 25px; }
+          .track-info-grid, .track-nextdue { grid-template-columns: 1fr; }
+          .track-card { padding: 16px; }
         }
       `}</style>
     </div>

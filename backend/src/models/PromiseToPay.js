@@ -34,7 +34,7 @@ const promiseToPaySchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['PENDING', 'KEPT', 'BROKEN', 'EXTENDED'],
+    enum: ['PENDING', 'KEPT', 'BROKEN', 'EXTENDED', 'PARTIAL', 'CANCELLED'],
     default: 'PENDING'
   },
   contactMethod: {

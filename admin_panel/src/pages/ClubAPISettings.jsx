@@ -8,6 +8,8 @@ const ClubAPISettings = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [balance, setBalance] = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -64,7 +66,25 @@ const ClubAPISettings = () => {
 
   useEffect(() => {
     fetchSettings();
+    fetchBalance();
   }, []);
+
+  const fetchBalance = async () => {
+    try {
+      setBalanceLoading(true);
+      const response = await axios.get('/admin/clubapi/balance');
+      setBalance(response.data?.data || response.data);
+    } catch (err) {
+      setBalance({
+        status: 'FAILED',
+        message: err.response?.data?.message || err.message || 'Balance load failed',
+        balance: null,
+        balanceText: 'N/A'
+      });
+    } finally {
+      setBalanceLoading(false);
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -145,6 +165,7 @@ const ClubAPISettings = () => {
       setSuccess(null);
       const response = await axios.post('/admin/clubapi/settings/test');
       const data = response.data?.data || response.data;
+      await fetchBalance();
       const callbackOk = Number(data.callbackStatus) >= 200 && Number(data.callbackStatus) < 300;
       setSuccess(`Connection OK. Balance: ${data.balanceStatus || 'SUCCESS'}, Callback: ${callbackOk ? 'Live' : data.callbackStatus || 'Failed'}`);
     } catch (err) {
@@ -688,6 +709,43 @@ const ClubAPISettings = () => {
         </Col>
 
         <Col lg={4}>
+          <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', marginBottom: '35px', overflow: 'hidden' }}>
+            <Card.Header style={{ background: 'linear-gradient(135deg,#0f766e,#0ea5e9)', color: 'white', fontWeight: '700', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Live ClubAPI Balance</span>
+              <Button size="sm" variant="light" onClick={fetchBalance} disabled={balanceLoading}>
+                {balanceLoading ? <Spinner animation="border" size="sm" /> : 'Refresh'}
+              </Button>
+            </Card.Header>
+            <Card.Body>
+              <div style={{ fontSize: '34px', fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>
+                {balance?.balanceText || 'N/A'}
+              </div>
+              <div style={{ marginTop: '8px', color: '#64748b', fontWeight: 700 }}>
+                Status: <Badge bg={balance?.status === 'SUCCESS' ? 'success' : balance?.status === 'FAILED' ? 'danger' : 'info'}>{balance?.status || 'N/A'}</Badge>
+              </div>
+              <Table borderless size="sm" style={{ marginTop: '16px' }}>
+                <tbody>
+                  <tr><td>Buyer Total</td><td className="text-end"><strong>{balance?.buyer?.total !== undefined && balance?.buyer?.total !== null ? `Rs. ${Number(balance.buyer.total).toLocaleString('en-IN')}` : 'N/A'}</strong></td></tr>
+                  <tr><td>Buyer P2P</td><td className="text-end"><strong>{balance?.buyer?.p2p !== undefined && balance?.buyer?.p2p !== null ? `Rs. ${Number(balance.buyer.p2p).toLocaleString('en-IN')}` : 'N/A'}</strong></td></tr>
+                  <tr><td>Buyer P2A</td><td className="text-end"><strong>{balance?.buyer?.p2a !== undefined && balance?.buyer?.p2a !== null ? `Rs. ${Number(balance.buyer.p2a).toLocaleString('en-IN')}` : 'N/A'}</strong></td></tr>
+                  <tr><td>Points</td><td className="text-end"><strong>{balance?.points !== undefined && balance?.points !== null ? `Rs. ${Number(balance.points).toLocaleString('en-IN')}` : 'N/A'}</strong></td></tr>
+                  <tr><td>Token</td><td className="text-end"><strong>{balance?.tokenConfigured ? 'Configured' : 'Missing'}</strong></td></tr>
+                  <tr><td>Callback ID</td><td className="text-end"><strong>{formData.callbackId || 'Not saved'}</strong></td></tr>
+                  <tr><td>Last Checked</td><td className="text-end"><strong>{balance?.checkedAt ? new Date(balance.checkedAt).toLocaleString('en-IN') : 'N/A'}</strong></td></tr>
+                </tbody>
+              </Table>
+              {balance?.message && <Alert variant={balance?.status === 'FAILED' ? 'danger' : 'info'} className="mb-0">{balance.message}</Alert>}
+              {balance?.raw && (
+                <details style={{ marginTop: '12px' }}>
+                  <summary style={{ color: '#0f766e', cursor: 'pointer', fontWeight: 800 }}>Raw response</summary>
+                  <pre style={{ marginTop: '10px', background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '8px', maxHeight: '220px', overflow: 'auto', fontSize: '12px' }}>
+                    {JSON.stringify(balance.raw, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </Card.Body>
+          </Card>
+
           {/* Status Card */}
           <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)' }}>
             <Card.Header style={{ background: '#001f5c', color: 'white', fontWeight: '700' }}>

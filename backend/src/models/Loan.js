@@ -10,14 +10,22 @@ const docSchema = new mongoose.Schema({
   aadhaarFrontUrl: String,
   aadhaarBackUrl: String,
   panUrl: String,
-  selfieUrl: String
+  selfieUrl: String,
+  incomeProofUrl: String,
+  incomeProofType: String,
+  aadhaarEkyc: mongoose.Schema.Types.Mixed,
+  panVerification: mongoose.Schema.Types.Mixed
 }, { _id:false });
 
 const bankSchema = new mongoose.Schema({
   bankName: String,
   accountNumber: String,
   ifscCode: String,
-  accountHolderName: String
+  accountHolderName: String,
+  upiId: String,
+  upiAccountName: String,
+  bankValidation: mongoose.Schema.Types.Mixed,
+  upiValidation: mongoose.Schema.Types.Mixed
 }, { _id:false });
 
 const applicationSchema = new mongoose.Schema({

@@ -1,346 +1,229 @@
-import { useState, useEffect } from 'react';
-import { Table, Card, Badge, Pagination, Row, Col, Modal, Button, Spinner } from 'react-bootstrap';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, Col, Form, InputGroup, Modal, Pagination, Row, Spinner, Table } from 'react-bootstrap';
+import { Bell, Download, Eye, RefreshCw, Search, Send, Users } from 'lucide-react';
 import api from '../api/axios';
 
-export default function NotificationHistory() {
+const unwrap = (res) => res?.data?.data || res?.data || {};
+const dateTime = (value) => (value ? new Date(value).toLocaleString('en-IN') : 'N/A');
+
+const typeLabels = { general: 'General', loan: 'Loan', payment: 'Payment', kyc: 'KYC', support: 'Support' };
+
+const NotificationHistory = () => {
   const [history, setHistory] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [filters, setFilters] = useState({ search: '', sentTo: '', type: '', priority: '' });
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState(null);
   const [showDetail, setShowDetail] = useState(false);
-  const [selectedNotif, setSelectedNotif] = useState(null);
+  const limit = 20;
 
-  useEffect(() => {
-    loadHistory();
-  }, [page]);
-
-  const loadHistory = async () => {
-    setLoading(true);
+  const load = async (page = pagination.page, filterValues = filters) => {
     try {
-      const res = await api.get(`/admin/notification-history?page=${page}`);
-      setHistory(res.data.data.history);
-      setTotalPages(res.data.data.pagination.pages);
-    } catch (e) {
-      console.error(e);
+      setLoading(true);
+      setError('');
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+      ['search', 'sentTo', 'type', 'priority'].forEach((key) => {
+        if (filterValues[key]) params.set(key, filterValues[key]);
+      });
+      const res = await api.get(`/admin/notification-history?${params.toString()}`);
+      const data = unwrap(res);
+      setHistory(Array.isArray(data.history) ? data.history : []);
+      setPagination(data.pagination || { page, pages: 1, total: 0 });
+    } catch (err) {
+      setHistory([]);
+      setPagination({ page: 1, pages: 1, total: 0 });
+      setError(err.response?.data?.message || err.message || 'Notification history load nahi ho paya');
     } finally {
       setLoading(false);
     }
   };
 
-  const formatDate = (date) => {
-    return new Date(date).toLocaleDateString('en-IN', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+  useEffect(() => {
+    load(1);
+  }, []);
+
+  const stats = useMemo(() => ({
+    total: pagination.total || history.length,
+    broadcasts: history.filter((item) => item.sentTo === 'all').length,
+    targeted: history.filter((item) => item.sentTo === 'user').length,
+    recipients: history.reduce((sum, item) => sum + Number(item.totalRecipients || 0), 0),
+    fcmSent: history.reduce((sum, item) => sum + Number(item.fcmSent || 0), 0)
+  }), [history, pagination.total]);
+
+  const exportCsv = () => {
+    const rows = [
+      ['Title', 'Message', 'Audience', 'Type', 'Priority', 'Recipients', 'FCM Sent', 'FCM Failed', 'User', 'Sent By', 'Sent At'],
+      ...history.map((item) => [
+        item.title,
+        item.message,
+        item.sentTo,
+        item.type,
+        item.priority,
+        item.totalRecipients,
+        item.fcmSent,
+        item.fcmFailed,
+        item.userId?.email || item.userId?.mobile || '',
+        item.sentBy?.email || item.sentBy?.name || '',
+        item.sentAt || item.createdAt
+      ])
+    ];
+    const blob = new Blob([rows.map((row) => row.map((cell) => `"${String(cell || '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'notification-history.csv';
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
-  const viewDetails = (notif) => {
-    setSelectedNotif(notif);
-    setShowDetail(true);
+  const resetFilters = () => {
+    const cleanFilters = { search: '', sentTo: '', type: '', priority: '' };
+    setFilters(cleanFilters);
+    load(1, cleanFilters);
   };
 
-  const getStatusBadge = (status) => {
-    const variants = {
-      'DELIVERED': 'success',
-      'PENDING': 'warning',
-      'FAILED': 'danger',
-      'SENT': 'info'
-    };
-    return <Badge bg={variants[status] || 'secondary'}>{status}</Badge>;
+  const audienceBadge = (sentTo) => (
+    <Badge bg={sentTo === 'all' ? 'primary' : 'info'}>{sentTo === 'all' ? 'All Users' : 'Specific User'}</Badge>
+  );
+
+  const priorityBadge = (priority) => {
+    const variants = { HIGH: 'danger', MEDIUM: 'warning', LOW: 'secondary' };
+    return <Badge bg={variants[priority] || 'secondary'}>{priority || 'MEDIUM'}</Badge>;
   };
-
-  const getRecipientBadge = (sentTo) => {
-    if (sentTo === 'all') {
-      return <Badge style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', border: 'none', padding: '8px 12px', borderRadius: '6px' }}>📢 All Users</Badge>;
-    }
-    return <Badge bg="secondary" style={{ padding: '8px 12px', borderRadius: '6px' }}>👤 Specific User</Badge>;
-  };
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
-        <Spinner animation="border" style={{ color: '#1abc9c' }} />
-      </div>
-    );
-  }
-
-  const paginationItems = [];
-  const maxPagesToShow = 5;
-  let startPage = Math.max(1, page - Math.floor(maxPagesToShow / 2));
-  let endPage = Math.min(totalPages, startPage + maxPagesToShow - 1);
-  if (endPage - startPage < maxPagesToShow - 1) {
-    startPage = Math.max(1, endPage - maxPagesToShow + 1);
-  }
-
-  if (startPage > 1) {
-    paginationItems.push(
-      <Pagination.First key="first" onClick={() => setPage(1)} disabled={page === 1} />
-    );
-    paginationItems.push(
-      <Pagination.Prev key="prev" onClick={() => setPage(page - 1)} disabled={page === 1} />
-    );
-  }
-
-  for (let i = startPage; i <= endPage; i++) {
-    paginationItems.push(
-      <Pagination.Item
-        key={i}
-        active={i === page}
-        onClick={() => setPage(i)}
-        style={{
-          background: i === page ? 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)' : 'white',
-          color: i === page ? 'white' : '#001f5c',
-          border: i === page ? 'none' : '1px solid #dee2e6',
-          borderRadius: '6px',
-          fontWeight: '600'
-        }}
-      >
-        {i}
-      </Pagination.Item>
-    );
-  }
-
-  if (endPage < totalPages) {
-    paginationItems.push(
-      <Pagination.Next key="next" onClick={() => setPage(page + 1)} disabled={page === totalPages} />
-    );
-    paginationItems.push(
-      <Pagination.Last key="last" onClick={() => setPage(totalPages)} disabled={page === totalPages} />
-    );
-  }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%)', padding: '40px 20px' }}>
-      
-      {/* Premium Header */}
-      <div style={{ 
-        background: 'linear-gradient(135deg, #001f5c 0%, #003d99 100%)',
-        borderRadius: '16px',
-        padding: '35px',
-        marginBottom: '35px',
-        boxShadow: '0 15px 50px rgba(0, 31, 92, 0.2)',
-        color: 'white'
-      }}>
-        <Row className="align-items-center">
-          <Col md={8}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-              <div style={{
-                width: '70px',
-                height: '70px',
-                background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)',
-                borderRadius: '14px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '40px',
-                fontWeight: 'bold',
-                boxShadow: '0 10px 30px rgba(26, 188, 156, 0.3)'
-              }}>
-                📋
-              </div>
-              <div>
-                <h2 style={{ margin: 0, fontWeight: '700', fontSize: '28px' }}>Notification History</h2>
-                <p style={{ margin: '8px 0 0 0', opacity: 0.9, fontSize: '14px' }}>KhatuPay - View All Sent Notifications</p>
-              </div>
-            </div>
-          </Col>
-          <Col md={4} className="text-end">
-            <div style={{ fontSize: '14px' }}>
-              <strong>Total Notifications</strong><br/>
-              <div style={{ fontSize: '28px', fontWeight: '700', marginTop: '8px' }}>{history.length}</div>
-            </div>
-          </Col>
-        </Row>
+    <div className="history-page">
+      <div className="history-head">
+        <div>
+          <p>Communication</p>
+          <h2><Bell size={28} /> Notification History</h2>
+          <span>Audit every push notification campaign, audience and delivery count.</span>
+        </div>
+        <div className="history-actions">
+          <Button variant="outline-secondary" onClick={() => load(pagination.page)}><RefreshCw size={16} /> Refresh</Button>
+          <Button variant="outline-success" onClick={exportCsv}><Download size={16} /> Export</Button>
+        </div>
       </div>
 
-      {/* History Card */}
-      <Card style={{
-        border: 'none',
-        borderRadius: '16px',
-        boxShadow: '0 15px 50px rgba(0, 31, 92, 0.1)',
-        overflow: 'hidden'
-      }}>
-        <Card.Body style={{ padding: '0' }}>
-          {history.length > 0 ? (
-            <>
-              <div style={{ overflowX: 'auto' }}>
-                <Table striped hover responsive style={{ marginBottom: '0' }}>
-                  <thead style={{ background: 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)', borderBottom: '2px solid #dee2e6' }}>
-                    <tr>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Title</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Message</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Sent To</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Recipients</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Status</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Sent By</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Date & Time</th>
-                      <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((item) => (
-                      <tr key={item._id} style={{ borderBottom: '1px solid #dee2e6', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f8f9fa'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}>
-                        <td style={{ padding: '16px', fontWeight: '700', color: '#001f5c' }}>
-                          {item.title}
-                        </td>
-                        <td style={{ padding: '16px', color: '#495057', maxWidth: '250px', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden' }}>
-                          {item.message}
-                        </td>
-                        <td style={{ padding: '16px' }}>
-                          {getRecipientBadge(item.sentTo === 'all' ? 'all' : 'specific')}
-                          {item.sentTo !== 'all' && item.userId && (
-                            <div style={{ fontSize: '12px', color: '#6c757d', marginTop: '4px' }}>
-                              <small>{item.userId?.name || 'Unknown'}</small>
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ padding: '16px', fontWeight: '700', color: '#1abc9c' }}>
-                          {item.totalRecipients}
-                        </td>
-                        <td style={{ padding: '16px' }}>
-                          {getStatusBadge(item.status || 'SENT')}
-                        </td>
-                        <td style={{ padding: '16px', color: '#495057' }}>
-                          <strong>{item.sentBy?.name || 'Unknown'}</strong>
-                        </td>
-                        <td style={{ padding: '16px', color: '#495057', fontSize: '13px' }}>
-                          🕐 {formatDate(item.sentAt)}
-                        </td>
-                        <td style={{ padding: '16px' }}>
-                          <Button 
-                            size="sm" 
-                            variant="outline-primary" 
-                            onClick={() => viewDetails(item)}
-                            style={{ borderRadius: '6px', fontWeight: '600', fontSize: '12px' }}
-                          >
-                            👁️ View
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              </div>
+      {error && <Alert variant="warning" dismissible onClose={() => setError('')}>{error}</Alert>}
 
-              {/* Pagination */}
-              <div style={{ padding: '25px', background: '#f8f9fa', borderTop: '1px solid #dee2e6', display: 'flex', justifyContent: 'center' }}>
-                <Pagination style={{ margin: '0', gap: '8px' }}>
-                  {paginationItems}
-                </Pagination>
-              </div>
-            </>
-          ) : (
-            <div style={{ padding: '60px 40px', textAlign: 'center', color: '#6c757d' }}>
-              <div style={{ fontSize: '48px', marginBottom: '15px' }}>📭</div>
-              <p style={{ fontSize: '18px', margin: '0', fontWeight: '600' }}>No Notifications Found</p>
-              <small>No notifications have been sent yet</small>
-            </div>
-          )}
-        </Card.Body>
+      <Row className="g-3 mb-3">
+        <Col md={3}><Card className="history-stat"><Send /><span>Total Sent</span><strong>{stats.total}</strong><small>Matching history</small></Card></Col>
+        <Col md={3}><Card className="history-stat"><Users /><span>Broadcasts</span><strong>{stats.broadcasts}</strong><small>Current page</small></Card></Col>
+        <Col md={3}><Card className="history-stat"><Bell /><span>Recipients</span><strong>{stats.recipients}</strong><small>Current page reach</small></Card></Col>
+        <Col md={3}><Card className="history-stat success"><Bell /><span>FCM Sent</span><strong>{stats.fcmSent}</strong><small>Device pushes</small></Card></Col>
+      </Row>
+
+      <Card className="history-panel mb-3">
+        <Row className="g-2">
+          <Col xl={4} md={6}>
+            <InputGroup>
+              <InputGroup.Text><Search size={16} /></InputGroup.Text>
+              <Form.Control placeholder="Search title or message..." value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+            </InputGroup>
+          </Col>
+          <Col xl={2} md={6}>
+            <Form.Select value={filters.sentTo} onChange={(e) => setFilters({ ...filters, sentTo: e.target.value })}>
+              <option value="">All Audience</option>
+              <option value="all">All Users</option>
+              <option value="user">Specific User</option>
+            </Form.Select>
+          </Col>
+          <Col xl={2} md={6}>
+            <Form.Select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
+              <option value="">All Types</option>
+              <option value="general">General</option>
+              <option value="loan">Loan</option>
+              <option value="payment">Payment</option>
+              <option value="kyc">KYC</option>
+              <option value="support">Support</option>
+            </Form.Select>
+          </Col>
+          <Col xl={2} md={6}>
+            <Form.Select value={filters.priority} onChange={(e) => setFilters({ ...filters, priority: e.target.value })}>
+              <option value="">All Priority</option>
+              <option value="HIGH">High</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="LOW">Low</option>
+            </Form.Select>
+          </Col>
+          <Col xl={1} md={6}><Button className="w-100" variant="dark" onClick={() => load(1)}>Apply</Button></Col>
+          <Col xl={1} md={6}><Button className="w-100" variant="outline-secondary" onClick={resetFilters}>Reset</Button></Col>
+        </Row>
       </Card>
 
-      {/* Detail Modal */}
-      <Modal show={showDetail} onHide={() => setShowDetail(false)} centered size="lg">
-        <Modal.Header closeButton style={{ background: 'linear-gradient(135deg, #001f5c 0%, #003d99 100%)', color: 'white', border: 'none' }}>
-          <Modal.Title style={{ fontWeight: '700' }}>Notification Details</Modal.Title>
-        </Modal.Header>
-        <Modal.Body style={{ padding: '30px', background: '#f8f9fa' }}>
-          {selectedNotif && (
-            <div>
-              <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', marginBottom: '20px' }}>
-                <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                  📬 Message Content
-                </Card.Header>
-                <Card.Body style={{ padding: '20px' }}>
-                  <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Title:</strong> <span style={{ color: '#495057' }}>{selectedNotif.title}</span></p>
-                  <p style={{ marginBottom: '0' }}><strong style={{ color: '#001f5c' }}>Message:</strong></p>
-                  <p style={{ background: '#e9ecef', padding: '15px', borderRadius: '8px', color: '#495057', marginBottom: '0', marginTop: '8px', lineHeight: '1.6' }}>{selectedNotif.message}</p>
-                </Card.Body>
-              </Card>
+      <Card className="history-table-card">
+        <Table responsive hover className="align-middle mb-0">
+          <thead>
+            <tr><th>Notification</th><th>Audience</th><th>Type</th><th>Priority</th><th>Recipients</th><th>FCM</th><th>Sent By</th><th>Sent At</th><th className="text-end">Action</th></tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan="9" className="text-center py-5"><Spinner animation="border" size="sm" /> Loading...</td></tr>
+            ) : history.length === 0 ? (
+              <tr><td colSpan="9" className="text-center py-5">No notification history found.</td></tr>
+            ) : history.map((item) => (
+              <tr key={item._id}>
+                <td><strong>{item.title}</strong><small>{item.message}</small></td>
+                <td>{audienceBadge(item.sentTo)}<small>{item.userId?.name || item.userId?.mobile || item.userId?.email || ''}</small></td>
+                <td>{typeLabels[item.type] || item.type || 'General'}</td>
+                <td>{priorityBadge(item.priority)}</td>
+                <td className="fw-bold">{item.totalRecipients || 0}</td>
+                <td><small>Sent: {item.fcmSent || 0}</small><small>Failed: {item.fcmFailed || 0}</small></td>
+                <td>{item.sentBy?.name || item.sentBy?.email || 'Admin'}</td>
+                <td>{dateTime(item.sentAt || item.createdAt)}</td>
+                <td className="text-end"><Button size="sm" variant="outline-primary" onClick={() => { setSelected(item); setShowDetail(true); }}><Eye size={14} /></Button></td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </Card>
 
-              <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', marginBottom: '20px' }}>
-                <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                  📊 Delivery Information
-                </Card.Header>
-                <Card.Body style={{ padding: '20px' }}>
-                  <Row>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Sent To:</strong></p>
-                      {selectedNotif.sentTo === 'all' ? (
-                        <div style={{ color: '#1abc9c', fontWeight: '700' }}>📢 All Users</div>
-                      ) : (
-                        <div>
-                          <div style={{ color: '#001f5c', fontWeight: '600' }}>👤 {selectedNotif.userId?.name || 'Unknown'}</div>
-                          <small style={{ color: '#6c757d' }}>{selectedNotif.userId?.email}</small>
-                        </div>
-                      )}
-                    </Col>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Status:</strong></p>
-                      <p>{getStatusBadge(selectedNotif.status || 'SENT')}</p>
-                    </Col>
-                  </Row>
-                  <Row>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Sent At:</strong></p>
-                      <p style={{ color: '#495057' }}>📅 {formatDate(selectedNotif.sentAt)}</p>
-                    </Col>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Total Recipients:</strong></p>
-                      <p style={{ color: '#1abc9c', fontWeight: '700', fontSize: '18px' }}>{selectedNotif.totalRecipients}</p>
-                    </Col>
-                  </Row>
-                </Card.Body>
-              </Card>
+      {pagination.pages > 1 && (
+        <Pagination className="justify-content-center mt-3">
+          <Pagination.Prev disabled={pagination.page <= 1} onClick={() => load(pagination.page - 1)} />
+          <Pagination.Item active>{pagination.page}</Pagination.Item>
+          <Pagination.Next disabled={pagination.page >= pagination.pages} onClick={() => load(pagination.page + 1)} />
+        </Pagination>
+      )}
 
-              <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', marginBottom: '20px' }}>
-                <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                  ✉️ Sender Information
-                </Card.Header>
-                <Card.Body style={{ padding: '20px' }}>
-                  <Row>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Sent By:</strong></p>
-                      <p style={{ color: '#495057', fontWeight: '600' }}>{selectedNotif.sentBy?.name || 'Unknown'}</p>
-                    </Col>
-                    <Col md={6}>
-                      <p style={{ marginBottom: '12px' }}><strong style={{ color: '#001f5c' }}>Sender ID:</strong></p>
-                      <p style={{ color: '#495057', fontSize: '12px', fontFamily: 'monospace' }}>{selectedNotif.sentBy?._id || 'N/A'}</p>
-                    </Col>
-                  </Row>
-                </Card.Body>
-              </Card>
-
-              {(selectedNotif.deliveredCount !== undefined || selectedNotif.failedCount !== undefined) && (
-                <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)' }}>
-                  <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                    ✅ Delivery Stats
-                  </Card.Header>
-                  <Card.Body style={{ padding: '20px' }}>
-                    <Row>
-                      <Col md={4} style={{ textAlign: 'center', paddingBottom: '15px', borderRight: '1px solid #dee2e6' }}>
-                        <strong style={{ color: '#1abc9c', fontSize: '24px' }}>{selectedNotif.deliveredCount || 0}</strong><br/>
-                        <small style={{ color: '#6c757d' }}>Delivered</small>
-                      </Col>
-                      <Col md={4} style={{ textAlign: 'center', paddingBottom: '15px', borderRight: '1px solid #dee2e6' }}>
-                        <strong style={{ color: '#ffc107', fontSize: '24px' }}>{selectedNotif.totalRecipients - (selectedNotif.deliveredCount || 0) - (selectedNotif.failedCount || 0) || 0}</strong><br/>
-                        <small style={{ color: '#6c757d' }}>Pending</small>
-                      </Col>
-                      <Col md={4} style={{ textAlign: 'center', paddingBottom: '15px' }}>
-                        <strong style={{ color: '#dc3545', fontSize: '24px' }}>{selectedNotif.failedCount || 0}</strong><br/>
-                        <small style={{ color: '#6c757d' }}>Failed</small>
-                      </Col>
-                    </Row>
-                  </Card.Body>
-                </Card>
-              )}
-            </div>
+      <Modal show={showDetail} onHide={() => setShowDetail(false)} size="lg">
+        <Modal.Header closeButton><Modal.Title>Notification Details</Modal.Title></Modal.Header>
+        <Modal.Body>
+          {selected && (
+            <>
+              <div className="detail-grid mb-3">
+                <Info label="Audience" value={selected.sentTo === 'all' ? 'All Users' : 'Specific User'} />
+                <Info label="Recipient" value={selected.userId?.name || selected.userId?.email || selected.userId?.mobile || 'N/A'} />
+                <Info label="Type" value={typeLabels[selected.type] || selected.type || 'General'} />
+                <Info label="Priority" value={selected.priority || 'MEDIUM'} />
+                <Info label="Recipients" value={selected.totalRecipients || 0} />
+                <Info label="FCM Sent" value={selected.fcmSent || 0} />
+                <Info label="FCM Failed" value={selected.fcmFailed || 0} />
+                <Info label="Sent At" value={dateTime(selected.sentAt || selected.createdAt)} />
+              </div>
+              <Form.Label>Title</Form.Label>
+              <Form.Control className="mb-3" value={selected.title || ''} readOnly />
+              <Form.Label>Message</Form.Label>
+              <Form.Control as="textarea" rows={5} value={selected.message || ''} readOnly />
+            </>
           )}
         </Modal.Body>
+        <Modal.Footer><Button variant="outline-secondary" onClick={() => setShowDetail(false)}>Close</Button></Modal.Footer>
       </Modal>
+
+      <style>{`
+        .history-page{padding:8px 0 24px;color:#111827}.history-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.history-head p{margin:0 0 4px;color:#0f766e;font-size:12px;font-weight:900;text-transform:uppercase}.history-head h2{display:flex;align-items:center;gap:10px;margin:0;font-weight:850}.history-head span,.history-table-card td small{color:#64748b}.history-actions{display:flex;gap:8px;flex-wrap:wrap}.history-actions .btn,.history-table-card .btn{display:inline-flex;align-items:center;gap:6px}
+        .history-stat,.history-panel,.history-table-card{border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 10px 26px rgba(15,23,42,.06)}.history-stat{padding:16px;min-height:150px}.history-stat svg{color:#0f766e}.history-stat span,.history-stat small{display:block;color:#64748b;font-weight:800}.history-stat strong{display:block;font-size:26px;margin:4px 0}.history-stat.success strong{color:#047857}.history-panel{padding:16px}.history-table-card{overflow:hidden}.history-table-card thead th{background:#f8fafc;color:#475569;font-size:12px;text-transform:uppercase}.history-table-card td small{display:block}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.info-box{padding:12px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc}.info-box span{display:block;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase}.info-box strong{display:block;margin-top:4px}
+        @media(max-width:768px){.history-head{flex-direction:column}.history-actions .btn{flex:1;justify-content:center}.detail-grid{grid-template-columns:1fr}}
+      `}</style>
     </div>
   );
-}
+};
+
+const Info = ({ label, value }) => (
+  <div className="info-box"><span>{label}</span><strong>{value ?? 'N/A'}</strong></div>
+);
+
+export default NotificationHistory;

@@ -3,11 +3,57 @@ import Joi from 'joi';
 import { requireAuth } from '../middlewares/auth.js';
 import { ok, fail } from '../utils/response.js';
 import Notification from '../models/Notification.js';
+import User from '../models/User.js';
+import { notifyUserSmart } from '../services/smartNotifications.js';
+import { runSmartNotificationScan, unreadSummary } from '../services/autoNotificationService.js';
 
 const router = Router();
 
 // Apply auth middleware to all routes
 router.use(requireAuth);
+
+router.post('/test-push', async (req, res, next) => {
+  try {
+    const fcmToken = String(req.body.fcmToken || '').trim();
+    if (fcmToken) {
+      await User.findByIdAndUpdate(req.user.uid, {
+        $addToSet: { fcmTokens: fcmToken },
+        notificationsEnabled: true,
+      });
+    }
+
+    const notification = await notifyUserSmart(req.user.uid, 'push_test', {
+      data: { route: '/notifications' },
+    });
+
+    ok(res, { notification, tokenSaved: Boolean(fcmToken) }, 'Test notification sent');
+  } catch (e) {
+    console.error('Test push error:', e.message);
+    next(e);
+  }
+});
+
+router.post('/generate-smart', async (req, res, next) => {
+  try {
+    const result = await runSmartNotificationScan({
+      userId: req.user.uid,
+      dryRun: req.body?.dryRun === true,
+      limit: 1,
+    });
+    ok(res, result, 'Smart notifications generated');
+  } catch (e) {
+    console.error('Generate smart notifications error:', e.message);
+    next(e);
+  }
+});
+
+router.get('/summary', async (req, res, next) => {
+  try {
+    ok(res, await unreadSummary(req.user.uid));
+  } catch (e) {
+    next(e);
+  }
+});
 
 /**
  * Get user notifications

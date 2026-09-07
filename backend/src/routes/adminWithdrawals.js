@@ -39,7 +39,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     if (decision === 'APPROVED') {
       withdrawal.status = 'APPROVED';
       withdrawal.decidedAt = new Date();
-      withdrawal.decidedBy = req.admin.uid;
+      withdrawal.decidedBy = req.admin.id;
       withdrawal.txnId = txnId;
       withdrawal.notes = notes;
 
@@ -71,7 +71,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     } else if (decision === 'REJECTED') {
       withdrawal.status = 'REJECTED';
       withdrawal.decidedAt = new Date();
-      withdrawal.decidedBy = req.admin.uid;
+      withdrawal.decidedBy = req.admin.id;
       withdrawal.notes = notes;
     } else {
       return fail(res, 'INVALID', 'Invalid decision');

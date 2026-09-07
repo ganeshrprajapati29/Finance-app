@@ -1,14 +1,23 @@
 import axios from 'axios'
-const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080' })
+const api = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'https://khatupay.com/api',
+})
 function getTokens(){ try{ const raw=localStorage.getItem('kp_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 function setTokens(t){ localStorage.setItem('kp_tokens', JSON.stringify(t)) }
 function getEmployeeTokens(){ try{ const raw=localStorage.getItem('kp_employee_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 function setEmployeeTokens(t){ localStorage.setItem('kp_employee_tokens', JSON.stringify(t)) }
+function getUserTokens(){ try{ const raw=localStorage.getItem('kp_user_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 api.interceptors.request.use((config)=>{
   const t=getTokens();
   const et=getEmployeeTokens();
-  if(t?.accessToken) config.headers.Authorization = `Bearer ${t.accessToken}`;
+  const ut=getUserTokens();
+  const isEmployeeRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/employee');
+  const isUserRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/user');
+  if(isEmployeeRoute && et?.accessToken) config.headers.Authorization = `Bearer ${et.accessToken}`;
+  else if(isUserRoute && ut?.accessToken) config.headers.Authorization = `Bearer ${ut.accessToken}`;
+  else if(t?.accessToken) config.headers.Authorization = `Bearer ${t.accessToken}`;
   else if(et?.accessToken) config.headers.Authorization = `Bearer ${et.accessToken}`;
+  else if(ut?.accessToken) config.headers.Authorization = `Bearer ${ut.accessToken}`;
   return config
 })
 let refreshing=null
@@ -20,7 +29,8 @@ api.interceptors.response.use(
     if (error.response && error.response.status===401 && !original._retry){
       const tk = getTokens()
       const etk = getEmployeeTokens()
-      if (tk?.refreshToken && !etk){
+      const isEmployeeRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/employee');
+      if (!isEmployeeRoute && tk?.refreshToken){
         if (!refreshing){
           refreshing = axios.post(`${api.defaults.baseURL}/auth/refresh`, { refreshToken: tk.refreshToken })
             .then(r=>{ const accessToken = r.data?.data?.accessToken; if(accessToken){ const updated={...tk, accessToken}; setTokens(updated); return accessToken } throw error })

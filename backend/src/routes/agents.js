@@ -12,10 +12,20 @@ router.use(requireAuth, requireRole(['admin']))
 // Get all agents (collection agents)
 router.get('/', async (req, res) => {
   try {
-    const agents = await Employee.find({
-      roles: { $in: ['COLLECTION_AGENT'] },
-      isActive: true
-    }).select('-passwordHash').sort({ createdAt: -1 })
+    const { status, department } = req.query
+    const query = {
+      $or: [
+        { roles: { $in: ['COLLECTION_AGENT', 'collection', 'employee'] } },
+        { 'permissions.canManageCollections': true }
+      ]
+    }
+    if (status) {
+      query.status = status
+      query.isActive = status === 'active'
+    }
+    if (department) query.department = department
+
+    const agents = await Employee.find(query).select('-passwordHash').sort({ createdAt: -1 })
 
     res.json({
       success: true,
@@ -36,7 +46,7 @@ router.get('/', async (req, res) => {
 // Create new agent
 router.post('/', async (req, res) => {
   try {
-    const { name, email, mobile, password, role, department, isActive } = req.body
+    const { name, email, mobile, phone, password, role, roles, department, isActive, agentProfile = {} } = req.body
 
     // Check if agent already exists
     const existingAgent = await Employee.findOne({ email: email.toLowerCase() })
@@ -54,11 +64,26 @@ router.post('/', async (req, res) => {
     const agent = new Employee({
       name,
       email: email.toLowerCase(),
-      phone: mobile,
+      phone: mobile || phone,
       passwordHash,
-      roles: [role || 'COLLECTION_AGENT'],
+      roles: roles?.length ? roles : [role || 'COLLECTION_AGENT'],
       department: department || 'COLLECTIONS',
+      status: isActive === false ? 'inactive' : 'active',
       isActive: isActive !== undefined ? isActive : true,
+      agentProfile: {
+        employeeId: agentProfile.employeeId || `AG-${Date.now()}`,
+        designation: agentProfile.designation || 'Collection Agent',
+        joiningDate: agentProfile.joiningDate ? new Date(agentProfile.joiningDate) : new Date(),
+        address: agentProfile.address,
+        aadhaarNumber: agentProfile.aadhaarNumber,
+        panNumber: agentProfile.panNumber,
+        salary: Number(agentProfile.salary || 0),
+        emergencyContact: agentProfile.emergencyContact,
+        emergencyContactName: agentProfile.emergencyContactName,
+        targetCollection: Number(agentProfile.targetCollection || 0),
+        area: agentProfile.area,
+        zone: agentProfile.zone
+      },
       permissions: {
         canManageUsers: false,
         canManageLoans: false,
@@ -113,14 +138,27 @@ router.post('/', async (req, res) => {
 // Update agent
 router.put('/:id', async (req, res) => {
   try {
-    const { name, mobile, role, department, isActive } = req.body
+    const { name, mobile, phone, role, roles, department, isActive, status, agentProfile } = req.body
 
     const updateData = {}
     if (name) updateData.name = name
-    if (mobile) updateData.phone = mobile
+    if (mobile || phone) updateData.phone = mobile || phone
     if (role) updateData.roles = [role]
+    if (roles?.length) updateData.roles = roles
     if (department) updateData.department = department
-    if (isActive !== undefined) updateData.isActive = isActive
+    if (isActive !== undefined) {
+      updateData.isActive = isActive
+      updateData.status = isActive ? 'active' : 'inactive'
+    }
+    if (status) {
+      updateData.status = status
+      updateData.isActive = status === 'active'
+    }
+    if (agentProfile) {
+      Object.entries(agentProfile).forEach(([key, value]) => {
+        updateData[`agentProfile.${key}`] = ['salary', 'targetCollection'].includes(key) ? Number(value || 0) : value
+      })
+    }
 
     const agent = await Employee.findByIdAndUpdate(
       req.params.id,
@@ -154,7 +192,7 @@ router.delete('/:id', async (req, res) => {
   try {
     const agent = await Employee.findByIdAndUpdate(
       req.params.id,
-      { isActive: false },
+      { isActive: false, status: 'inactive' },
       { new: true }
     ).select('-passwordHash')
 

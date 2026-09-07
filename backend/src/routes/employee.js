@@ -31,6 +31,11 @@ router.get('/profile', requireAuth, requireEmployee, async (req, res, next) => {
 // Support tickets (employees can manage support)
 router.get('/support', requireAuth, requireEmployee, async (req, res, next) => {
   try {
+    const employee = await Employee.findById(req.user.uid);
+    if (!employee.permissions.canManageSupport) {
+      return fail(res, 'NO_PERMISSION', 'You do not have permission to view support tickets', 403);
+    }
+
     const { status, page = 1, limit = 20 } = req.query;
     const q = {};
     if (status) q.status = status;
@@ -58,6 +63,11 @@ router.get('/support', requireAuth, requireEmployee, async (req, res, next) => {
 // Update support ticket
 router.put('/support/:id', requireAuth, requireEmployee, async (req, res, next) => {
   try {
+    const employee = await Employee.findById(req.user.uid);
+    if (!employee.permissions.canManageSupport) {
+      return fail(res, 'NO_PERMISSION', 'You do not have permission to update support tickets', 403);
+    }
+
     const { status, adminNotes } = await Joi.object({
       status: Joi.string().valid('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED').required(),
       adminNotes: Joi.string().optional(),
@@ -177,9 +187,53 @@ router.get('/payments', requireAuth, requireEmployee, async (req, res, next) => 
   } catch (e) { next(e); }
 });
 
+// Get collections workspace (if employee has permission)
+router.get('/collections', requireAuth, requireEmployee, async (req, res, next) => {
+  try {
+    const employee = await Employee.findById(req.user.uid);
+    if (!employee.permissions.canManageCollections) {
+      return fail(res, 'NO_PERMISSION', 'You do not have permission to view collections', 403);
+    }
+
+    const Loan = (await import('../models/Loan.js')).default;
+    const rows = await Loan.find({ status: { $in: ['DISBURSED', 'APPROVED'] } })
+      .populate('userId', 'name email mobile')
+      .sort({ createdAt: -1 })
+      .limit(500);
+    ok(res, rows);
+  } catch (e) { next(e); }
+});
+
+// Get basic employee reports (if employee has permission)
+router.get('/reports', requireAuth, requireEmployee, async (req, res, next) => {
+  try {
+    const employee = await Employee.findById(req.user.uid);
+    if (!employee.permissions.canViewReports) {
+      return fail(res, 'NO_PERMISSION', 'You do not have permission to view reports', 403);
+    }
+
+    const User = (await import('../models/User.js')).default;
+    const Loan = (await import('../models/Loan.js')).default;
+    const Payment = (await import('../models/Payment.js')).default;
+    const SupportTicket = (await import('../models/SupportTicket.js')).default;
+    const [users, loans, payments, support] = await Promise.all([
+      User.countDocuments(),
+      Loan.countDocuments(),
+      Payment.countDocuments(),
+      SupportTicket.countDocuments()
+    ]);
+    ok(res, [{ users, loans, payments, support, generatedAt: new Date() }]);
+  } catch (e) { next(e); }
+});
+
 // Get employee history (employees can view employee creation history)
 router.get('/history', requireAuth, requireEmployee, async (req, res, next) => {
   try {
+    const employee = await Employee.findById(req.user.uid);
+    if (!employee.permissions.canViewAudit) {
+      return fail(res, 'NO_PERMISSION', 'You do not have permission to view employee history', 403);
+    }
+
     const employees = await Employee.find().sort({ createdAt: -1 });
     ok(res, employees);
   } catch (e) { next(e); }

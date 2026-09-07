@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import Joi from 'joi';
+import mongoose from 'mongoose';
 import { requireAdmin } from '../middlewares/adminAuth.js';
 import Loan from '../models/Loan.js';
 import User from '../models/User.js';
@@ -7,50 +7,63 @@ import Payment from '../models/Payment.js';
 import { ok, fail } from '../utils/response.js';
 
 const router = Router();
+const escapeRegex = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 router.use(requireAdmin);
 
-// Search loan by account number or email
+const loanPopulate = [
+  { path: 'userId', select: 'name email mobile' },
+  { path: 'decision.decidedBy', select: 'name email' }
+];
+
+// Search loan by account number, loan ID, user email, mobile, or name.
 router.get('/search', async (req, res, next) => {
   try {
-    const { query } = req.query;
+    const rawQuery = String(req.query.query || '').trim();
 
-    if (!query) {
+    if (!rawQuery) {
       return fail(res, 'MISSING_QUERY', 'Search query is required', 400);
     }
 
+    const safeQuery = escapeRegex(rawQuery);
+    const exactRegex = new RegExp(`^${safeQuery}$`, 'i');
+    const looseRegex = new RegExp(safeQuery, 'i');
     let loan;
 
-    // First try to find by loan account number (exact match)
-    loan = await Loan.findOne({ loanAccountNumber: query.trim() })
-      .populate('userId', 'name email mobile')
-      .populate('decision.decidedBy', 'name');
+    if (mongoose.Types.ObjectId.isValid(rawQuery)) {
+      loan = await Loan.findById(rawQuery).populate(loanPopulate);
+    }
 
-    // If not found, try to find by user email (case-insensitive)
     if (!loan) {
-      const user = await User.findOne({ email: { $regex: new RegExp(`^${query.trim()}$`, 'i') } });
+      loan = await Loan.findOne({ loanAccountNumber: exactRegex }).populate(loanPopulate);
+    }
+
+    if (!loan) {
+      const user = await User.findOne({
+        $or: [
+          { email: exactRegex },
+          { mobile: exactRegex },
+          { name: looseRegex }
+        ]
+      }).sort({ createdAt: -1 });
+
       if (user) {
-        // Find the most recent loan for this user
         loan = await Loan.findOne({ userId: user._id })
-          .populate('userId', 'name email mobile')
-          .populate('decision.decidedBy', 'name')
-          .sort({ createdAt: -1 }); // Get most recent loan
+          .populate(loanPopulate)
+          .sort({ createdAt: -1 });
       }
     }
 
-    // If still not found, try to find by partial loan account number
     if (!loan) {
-      loan = await Loan.findOne({ loanAccountNumber: { $regex: new RegExp(query.trim(), 'i') } })
-        .populate('userId', 'name email mobile')
-        .populate('decision.decidedBy', 'name')
+      loan = await Loan.findOne({ loanAccountNumber: looseRegex })
+        .populate(loanPopulate)
         .sort({ createdAt: -1 });
     }
 
     if (!loan) {
-      return fail(res, 'NOT_FOUND', 'Loan not found. Please check the account number or email and try again.', 404);
+      return fail(res, 'NOT_FOUND', 'Loan not found. Please check loan account, email, mobile, name, or loan ID and try again.', 404);
     }
 
-    // Calculate loan details
     const loanDetails = await calculateLoanDetails(loan);
 
     return ok(res, loanDetails);
@@ -63,8 +76,7 @@ router.get('/:loanId', async (req, res, next) => {
     const { loanId } = req.params;
 
     const loan = await Loan.findById(loanId)
-      .populate('userId', 'name email mobile')
-      .populate('decision.decidedBy', 'name');
+      .populate(loanPopulate);
 
     if (!loan) {
       return fail(res, 'NOT_FOUND', 'Loan not found', 404);
@@ -82,7 +94,7 @@ router.get('/:loanId/payments', async (req, res, next) => {
     const { loanId } = req.params;
 
     const payments = await Payment.find({ loanId })
-      .populate('userId', 'name email')
+      .populate('userId', 'name email mobile')
       .sort({ createdAt: -1 });
 
     return ok(res, payments);
@@ -91,15 +103,17 @@ router.get('/:loanId/payments', async (req, res, next) => {
 
 // Helper function to calculate loan details
 async function calculateLoanDetails(loan) {
+  const schedule = Array.isArray(loan.schedule) ? loan.schedule : [];
   // Calculate totals from schedule
-  const totalPrincipal = loan.schedule.reduce((sum, s) => sum + s.principal, 0);
-  const totalInterest = loan.schedule.reduce((sum, s) => sum + s.interest, 0);
-  const totalAmount = loan.schedule.reduce((sum, s) => sum + s.total, 0);
+  const totalPrincipal = schedule.reduce((sum, s) => sum + Number(s.principal || 0), 0);
+  const totalInterest = schedule.reduce((sum, s) => sum + Number(s.interest || 0), 0);
+  const totalAmount = schedule.reduce((sum, s) => sum + Number(s.total || 0), 0);
 
   // Calculate paid amounts
-  const paidPrincipal = loan.schedule.filter(s => s.paid).reduce((sum, s) => sum + s.principal, 0);
-  const paidInterest = loan.schedule.filter(s => s.paid).reduce((sum, s) => sum + s.interest, 0);
-  const paidAmount = loan.schedule.filter(s => s.paid).reduce((sum, s) => sum + s.total, 0);
+  const paidInstallments = schedule.filter(s => s.paid);
+  const paidPrincipal = paidInstallments.reduce((sum, s) => sum + Number(s.principal || 0), 0);
+  const paidInterest = paidInstallments.reduce((sum, s) => sum + Number(s.interest || 0), 0);
+  const paidAmount = paidInstallments.reduce((sum, s) => sum + Number(s.total || 0), 0);
 
   // Calculate outstanding amounts
   const outstandingPrincipal = totalPrincipal - paidPrincipal;
@@ -108,22 +122,22 @@ async function calculateLoanDetails(loan) {
 
   // Get overdue installments
   const now = new Date();
-  const overdueInstallments = loan.schedule.filter(s =>
+  const overdueInstallments = schedule.filter(s =>
     !s.paid && new Date(s.dueDate) < now
   );
 
-  const totalOverdue = overdueInstallments.reduce((sum, s) => sum + s.total, 0);
+  const totalOverdue = overdueInstallments.reduce((sum, s) => sum + Number(s.total || 0), 0);
 
   // Get next payment due
-  const nextDueInstallment = loan.schedule.find(s =>
-    !s.paid && new Date(s.dueDate) >= now
-  );
+  const nextDueInstallment = schedule
+    .filter(s => !s.paid && new Date(s.dueDate) >= now)
+    .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))[0] || null;
 
   // Get recent payments
   const recentPayments = await Payment.find({ loanId: loan._id })
     .sort({ createdAt: -1 })
     .limit(5)
-    .populate('userId', 'name');
+    .populate('userId', 'name email mobile');
 
   return {
     _id: loan._id,
@@ -154,11 +168,15 @@ async function calculateLoanDetails(loan) {
       installments: overdueInstallments
     },
     nextDue: nextDueInstallment,
-    schedule: loan.schedule,
-    transactions: loan.transactions,
+    schedule,
+    transactions: loan.transactions || [],
     recentPayments: recentPayments.map(payment => ({
       _id: payment._id,
+      installmentNo: payment.installmentNo || payment.metadata?.installmentNo,
       amount: payment.amount,
+      type: payment.type,
+      method: payment.method,
+      reference: payment.reference || payment.gateway?.paymentId || payment.gateway?.orderId,
       status: payment.status,
       createdAt: payment.createdAt,
       userId: payment.userId

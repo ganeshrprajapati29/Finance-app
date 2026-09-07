@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400" role="img" aria-label="A mobile wallet protected by a security shield">
+  <title>Secure mobile wallet</title>
+
+  <defs>
+    <linearGradient id="sw-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7FAF9"/>
+      <stop offset="1" stop-color="#E8F8F4"/>
+    </linearGradient>
+    <linearGradient id="sw-phone" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08201E"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="sw-card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#00A884"/>
+    </linearGradient>
+    <linearGradient id="sw-shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="400" fill="url(#sw-bg)"/>
+  <circle cx="92" cy="330" r="66" fill="#00A884" opacity="0.10"/>
+  <circle cx="560" cy="76" r="54" fill="#F59E0B" opacity="0.12"/>
+
+  <!-- Phone -->
+  <rect x="212" y="52" width="216" height="300" rx="30" fill="url(#sw-phone)"/>
+  <rect x="228" y="72" width="184" height="260" rx="18" fill="#FFFFFF"/>
+  <rect x="292" y="60" width="56" height="7" rx="3.5" fill="#FFFFFF" opacity="0.5"/>
+
+  <!-- Balance card on screen -->
+  <rect x="246" y="92" width="148" height="82" rx="14" fill="url(#sw-card)"/>
+  <rect x="262" y="110" width="60" height="8" rx="4" fill="#FFFFFF" opacity="0.65"/>
+  <rect x="262" y="128" width="94" height="16" rx="6" fill="#FFFFFF"/>
+  <circle cx="370" cy="156" r="8" fill="#FFFFFF" opacity="0.45"/>
+  <circle cx="356" cy="156" r="8" fill="#FFFFFF" opacity="0.30"/>
+
+  <!-- Transaction rows -->
+  <g>
+    <rect x="246" y="192" width="148" height="30" rx="8" fill="#F1F5F4"/>
+    <circle cx="264" cy="207" r="9" fill="#16A34A" opacity="0.20"/>
+    <rect x="280" y="200" width="56" height="6" rx="3" fill="#0F172A" opacity="0.55"/>
+    <rect x="280" y="211" width="34" height="5" rx="2.5" fill="#64748B" opacity="0.45"/>
+    <rect x="356" y="203" width="26" height="7" rx="3.5" fill="#16A34A" opacity="0.7"/>
+  </g>
+  <g>
+    <rect x="246" y="230" width="148" height="30" rx="8" fill="#F1F5F4"/>
+    <circle cx="264" cy="245" r="9" fill="#0F766E" opacity="0.20"/>
+    <rect x="280" y="238" width="48" height="6" rx="3" fill="#0F172A" opacity="0.55"/>
+    <rect x="280" y="249" width="40" height="5" rx="2.5" fill="#64748B" opacity="0.45"/>
+    <rect x="352" y="241" width="30" height="7" rx="3.5" fill="#0F172A" opacity="0.45"/>
+  </g>
+  <g>
+    <rect x="246" y="268" width="148" height="30" rx="8" fill="#F1F5F4"/>
+    <circle cx="264" cy="283" r="9" fill="#F59E0B" opacity="0.22"/>
+    <rect x="280" y="276" width="60" height="6" rx="3" fill="#0F172A" opacity="0.55"/>
+    <rect x="280" y="287" width="30" height="5" rx="2.5" fill="#64748B" opacity="0.45"/>
+    <rect x="356" y="279" width="26" height="7" rx="3.5" fill="#0F172A" opacity="0.45"/>
+  </g>
+
+  <!-- Shield badge -->
+  <g transform="translate(400 196)">
+    <path d="M60 0 116 22v46c0 38-24 66-56 78-32-12-56-40-56-78V22z" fill="url(#sw-shield)"/>
+    <path d="M60 14 102 30v38c0 30-18 52-42 62-24-10-42-32-42-62V30z" fill="#FFFFFF" opacity="0.16"/>
+    <path d="M40 68l14 15 28-30" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- Lock chip -->
+  <g transform="translate(72 120)">
+    <rect width="118" height="54" rx="16" fill="#FFFFFF" stroke="#E5ECEA" stroke-width="2"/>
+    <rect x="16" y="16" width="22" height="22" rx="6" fill="#E8F8F4"/>
+    <path d="M23 27v-4a4 4 0 0 1 8 0v4" stroke="#0F766E" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <rect x="22" y="26" width="10" height="9" rx="2" fill="#0F766E"/>
+    <rect x="50" y="19" width="50" height="7" rx="3.5" fill="#0F172A" opacity="0.72"/>
+    <rect x="50" y="32" width="32" height="6" rx="3" fill="#64748B" opacity="0.5"/>
+  </g>
+
+  <!-- Biometric chip -->
+  <g transform="translate(76 250)">
+    <rect width="104" height="52" rx="16" fill="#FFFFFF" stroke="#E5ECEA" stroke-width="2"/>
+    <g transform="translate(16 13)" stroke="#0F766E" stroke-width="2.4" fill="none" stroke-linecap="round">
+      <path d="M13 24c0-7 0-13 0-13a5 5 0 0 1 10 0v12"/>
+      <path d="M8 24V11a10 10 0 0 1 20 0v9"/>
+      <path d="M3 22V11a15 15 0 0 1 30 0v6"/>
+    </g>
+    <rect x="58" y="17" width="32" height="6" rx="3" fill="#0F172A" opacity="0.7"/>
+    <rect x="58" y="29" width="22" height="5" rx="2.5" fill="#64748B" opacity="0.5"/>
+  </g>
+</svg>

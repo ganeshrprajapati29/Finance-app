@@ -1,420 +1,265 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Badge, Alert, Row, Col, Form, Modal, InputGroup } from 'react-bootstrap'
-import api from '../api/axios'
-import { Clock, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Col, Form, InputGroup, Modal, ProgressBar, Row, Table } from 'react-bootstrap';
+import { CalendarClock, CheckCircle2, Download, Edit3, Eye, RefreshCw, Search, ShieldAlert, WalletCards, XCircle } from 'lucide-react';
+import api from '../api/axios';
 
-export default function PromiseToPayTracking(){
-  const [ptps, setPtps] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [filters, setFilters] = useState({
-    status: '',
-    agentId: '',
-    page: 1,
-    limit: 20
-  })
-  const [pagination, setPagination] = useState({
-    page: 1,
-    limit: 20,
-    total: 0,
-    pages: 0
-  })
-  const [showUpdateModal, setShowUpdateModal] = useState(false)
-  const [selectedPtp, setSelectedPtp] = useState(null)
-  const [updateData, setUpdateData] = useState({
-    status: '',
-    actualPaymentDate: '',
-    actualPaymentAmount: '',
-    notes: ''
-  })
+const statuses = ['PENDING', 'KEPT', 'BROKEN', 'EXTENDED', 'PARTIAL', 'CANCELLED'];
+const formatCurrency = (amount) => `Rs. ${Number(amount || 0).toLocaleString('en-IN')}`;
+const formatDate = (date) => date ? new Date(date).toLocaleDateString('en-IN') : 'N/A';
+const formatDateTime = (date) => date ? new Date(date).toLocaleString('en-IN') : 'N/A';
+const statusTone = (status) => ({ PENDING: 'warning', KEPT: 'success', BROKEN: 'danger', EXTENDED: 'info', PARTIAL: 'primary', CANCELLED: 'secondary' }[status] || 'secondary');
 
-  const loadPtps = async ()=>{
-    setLoading(true)
+const downloadCsv = (rows, filename) => {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const dueBadge = (date, status) => {
+  if (status !== 'PENDING' && status !== 'EXTENDED') return <Badge bg={statusTone(status)}>{status}</Badge>;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(date);
+  due.setHours(0, 0, 0, 0);
+  const days = Math.ceil((due - today) / 86400000);
+  if (days < 0) return <Badge bg="danger">{Math.abs(days)} days overdue</Badge>;
+  if (days === 0) return <Badge bg="warning">Due today</Badge>;
+  return <Badge bg={days <= 3 ? 'info' : 'secondary'}>{days} days left</Badge>;
+};
+
+const StatCard = ({ icon: Icon, label, value, tone }) => (
+  <div className={`ptp-stat ptp-stat-${tone}`}>
+    <div className="ptp-stat-icon"><Icon size={20} /></div>
+    <div><span>{label}</span><strong>{value}</strong></div>
+  </div>
+);
+
+const PromiseToPayTracking = () => {
+  const [ptps, setPtps] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, pages: 1 });
+  const [filters, setFilters] = useState({ status: '', agentId: '', dateFrom: '', dateTo: '', search: '' });
+  const [updateForm, setUpdateForm] = useState({ status: 'PENDING', amount: '', date: '', promisedDate: '', notes: '' });
+
+  const fetchAgents = async () => {
     try {
-      const params = new URLSearchParams()
-      if (filters.status) params.append('status', filters.status)
-      if (filters.agentId) params.append('agentId', filters.agentId)
-      params.append('page', filters.page)
-      params.append('limit', filters.limit)
+      const res = await api.get('/agents');
+      setAgents(res.data?.data?.agents || []);
+    } catch {
+      setAgents([]);
+    }
+  };
 
-      const r = await api.get(`/admin/collections/ptp-tracking?${params}`)
-      setPtps(r.data.data.ptps)
-      setPagination(r.data.data.pagination)
-    } catch (error) {
-      console.error('Failed to load PTPs:', error)
+  const fetchPtps = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const query = new URLSearchParams({ page: pagination.page, limit: pagination.limit });
+      ['status', 'agentId', 'dateFrom', 'dateTo'].forEach((key) => filters[key] && query.append(key, filters[key]));
+      const res = await api.get(`/admin/collections/ptp-tracking?${query}`);
+      setPtps(res.data?.data?.ptps || []);
+      setPagination((current) => ({ ...current, ...(res.data?.data?.pagination || {}) }));
+    } catch (err) {
+      setError(err.response?.data?.message || 'PTP records load nahi ho paaye.');
+      setPtps([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  useEffect(()=>{ 
-    loadPtps()
-  }, [filters])
+  useEffect(() => { fetchAgents(); }, []);
+  useEffect(() => { fetchPtps(); }, [pagination.page, pagination.limit, filters.status, filters.agentId, filters.dateFrom, filters.dateTo]);
 
-  const handleUpdatePtp = (ptp)=>{
-    setSelectedPtp(ptp)
-    setUpdateData({
-      status: ptp.status,
-      actualPaymentDate: ptp.actualPaymentDate ? ptp.actualPaymentDate.split('T')[0] : '',
-      actualPaymentAmount: ptp.actualPaymentAmount || '',
+  const filtered = useMemo(() => {
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return ptps;
+    return ptps.filter((ptp) => [ptp.userId?.name, ptp.userId?.mobile, ptp.loanId?.loanAccountNumber, ptp.agentId?.name, ptp.reason].some((value) => String(value || '').toLowerCase().includes(term)));
+  }, [filters.search, ptps]);
+
+  const stats = useMemo(() => {
+    const totalAmount = ptps.reduce((sum, item) => sum + Number(item.promisedAmount || 0), 0);
+    const kept = ptps.filter((item) => item.status === 'KEPT');
+    const broken = ptps.filter((item) => item.status === 'BROKEN');
+    const resolved = kept.length + broken.length;
+    return {
+      total: pagination.total || ptps.length,
+      totalAmount,
+      pending: ptps.filter((item) => item.status === 'PENDING').length,
+      kept: kept.length,
+      broken: broken.length,
+      successRate: resolved ? Math.round((kept.length / resolved) * 100) : 0
+    };
+  }, [pagination.total, ptps]);
+
+  const updateFilter = (field, value) => {
+    setFilters((current) => ({ ...current, [field]: value }));
+    setPagination((current) => ({ ...current, page: 1 }));
+  };
+
+  const openUpdate = (ptp) => {
+    setSelected(ptp);
+    setUpdateForm({
+      status: ptp.status || 'PENDING',
+      amount: ptp.actualPaymentAmount || ptp.promisedAmount || '',
+      date: ptp.actualPaymentDate ? new Date(ptp.actualPaymentDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+      promisedDate: ptp.promisedDate ? new Date(ptp.promisedDate).toISOString().slice(0, 10) : '',
       notes: ptp.notes || ''
-    })
-    setShowUpdateModal(true)
-  }
+    });
+  };
 
-  const submitPtpUpdate = async ()=>{
+  const saveUpdate = async () => {
+    if (!selected) return;
     try {
-      await api.put(`/admin/collections/ptp/${selectedPtp._id}`, updateData)
-      setShowUpdateModal(false)
-      await loadPtps()
-      alert('PTP updated successfully')
-    } catch (error) {
-      console.error('Failed to update PTP:', error)
-      alert('Failed to update PTP')
+      setProcessing(true);
+      setError('');
+      await api.put(`/admin/collections/ptp/${selected._id}`, {
+        status: updateForm.status,
+        actualPaymentAmount: ['KEPT', 'PARTIAL'].includes(updateForm.status) ? Number(updateForm.amount || 0) : undefined,
+        actualPaymentDate: ['KEPT', 'PARTIAL'].includes(updateForm.status) ? updateForm.date : undefined,
+        promisedDate: updateForm.status === 'EXTENDED' ? updateForm.promisedDate : undefined,
+        notes: updateForm.notes
+      });
+      setSuccess('PTP status update ho gaya.');
+      setSelected(null);
+      fetchPtps();
+    } catch (err) {
+      setError(err.response?.data?.message || 'PTP update nahi ho paaya.');
+    } finally {
+      setProcessing(false);
     }
-  }
+  };
 
-  const getStatusIcon = (status)=>{
-    switch(status) {
-      case 'KEPT': return <CheckCircle size={16} className="text-success" />
-      case 'BROKEN': return <XCircle size={16} className="text-danger" />
-      case 'EXTENDED': return <RefreshCw size={16} className="text-warning" />
-      default: return <Clock size={16} className="text-primary" />
-    }
-  }
-
-  const getStatusColor = (status)=>{
-    switch(status) {
-      case 'KEPT': return 'success'
-      case 'BROKEN': return 'danger'
-      case 'EXTENDED': return 'warning'
-      default: return 'primary'
-    }
-  }
-
-  const getDaysUntilDue = (promisedDate)=>{
-    const now = new Date()
-    const due = new Date(promisedDate)
-    const diffTime = due - now
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-    return diffDays
-  }
-
-  const getUrgencyColor = (daysUntilDue)=>{
-    if (daysUntilDue < 0) return 'danger'
-    if (daysUntilDue <= 3) return 'warning'
-    return 'success'
-  }
+  const exportRows = () => {
+    downloadCsv(filtered.map((ptp) => ({
+      loanAccount: ptp.loanId?.loanAccountNumber || '',
+      customer: ptp.userId?.name || '',
+      mobile: ptp.userId?.mobile || '',
+      agent: ptp.agentId?.name || '',
+      promisedAmount: ptp.promisedAmount || 0,
+      promisedDate: formatDate(ptp.promisedDate),
+      status: ptp.status,
+      actualAmount: ptp.actualPaymentAmount || '',
+      actualDate: formatDate(ptp.actualPaymentDate),
+      reason: ptp.reason || ''
+    })), 'ptp-tracking.csv');
+  };
 
   return (
-    <div>
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2 className="mb-0">
-          <Clock className="me-2" />
-          Promise to Pay (PTP) Tracking
-        </h2>
+    <div className="ptp-page">
+      <div className="ptp-header">
+        <div>
+          <div className="ptp-eyebrow">Collections</div>
+          <h1>PTP Tracking</h1>
+          <p>Promise to Pay commitments, due dates, agent follow-up and recovery outcomes.</p>
+        </div>
+        <div className="ptp-actions">
+          <Button variant="light" onClick={fetchPtps}><RefreshCw size={16} /> Refresh</Button>
+          <Button variant="outline-light" onClick={exportRows} disabled={!filtered.length}><Download size={16} /> Export</Button>
+        </div>
       </div>
 
-      <Alert variant="info" className="mb-4">
-        <strong>Note:</strong> Track all customer promises to pay. Monitor payment commitments,
-        follow up on due dates, and maintain detailed records of PTP fulfillment.
-      </Alert>
+      {error && <Alert variant="danger" className="mt-3" dismissible onClose={() => setError('')}>{error}</Alert>}
+      {success && <Alert variant="success" className="mt-3" dismissible onClose={() => setSuccess('')}>{success}</Alert>}
 
-      {/* Filters */}
-      <Card className="mb-4">
-        <Card.Header>
-          <h5 className="mb-0">Filters</h5>
-        </Card.Header>
-        <Card.Body>
-          <Row>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Status</Form.Label>
-                <Form.Select
-                  value={filters.status}
-                  onChange={(e) => setFilters({...filters, status: e.target.value, page: 1})}
-                >
-                  <option value="">All Status</option>
-                  <option value="PENDING">Pending</option>
-                  <option value="KEPT">Kept</option>
-                  <option value="BROKEN">Broken</option>
-                  <option value="EXTENDED">Extended</option>
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Agent</Form.Label>
-                <Form.Select
-                  value={filters.agentId}
-                  onChange={(e) => setFilters({...filters, agentId: e.target.value, page: 1})}
-                >
-                  <option value="">All Agents</option>
-                  {/* Agent options would be loaded dynamically */}
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Records per page</Form.Label>
-                <Form.Select
-                  value={filters.limit}
-                  onChange={(e) => setFilters({...filters, limit: e.target.value, page: 1})}
-                >
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </Form.Select>
-              </Form.Group>
-            </Col>
-          </Row>
-        </Card.Body>
-      </Card>
-
-      {/* Summary Cards */}
-      <Row className="mb-4">
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <Clock size={32} className="text-primary mb-2" />
-              <h4>{ptps.filter(ptp => ptp.status === 'PENDING').length}</h4>
-              <small className="text-muted">Pending PTPs</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <CheckCircle size={32} className="text-success mb-2" />
-              <h4>{ptps.filter(ptp => ptp.status === 'KEPT').length}</h4>
-              <small className="text-muted">Kept PTPs</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <XCircle size={32} className="text-danger mb-2" />
-              <h4>{ptps.filter(ptp => ptp.status === 'BROKEN').length}</h4>
-              <small className="text-muted">Broken PTPs</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <RefreshCw size={32} className="text-warning mb-2" />
-              <h4>{ptps.filter(ptp => ptp.status === 'EXTENDED').length}</h4>
-              <small className="text-muted">Extended PTPs</small>
-            </Card.Body>
-          </Card>
-        </Col>
+      <Row className="g-3 mt-1">
+        <Col xl={2} md={4}><StatCard icon={CalendarClock} label="Total PTP" value={stats.total} tone="blue" /></Col>
+        <Col xl={3} md={4}><StatCard icon={WalletCards} label="Promised Amount" value={formatCurrency(stats.totalAmount)} tone="amber" /></Col>
+        <Col xl={2} md={4}><StatCard icon={ShieldAlert} label="Pending" value={stats.pending} tone="purple" /></Col>
+        <Col xl={2} md={4}><StatCard icon={CheckCircle2} label="Kept" value={stats.kept} tone="green" /></Col>
+        <Col xl={1} md={4}><StatCard icon={XCircle} label="Broken" value={stats.broken} tone="red" /></Col>
+        <Col xl={2} md={4}><StatCard icon={CheckCircle2} label="Success" value={`${stats.successRate}%`} tone="cyan" /></Col>
       </Row>
 
-      {/* PTP Table */}
-      <Card>
-        <Card.Header>
-          <h5 className="mb-0">Promise to Pay Records ({pagination.total} records)</h5>
-        </Card.Header>
-        <Card.Body>
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : ptps.length === 0 ? (
-            <div className="text-center text-muted py-5">
-              <Clock size={48} className="mb-3 opacity-50" />
-              <p>No PTP records found</p>
-            </div>
-          ) : (
-            <>
-              <Table striped hover responsive>
-                <thead className="table-dark">
-                  <tr>
-                    <th>Loan ID</th>
-                    <th>Customer</th>
-                    <th>Agent</th>
-                    <th>Promised Amount</th>
-                    <th>Promised Date</th>
-                    <th>Days Until Due</th>
-                    <th>Status</th>
-                    <th>Contact Method</th>
-                    <th>Follow-up Date</th>
-                    <th>Actual Payment</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ptps.map(ptp => {
-                    const daysUntilDue = getDaysUntilDue(ptp.promisedDate)
-                    const urgencyColor = getUrgencyColor(daysUntilDue)
+      <div className="ptp-panel">
+        <Row className="g-3">
+          <Col lg={2}><Form.Select value={filters.status} onChange={(e) => updateFilter('status', e.target.value)}><option value="">All status</option>{statuses.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+          <Col lg={2}><Form.Select value={filters.agentId} onChange={(e) => updateFilter('agentId', e.target.value)}><option value="">All agents</option>{agents.map((agent) => <option key={agent._id} value={agent._id}>{agent.name}</option>)}</Form.Select></Col>
+          <Col lg={2}><Form.Control type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} /></Col>
+          <Col lg={2}><Form.Control type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} /></Col>
+          <Col lg={4}><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search customer, loan, agent..." /></InputGroup></Col>
+        </Row>
+      </div>
 
-                    return (
-                      <tr key={ptp._id}>
-                        <td>{ptp.loanId?.loanAccountNumber}</td>
-                        <td>{ptp.userId?.name}</td>
-                        <td>{ptp.agentId?.name}</td>
-                        <td>₹{ptp.promisedAmount.toLocaleString()}</td>
-                        <td>{new Date(ptp.promisedDate).toLocaleDateString()}</td>
-                        <td>
-                          <Badge bg={urgencyColor}>
-                            {daysUntilDue < 0 ? `${Math.abs(daysUntilDue)} days overdue` : `${daysUntilDue} days left`}
-                          </Badge>
-                        </td>
-                        <td>
-                          <div className="d-flex align-items-center gap-1">
-                            {getStatusIcon(ptp.status)}
-                            <Badge bg={getStatusColor(ptp.status)}>
-                              {ptp.status}
-                            </Badge>
-                          </div>
-                        </td>
-                        <td>
-                          <Badge bg="secondary">{ptp.contactMethod}</Badge>
-                        </td>
-                        <td>
-                          {ptp.followUpDate ? new Date(ptp.followUpDate).toLocaleDateString() : 'N/A'}
-                        </td>
-                        <td>
-                          {ptp.actualPaymentAmount ? (
-                            <div>
-                              <div>₹{ptp.actualPaymentAmount.toLocaleString()}</div>
-                              <small className="text-muted">
-                                {new Date(ptp.actualPaymentDate).toLocaleDateString()}
-                              </small>
-                            </div>
-                          ) : (
-                            <Badge bg="secondary">Not Paid</Badge>
-                          )}
-                        </td>
-                        <td>
-                          <Button
-                            size="sm"
-                            variant="outline-primary"
-                            onClick={() => handleUpdatePtp(ptp)}
-                          >
-                            Update Status
-                          </Button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </Table>
+      <div className="ptp-table-card">
+        <div className="table-responsive">
+          <Table hover className="ptp-table mb-0">
+            <thead><tr><th>Customer</th><th>Loan</th><th>Promise</th><th>Due</th><th>Agent</th><th>Contact</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              {loading && <tr><td colSpan="8" className="text-center py-5">Loading PTP records...</td></tr>}
+              {!loading && filtered.map((ptp) => (
+                <tr key={ptp._id}>
+                  <td><strong>{ptp.userId?.name || 'N/A'}</strong><span>{ptp.userId?.mobile || ptp.userId?.email || ''}</span></td>
+                  <td>{ptp.loanId?.loanAccountNumber || '-'}</td>
+                  <td><strong className="text-danger">{formatCurrency(ptp.promisedAmount)}</strong><span>{formatDate(ptp.promisedDate)}</span></td>
+                  <td>{dueBadge(ptp.promisedDate, ptp.status)}</td>
+                  <td>{ptp.agentId?.name || 'N/A'}</td>
+                  <td><Badge bg="secondary">{ptp.contactMethod || '-'}</Badge></td>
+                  <td><Badge bg={statusTone(ptp.status)}>{ptp.status || 'PENDING'}</Badge></td>
+                  <td><div className="ptp-row-actions"><Button size="sm" variant="outline-secondary" onClick={() => setDetail(ptp)}><Eye size={15} /></Button><Button size="sm" variant="outline-primary" onClick={() => openUpdate(ptp)}><Edit3 size={15} /></Button></div></td>
+                </tr>
+              ))}
+              {!loading && !filtered.length && <tr><td colSpan="8" className="text-center py-5 text-muted">No PTP records found</td></tr>}
+            </tbody>
+          </Table>
+        </div>
+        <div className="ptp-pagination">
+          <span>Page {pagination.page} of {pagination.pages || 1} - {pagination.total} records</span>
+          <div><Button size="sm" variant="outline-secondary" disabled={pagination.page <= 1} onClick={() => setPagination((current) => ({ ...current, page: current.page - 1 }))}>Previous</Button><Button size="sm" variant="outline-secondary" disabled={pagination.page >= pagination.pages} onClick={() => setPagination((current) => ({ ...current, page: current.page + 1 }))}>Next</Button></div>
+        </div>
+      </div>
 
-              {/* Pagination */}
-              {pagination.pages > 1 && (
-                <div className="d-flex justify-content-between align-items-center mt-3">
-                  <div>
-                    Showing {((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total} records
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === 1}
-                      onClick={() => setFilters({...filters, page: pagination.page - 1})}
-                    >
-                      Previous
-                    </Button>
-                    <span className="mx-2">
-                      Page {pagination.page} of {pagination.pages}
-                    </span>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === pagination.pages}
-                      onClick={() => setFilters({...filters, page: pagination.page + 1})}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </Card.Body>
-      </Card>
-
-      {/* Update PTP Modal */}
-      <Modal show={showUpdateModal} onHide={() => setShowUpdateModal(false)}>
-        <Modal.Header closeButton>
-          <Modal.Title>Update Promise to Pay Status</Modal.Title>
-        </Modal.Header>
+      <Modal show={!!selected} onHide={() => setSelected(null)} centered>
+        <Modal.Header closeButton><Modal.Title>Update PTP</Modal.Title></Modal.Header>
         <Modal.Body>
-          {selectedPtp && (
-            <div className="mb-3">
-              <Alert variant="info">
-                <strong>Loan:</strong> {selectedPtp.loanId?.loanAccountNumber} |
-                <strong>Customer:</strong> {selectedPtp.userId?.name} |
-                <strong>Promised:</strong> ₹{selectedPtp.promisedAmount.toLocaleString()} by {new Date(selectedPtp.promisedDate).toLocaleDateString()}
-              </Alert>
-            </div>
-          )}
-
-          <Form>
-            <Form.Group className="mb-3">
-              <Form.Label>Status *</Form.Label>
-              <Form.Select
-                value={updateData.status}
-                onChange={(e) => setUpdateData({...updateData, status: e.target.value})}
-              >
-                <option value="PENDING">Pending</option>
-                <option value="KEPT">Kept</option>
-                <option value="BROKEN">Broken</option>
-                <option value="EXTENDED">Extended</option>
-              </Form.Select>
-            </Form.Group>
-
-            {(updateData.status === 'KEPT' || updateData.status === 'EXTENDED') && (
-              <>
-                <Form.Group className="mb-3">
-                  <Form.Label>Actual Payment Date</Form.Label>
-                  <Form.Control
-                    type="date"
-                    value={updateData.actualPaymentDate}
-                    onChange={(e) => setUpdateData({...updateData, actualPaymentDate: e.target.value})}
-                  />
-                </Form.Group>
-
-                <Form.Group className="mb-3">
-                  <Form.Label>Actual Payment Amount</Form.Label>
-                  <InputGroup>
-                    <InputGroup.Text>₹</InputGroup.Text>
-                    <Form.Control
-                      type="number"
-                      value={updateData.actualPaymentAmount}
-                      onChange={(e) => setUpdateData({...updateData, actualPaymentAmount: e.target.value})}
-                      placeholder="0"
-                    />
-                  </InputGroup>
-                </Form.Group>
-              </>
-            )}
-
-            <Form.Group className="mb-3">
-              <Form.Label>Notes</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={updateData.notes}
-                onChange={(e) => setUpdateData({...updateData, notes: e.target.value})}
-                placeholder="Additional notes about the PTP status update"
-              />
-            </Form.Group>
-          </Form>
+          {selected && <>
+            <Alert variant="info">{selected.userId?.name} - {formatCurrency(selected.promisedAmount)} promised on {formatDate(selected.promisedDate)}</Alert>
+            <Form.Group className="mb-3"><Form.Label>Status</Form.Label><Form.Select value={updateForm.status} onChange={(e) => setUpdateForm({ ...updateForm, status: e.target.value })}>{statuses.map((item) => <option key={item}>{item}</option>)}</Form.Select></Form.Group>
+            {['KEPT', 'PARTIAL'].includes(updateForm.status) && <Row><Col md={6}><Form.Label>Actual Amount</Form.Label><Form.Control type="number" value={updateForm.amount} onChange={(e) => setUpdateForm({ ...updateForm, amount: e.target.value })} /></Col><Col md={6}><Form.Label>Payment Date</Form.Label><Form.Control type="date" value={updateForm.date} onChange={(e) => setUpdateForm({ ...updateForm, date: e.target.value })} /></Col></Row>}
+            {updateForm.status === 'EXTENDED' && <Form.Group className="mt-3"><Form.Label>New Promise Date</Form.Label><Form.Control type="date" value={updateForm.promisedDate} onChange={(e) => setUpdateForm({ ...updateForm, promisedDate: e.target.value })} /></Form.Group>}
+            <Form.Group className="mt-3"><Form.Label>Notes</Form.Label><Form.Control as="textarea" rows={3} value={updateForm.notes} onChange={(e) => setUpdateForm({ ...updateForm, notes: e.target.value })} /></Form.Group>
+          </>}
         </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowUpdateModal(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={submitPtpUpdate}
-            disabled={!updateData.status}
-          >
-            Update PTP
-          </Button>
-        </Modal.Footer>
+        <Modal.Footer><Button variant="secondary" onClick={() => setSelected(null)}>Cancel</Button><Button onClick={saveUpdate} disabled={processing}>{processing ? 'Saving...' : 'Save'}</Button></Modal.Footer>
       </Modal>
+
+      <Modal show={!!detail} onHide={() => setDetail(null)} size="lg" centered>
+        <Modal.Header closeButton><Modal.Title>PTP Details</Modal.Title></Modal.Header>
+        <Modal.Body>{detail && <div className="ptp-detail"><p><span>Customer</span><strong>{detail.userId?.name || 'N/A'}</strong></p><p><span>Loan</span><strong>{detail.loanId?.loanAccountNumber || 'N/A'}</strong></p><p><span>Agent</span><strong>{detail.agentId?.name || 'N/A'}</strong></p><p><span>Promise</span><strong>{formatCurrency(detail.promisedAmount)} on {formatDate(detail.promisedDate)}</strong></p><p><span>Status</span><strong>{detail.status || 'PENDING'}</strong></p><p><span>Contact</span><strong>{detail.contactMethod} - {detail.contactPerson} ({detail.relationship})</strong></p><p><span>Reason</span><strong>{detail.reason || 'N/A'}</strong></p><p><span>Actual Payment</span><strong>{formatCurrency(detail.actualPaymentAmount)} on {formatDate(detail.actualPaymentDate)}</strong></p><p><span>Notes</span><strong>{detail.notes || 'N/A'}</strong></p><p><span>Created</span><strong>{formatDateTime(detail.createdAt)}</strong></p></div>}</Modal.Body>
+        <Modal.Footer><Button variant="secondary" onClick={() => setDetail(null)}>Close</Button></Modal.Footer>
+      </Modal>
+
+      <style>{`
+        .ptp-page { color: #0f172a; }
+        .ptp-header { background: linear-gradient(135deg, #0f172a 0%, #7c3aed 55%, #0f766e 100%); border-radius: 18px; padding: 28px; color: #fff; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; box-shadow: 0 18px 45px rgba(15,23,42,.18); }
+        .ptp-header h1 { margin: 2px 0 8px; font-size: 30px; font-weight: 850; } .ptp-header p { margin: 0; color: rgba(255,255,255,.78); font-weight: 500; }
+        .ptp-eyebrow { font-size: 12px; text-transform: uppercase; font-weight: 800; color: #ddd6fe; } .ptp-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+        .ptp-actions .btn, .ptp-row-actions .btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }
+        .ptp-stat, .ptp-panel, .ptp-table-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 30px rgba(15,23,42,.06); }
+        .ptp-stat { min-height: 112px; padding: 17px; display: flex; gap: 13px; align-items: flex-start; } .ptp-stat-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; }
+        .ptp-stat-blue .ptp-stat-icon { background:#2563eb; } .ptp-stat-amber .ptp-stat-icon { background:#d97706; } .ptp-stat-purple .ptp-stat-icon { background:#7c3aed; } .ptp-stat-green .ptp-stat-icon { background:#059669; } .ptp-stat-red .ptp-stat-icon { background:#dc2626; } .ptp-stat-cyan .ptp-stat-icon { background:#0891b2; }
+        .ptp-stat span { display:block; color:#64748b; font-size:12px; font-weight:850; text-transform:uppercase; } .ptp-stat strong { font-size:21px; font-weight:850; }
+        .ptp-panel { padding:18px; margin:18px 0; } .ptp-table-card { overflow:hidden; } .ptp-table thead th { background:#f8fafc; color:#475569; font-size:12px; text-transform:uppercase; white-space:nowrap; }
+        .ptp-table td { vertical-align:middle; font-weight:600; } .ptp-table td span { display:block; color:#64748b; font-size:12px; } .ptp-row-actions { display:flex; gap:6px; }
+        .ptp-pagination { display:flex; justify-content:space-between; gap:12px; padding:14px 18px; border-top:1px solid #e2e8f0; color:#64748b; font-weight:700; } .ptp-pagination div { display:flex; gap:8px; }
+        .ptp-detail p { display:flex; justify-content:space-between; gap:16px; border-bottom:1px solid #f1f5f9; padding:10px 0; margin:0; } .ptp-detail span { color:#64748b; font-weight:850; text-transform:uppercase; font-size:12px; } .ptp-detail strong { text-align:right; overflow-wrap:anywhere; }
+        @media (max-width:768px){ .ptp-header{flex-direction:column;padding:22px;} .ptp-actions{width:100%;} .ptp-actions .btn{flex:1;justify-content:center;} .ptp-pagination{flex-direction:column;} }
+      `}</style>
     </div>
-  )
-}
+  );
+};
+
+export default PromiseToPayTracking;

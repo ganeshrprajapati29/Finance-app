@@ -7,7 +7,7 @@ dotenv.config({ path: '../.env' });
 
 async function run() {
   await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/khatupay');
-  const admin = await User.findOne({ email: 'admin@gmail.com' });
+  const admin = await User.findOne({ email: 'admin@khatupay.com' });
   if (!admin) {
     console.log('Admin not found. Please register first.');
     process.exit(0);

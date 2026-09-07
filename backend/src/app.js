@@ -61,6 +61,8 @@ import adminInvoices from './routes/adminInvoices.js';
 import adminOffers from './routes/adminOffers.js';
 import adminRewards from './routes/adminRewards.js';
 import adminClubAPI from './routes/adminClubAPI.js';
+import creditReportRoutes from './routes/creditReports.js';
+import upiConsumerRoutes from './routes/upiConsumer.js';
 
 // ClubAPI
 import rechargeRoutes from './routes/recharge.js';
@@ -72,10 +74,42 @@ import clubapiRoutes from './routes/clubapi/routes.js';
 import utilityRoutes from './routes/utility.js';
 import callbackRoutes from './routes/callback.js';
 import { setRealtime } from './realtime.js';
+import { missingRazorpayEnv } from './services/razorpay.js';
+import { startAutoNotificationScheduler } from './services/autoNotificationService.js';
 
 dotenv.config();
 
+/* =======================
+   ENV SANITY CHECK
+======================= */
+// Fail loudly at boot rather than at the first payment. Only variable *names*
+// are printed - never values - so this is safe in any log aggregator.
+{
+  const required = ['MONGO_URI', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
+  const missingCritical = required.filter((k) => !String(process.env[k] || '').trim());
+  if (missingCritical.length) {
+    console.error(
+      `FATAL: missing required environment variables: ${missingCritical.join(', ')}`
+    );
+    process.exit(1);
+  }
+
+  const missingPayments = missingRazorpayEnv({ requireWebhook: true });
+  if (missingPayments.length) {
+    console.warn(
+      `WARNING: Razorpay is not fully configured (${missingPayments.join(', ')}). ` +
+        'Payment endpoints will return 503 until these are set.'
+    );
+  }
+}
+
 const app = express();
+// This app runs behind a reverse proxy in production, which sets
+// X-Forwarded-For. Without this, express-rate-limit cannot safely resolve
+// each caller's real IP and throws on every rate-limited request (this was
+// silently breaking login/register/OTP rate limiting - see the `validate`
+// option on each limiter for the defensive second half of this fix).
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -117,7 +151,19 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "10mb" }));
+// Razorpay signs the exact bytes it sends, so the webhook route needs the raw
+// body - re-serialising the parsed object would change key order/whitespace
+// and every signature check would fail. `startsWith` (not ===) so an appended
+// query string cannot silently skip the capture.
+const RAZORPAY_WEBHOOK_PATH = '/api/payments/razorpay/webhook';
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, _res, buf) => {
+    if ((req.originalUrl || '').split('?')[0] === RAZORPAY_WEBHOOK_PATH) {
+      req.rawBody = Buffer.from(buf);
+    }
+  },
+}));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 
@@ -232,6 +278,8 @@ app.use("/api/admin/rewards", adminRewards);
 app.use("/api/admin/earnings", adminEarnings);
 app.use("/api/admin/clubapi", adminClubAPI);
 app.use("/api/admin/push", adminPush);
+app.use("/api/credit-report", creditReportRoutes);
+app.use("/api/upi-consumer", upiConsumerRoutes);
 
 // Club APIs
 app.use("/api/recharge", rechargeRoutes);
@@ -260,6 +308,7 @@ app.use(errorHandler);
 const PORT = Number(process.env.PORT) || 5005;
 
 server.listen(PORT, () => {
+  startAutoNotificationScheduler();
   console.log(`
 🚀 Backend Server Started
 🌐 Port: ${PORT}

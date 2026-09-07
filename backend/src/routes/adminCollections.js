@@ -7,8 +7,25 @@ import PromiseToPay from '../models/PromiseToPay.js'
 import Loan from '../models/Loan.js'
 import User from '../models/User.js'
 import Employee from '../models/Employee.js'
+import SmsLog from '../models/SmsLog.js'
 import { sendSMS } from '../services/sms.js'
 import { sendEmail } from '../services/email.js'
+
+const toUpper = (value, fallback) => String(value || fallback || '').toUpperCase()
+
+async function getLoanAndCollection(loanId, collectionId) {
+  let collection = null
+  if (collectionId) {
+    collection = await Collection.findById(collectionId)
+  }
+  if (!collection && loanId) {
+    collection = await Collection.findOne({ loanId, status: { $in: ['ACTIVE', 'LEGAL'] } })
+  }
+
+  const effectiveLoanId = loanId || collection?.loanId
+  const loan = effectiveLoanId ? await Loan.findById(effectiveLoanId).populate('userId') : null
+  return { loan, collection }
+}
 
 // Get overdue users list with bucket categorization
 router.get('/overdue-users', async (req, res) => {
@@ -17,7 +34,6 @@ router.get('/overdue-users', async (req, res) => {
 
     // Get all disbursed loans
     const loans = await Loan.find({ status: 'DISBURSED' })
-      .populate('application')
       .populate('userId')
 
     const overdueUsers = []
@@ -39,7 +55,8 @@ router.get('/overdue-users', async (req, res) => {
         else if (daysOverdue <= 15) bucketCategory = '8-15'
         else if (daysOverdue <= 30) bucketCategory = '16-30'
         else if (daysOverdue <= 60) bucketCategory = '31-60'
-        else bucketCategory = '60-90'
+        else if (daysOverdue <= 90) bucketCategory = '60-90'
+        else bucketCategory = '90+'
 
         // Check if already assigned to collection
         const existingCollection = await Collection.findOne({
@@ -50,16 +67,22 @@ router.get('/overdue-users', async (req, res) => {
         const userData = {
           loanId: loan._id,
           loanAccountNumber: loan.loanAccountNumber,
+          collectionId: existingCollection?._id || null,
           userId: loan.userId,
-          userName: loan.application?.personal?.name || 'N/A',
-          userPhone: loan.application?.personal?.phone || 'N/A',
-          overdueAmount: overdueInstallments.reduce((sum, inst) => sum + inst.total, 0),
+          userName: loan.application?.personal?.name || loan.userId?.name || 'N/A',
+          userEmail: loan.application?.personal?.email || loan.userId?.email || '',
+          userPhone: loan.application?.personal?.mobile || loan.userId?.mobile || 'N/A',
+          overdueAmount: overdueInstallments.reduce((sum, inst) => sum + Number(inst.total || 0), 0),
           daysOverdue,
           bucket: bucketCategory,
           overdueInstallments: overdueInstallments.length,
+          oldestDueDate: oldestOverdue.dueDate,
           assignedAgent: existingCollection?.assignedAgent || null,
           collectionStatus: existingCollection?.status || 'UNASSIGNED',
-          lastContactDate: existingCollection?.lastContactDate || null
+          lastContactDate: existingCollection?.lastContactDate || null,
+          nextFollowUpDate: existingCollection?.nextFollowUpDate || null,
+          priority: existingCollection?.priority || (daysOverdue > 60 ? 'CRITICAL' : daysOverdue > 30 ? 'HIGH' : daysOverdue > 15 ? 'MEDIUM' : 'LOW'),
+          notes: existingCollection?.notes || ''
         }
 
         overdueUsers.push(userData)
@@ -99,8 +122,10 @@ router.get('/overdue-users', async (req, res) => {
           bucket16_30: filteredUsers.filter(u => u.bucket === '16-30').length,
           bucket31_60: filteredUsers.filter(u => u.bucket === '31-60').length,
           bucket60_90: filteredUsers.filter(u => u.bucket === '60-90').length,
+          bucket90_plus: filteredUsers.filter(u => u.bucket === '90+').length,
           assigned: filteredUsers.filter(u => u.assignedAgent).length,
-          unassigned: filteredUsers.filter(u => !u.assignedAgent).length
+          unassigned: filteredUsers.filter(u => !u.assignedAgent).length,
+          totalOverdueAmount: filteredUsers.reduce((sum, user) => sum + Number(user.overdueAmount || 0), 0)
         }
       }
     })
@@ -129,7 +154,7 @@ router.post('/assign-agent', async (req, res) => {
     }
 
     // Get loan details
-    const loan = await Loan.findById(loanId).populate('application').populate('userId')
+    const loan = await Loan.findById(loanId).populate('userId')
     if (!loan) {
       return res.status(404).json({ success: false, message: 'Loan not found' })
     }
@@ -154,7 +179,8 @@ router.post('/assign-agent', async (req, res) => {
     else if (daysOverdue <= 15) bucketCategory = '8-15'
     else if (daysOverdue <= 30) bucketCategory = '16-30'
     else if (daysOverdue <= 60) bucketCategory = '31-60'
-    else bucketCategory = '60-90'
+    else if (daysOverdue <= 90) bucketCategory = '60-90'
+    else bucketCategory = '90+'
 
     // Create collection record
     const collection = new Collection({
@@ -179,19 +205,85 @@ router.post('/assign-agent', async (req, res) => {
   }
 })
 
+// Create promise to pay from overdue users workflow
+router.post('/ptp', async (req, res) => {
+  try {
+    const { loanId, collectionId, agentId, amount, promiseDate, notes } = req.body
+
+    if (!loanId || !amount || !promiseDate) {
+      return res.status(400).json({ success: false, message: 'Loan, amount and promise date are required' })
+    }
+
+    const loan = await Loan.findById(loanId).populate('userId')
+    if (!loan) {
+      return res.status(404).json({ success: false, message: 'Loan not found' })
+    }
+
+    let collection = null
+    if (collectionId) {
+      collection = await Collection.findById(collectionId)
+    }
+    if (!collection) {
+      collection = await Collection.findOne({ loanId, status: { $in: ['ACTIVE', 'LEGAL'] } })
+    }
+
+    const effectiveAgentId = agentId || collection?.assignedAgent
+    if (!effectiveAgentId) {
+      return res.status(400).json({ success: false, message: 'Assign an agent before creating PTP' })
+    }
+
+    const ptp = await PromiseToPay.create({
+      collectionId: collection?._id,
+      loanId,
+      userId: loan.userId,
+      agentId: effectiveAgentId,
+      promisedAmount: Number(amount),
+      promisedDate: new Date(promiseDate),
+      contactMethod: 'CALL',
+      contactPerson: loan.userId?.name || loan.application?.personal?.name || 'Customer',
+      relationship: 'SELF',
+      reason: notes || 'Promise to pay created from overdue users page',
+      followUpDate: new Date(promiseDate),
+      notes
+    })
+
+    if (collection) {
+      collection.lastContactDate = new Date()
+      collection.nextFollowUpDate = new Date(promiseDate)
+      await collection.save()
+    }
+
+    res.json({
+      success: true,
+      message: 'Promise to Pay created successfully',
+      data: ptp
+    })
+  } catch (error) {
+    console.error('Error creating PTP:', error)
+    res.status(500).json({ success: false, message: 'Failed to create Promise to Pay' })
+  }
+})
+
 // Get call logs
 router.get('/call-logs', async (req, res) => {
   try {
-    const { loanId, agentId, page = 1, limit = 20 } = req.query
+    const { loanId, agentId, callStatus, callType, dateFrom, dateTo, page = 1, limit = 20 } = req.query
 
     const query = {}
     if (loanId) query.loanId = loanId
     if (agentId) query.agentId = agentId
+    if (callStatus) query.callStatus = callStatus
+    if (callType) query.callType = callType
+    if (dateFrom || dateTo) {
+      query.createdAt = {}
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom)
+      if (dateTo) query.createdAt.$lte = new Date(`${dateTo}T23:59:59.999Z`)
+    }
 
     const callLogs = await CallLog.find(query)
       .populate('loanId', 'loanAccountNumber')
-      .populate('userId', 'name phone')
-      .populate('agentId', 'name')
+      .populate('userId', 'name email mobile')
+      .populate('agentId', 'name email phone')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -236,18 +328,26 @@ router.post('/call-log', async (req, res) => {
       notes
     } = req.body
 
+    const { loan, collection } = await getLoanAndCollection(loanId, collectionId)
+    if (!loan) {
+      return res.status(404).json({ success: false, message: 'Loan not found' })
+    }
+
+    const effectiveCollectionId = collectionId || collection?._id
+    const effectiveUserId = userId || loan.userId?._id || loan.userId
+
     const callLog = new CallLog({
-      collectionId,
-      loanId,
-      userId,
+      collectionId: effectiveCollectionId,
+      loanId: loan._id,
+      userId: effectiveUserId,
       agentId,
-      callType,
-      callStatus,
-      callDuration,
-      contactPerson,
-      relationship,
+      callType: toUpper(callType, 'OUTBOUND'),
+      callStatus: toUpper(callStatus, 'CONNECTED'),
+      callDuration: Number(callDuration || 0),
+      contactPerson: contactPerson || loan.userId?.name || loan.application?.personal?.name || 'Customer',
+      relationship: toUpper(relationship, 'SELF'),
       conversationSummary,
-      nextAction,
+      nextAction: toUpper(nextAction, 'NONE'),
       nextActionDate,
       promiseToPay,
       notes
@@ -256,8 +356,8 @@ router.post('/call-log', async (req, res) => {
     await callLog.save()
 
     // Update collection last contact date
-    if (collectionId && collectionId !== '') {
-      await Collection.findByIdAndUpdate(collectionId, {
+    if (effectiveCollectionId) {
+      await Collection.findByIdAndUpdate(effectiveCollectionId, {
         lastContactDate: new Date(),
         nextFollowUpDate: nextActionDate
       })
@@ -266,15 +366,15 @@ router.post('/call-log', async (req, res) => {
     // Create PTP record if promise made
     if (promiseToPay && promiseToPay.amount && promiseToPay.date) {
       const ptp = new PromiseToPay({
-        collectionId,
-        loanId,
-        userId,
+        collectionId: effectiveCollectionId,
+        loanId: loan._id,
+        userId: effectiveUserId,
         agentId,
         promisedAmount: promiseToPay.amount,
         promisedDate: promiseToPay.date,
         contactMethod: 'CALL',
-        contactPerson,
-        relationship,
+        contactPerson: contactPerson || loan.userId?.name || 'Customer',
+        relationship: toUpper(relationship, 'SELF'),
         reason: conversationSummary,
         followUpDate: nextActionDate
       })
@@ -295,16 +395,23 @@ router.post('/call-log', async (req, res) => {
 // Get visit logs
 router.get('/visit-logs', async (req, res) => {
   try {
-    const { loanId, agentId, page = 1, limit = 20 } = req.query
+    const { loanId, agentId, visitType, status, dateFrom, dateTo, page = 1, limit = 20 } = req.query
 
     const query = {}
     if (loanId) query.loanId = loanId
     if (agentId) query.agentId = agentId
+    if (visitType) query.visitType = visitType
+    if (status) query.visitStatus = status
+    if (dateFrom || dateTo) {
+      query.createdAt = {}
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom)
+      if (dateTo) query.createdAt.$lte = new Date(`${dateTo}T23:59:59.999Z`)
+    }
 
     const visitLogs = await VisitLog.find(query)
       .populate('loanId', 'loanAccountNumber')
-      .populate('userId', 'name phone')
-      .populate('agentId', 'name')
+      .populate('userId', 'name email mobile')
+      .populate('agentId', 'name email phone')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -353,22 +460,34 @@ router.post('/visit-log', async (req, res) => {
       notes
     } = req.body
 
+    const { loan, collection } = await getLoanAndCollection(loanId, collectionId)
+    if (!loan) {
+      return res.status(404).json({ success: false, message: 'Loan not found' })
+    }
+
+    const effectiveCollectionId = collectionId || collection?._id
+    const effectiveUserId = userId || loan.userId?._id || loan.userId
+    const normalizedLocation = typeof location === 'string' ? { address: location } : location
+    const normalizedPayment = typeof paymentReceived === 'number'
+      ? { amount: paymentReceived, method: 'CASH' }
+      : paymentReceived
+
     const visitLog = new VisitLog({
-      collectionId,
-      loanId,
-      userId,
+      collectionId: effectiveCollectionId,
+      loanId: loan._id,
+      userId: effectiveUserId,
       agentId,
-      visitType,
-      visitStatus,
-      contactPerson,
-      relationship,
-      location,
-      visitPurpose,
+      visitType: toUpper(visitType, 'FIELD_VISIT'),
+      visitStatus: toUpper(visitStatus, 'COMPLETED'),
+      contactPerson: contactPerson || loan.userId?.name || loan.application?.personal?.name || 'Customer',
+      relationship: toUpper(relationship, 'SELF'),
+      location: normalizedLocation,
+      visitPurpose: toUpper(visitPurpose, 'COLLECTION'),
       conversationSummary,
-      nextAction,
+      nextAction: toUpper(nextAction, 'NONE'),
       nextActionDate,
       documentsCollected,
-      paymentReceived,
+      paymentReceived: normalizedPayment,
       promiseToPay,
       photos,
       notes
@@ -377,8 +496,8 @@ router.post('/visit-log', async (req, res) => {
     await visitLog.save()
 
     // Update collection last contact date
-    if (collectionId && collectionId !== '') {
-      await Collection.findByIdAndUpdate(collectionId, {
+    if (effectiveCollectionId) {
+      await Collection.findByIdAndUpdate(effectiveCollectionId, {
         lastContactDate: new Date(),
         nextFollowUpDate: nextActionDate
       })
@@ -387,15 +506,15 @@ router.post('/visit-log', async (req, res) => {
     // Create PTP record if promise made
     if (promiseToPay && promiseToPay.amount && promiseToPay.date) {
       const ptp = new PromiseToPay({
-        collectionId,
-        loanId,
-        userId,
+        collectionId: effectiveCollectionId,
+        loanId: loan._id,
+        userId: effectiveUserId,
         agentId,
         promisedAmount: promiseToPay.amount,
         promisedDate: promiseToPay.date,
         contactMethod: 'VISIT',
-        contactPerson,
-        relationship,
+        contactPerson: contactPerson || loan.userId?.name || 'Customer',
+        relationship: toUpper(relationship, 'SELF'),
         reason: conversationSummary,
         followUpDate: nextActionDate
       })
@@ -418,81 +537,68 @@ router.get('/agent-performance', async (req, res) => {
   try {
     const { agentId, startDate, endDate } = req.query
 
-    const query = {}
-    if (agentId) query.assignedAgent = agentId
+    const dateQuery = {}
     if (startDate && endDate) {
-      query.createdAt = {
+      dateQuery.createdAt = {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
       }
     }
 
-    const collections = await Collection.find(query)
+    const agentQuery = agentId
+      ? { _id: agentId }
+      : {
+          $or: [
+            { roles: { $in: ['COLLECTION_AGENT', 'collection', 'employee'] } },
+            { 'permissions.canManageCollections': true }
+          ],
+          isActive: true
+        }
+
+    const agents = await Employee.find(agentQuery).select('name email phone department agentProfile')
+    const performance = []
+
+    for (const agent of agents) {
+      const collections = await Collection.find({ assignedAgent: agent._id, ...dateQuery })
       .populate('assignedAgent', 'name')
       .populate('loanId', 'loanAccountNumber')
-
-    const performance = {}
-
-    for (const collection of collections) {
-      const agentId = collection.assignedAgent._id.toString()
-      if (!performance[agentId]) {
-        performance[agentId] = {
-          agent: collection.assignedAgent,
-          totalAssigned: 0,
-          activeCases: 0,
-          resolvedCases: 0,
-          legalCases: 0,
-          totalOverdueAmount: 0,
-          recoveredAmount: 0,
-          callLogs: 0,
-          visitLogs: 0,
-          ptpCreated: 0,
-          ptpKept: 0
-        }
+      let totalOverdueAmount = 0
+      for (const collection of collections) {
+        const loan = await Loan.findById(collection.loanId?._id || collection.loanId).select('schedule')
+        const overdue = loan?.schedule?.filter(inst => !inst.paid && new Date(inst.dueDate) < new Date()) || []
+        totalOverdueAmount += overdue.reduce((sum, inst) => sum + Number(inst.total || 0), 0)
       }
 
-      performance[agentId].totalAssigned++
-      performance[agentId].totalOverdueAmount += collection.daysOverdue * 100 // Rough estimate
-
-      if (collection.status === 'ACTIVE') performance[agentId].activeCases++
-      if (collection.status === 'RESOLVED') performance[agentId].resolvedCases++
-      if (collection.status === 'LEGAL') performance[agentId].legalCases++
-
-      // Get call logs count
-      const callLogsCount = await CallLog.countDocuments({
-        collectionId: collection._id,
-        agentId: collection.assignedAgent._id
-      })
-      performance[agentId].callLogs += callLogsCount
-
-      // Get visit logs count
-      const visitLogsCount = await VisitLog.countDocuments({
-        collectionId: collection._id,
-        agentId: collection.assignedAgent._id
-      })
-      performance[agentId].visitLogs += visitLogsCount
-
-      // Get PTP stats
-      const ptpStats = await PromiseToPay.aggregate([
-        { $match: { collectionId: collection._id, agentId: collection.assignedAgent._id } },
-        {
-          $group: {
-            _id: null,
-            created: { $sum: 1 },
-            kept: { $sum: { $cond: [{ $eq: ['$status', 'KEPT'] }, 1, 0] } }
-          }
-        }
+      const [callLogs, visitLogs, ptpCreated, ptpKept, recoveredAgg] = await Promise.all([
+        CallLog.countDocuments({ agentId: agent._id, ...dateQuery }),
+        VisitLog.countDocuments({ agentId: agent._id, ...dateQuery }),
+        PromiseToPay.countDocuments({ agentId: agent._id, ...dateQuery }),
+        PromiseToPay.countDocuments({ agentId: agent._id, status: 'KEPT', ...dateQuery }),
+        VisitLog.aggregate([
+          { $match: { agentId: agent._id, ...dateQuery } },
+          { $group: { _id: null, amount: { $sum: '$paymentReceived.amount' } } }
+        ])
       ])
 
-      if (ptpStats.length > 0) {
-        performance[agentId].ptpCreated += ptpStats[0].created
-        performance[agentId].ptpKept += ptpStats[0].kept
-      }
+      performance.push({
+        agent,
+        totalAssigned: collections.length,
+        activeCases: collections.filter(item => item.status === 'ACTIVE').length,
+        resolvedCases: collections.filter(item => item.status === 'RESOLVED' || item.status === 'SETTLED').length,
+        legalCases: collections.filter(item => item.status === 'LEGAL').length,
+        totalOverdueAmount,
+        recoveredAmount: recoveredAgg[0]?.amount || 0,
+        targetCollection: agent.agentProfile?.targetCollection || 0,
+        callLogs,
+        visitLogs,
+        ptpCreated,
+        ptpKept
+      })
     }
 
     res.json({
       success: true,
-      data: Object.values(performance)
+      data: performance
     })
   } catch (error) {
     console.error('Error fetching agent performance:', error)
@@ -503,44 +609,83 @@ router.get('/agent-performance', async (req, res) => {
 // Trigger warning SMS
 router.post('/warning-sms', async (req, res) => {
   try {
-    const { collectionId, message } = req.body
+    const { collectionId, loanId, message, sendEmail: shouldSendEmail = true } = req.body
 
-    const collection = await Collection.findById(collectionId)
-      .populate('loanId')
-      .populate('userId')
-
-    if (!collection) {
-      return res.status(404).json({ success: false, message: 'Collection not found' })
+    let collection = null
+    if (collectionId) {
+      collection = await Collection.findById(collectionId)
+        .populate('loanId')
+        .populate('userId')
+    }
+    if (!collection && loanId) {
+      collection = await Collection.findOne({ loanId, status: { $in: ['ACTIVE', 'LEGAL'] } })
+        .populate('loanId')
+        .populate('userId')
     }
 
-    const user = collection.userId
-    const loan = collection.loanId
+    let loan = collection?.loanId
+    if (!loan && loanId) {
+      loan = await Loan.findById(loanId).populate('userId')
+    }
+
+    if (!loan) {
+      return res.status(404).json({ success: false, message: 'Loan not found' })
+    }
+
+    const user = collection?.userId || loan.userId
+    const overdueInstallments = loan.schedule?.filter(inst => !inst.paid && new Date(inst.dueDate) < new Date()) || []
+    const oldestOverdue = overdueInstallments[0]
+    const daysOverdue = collection?.daysOverdue || (oldestOverdue ? Math.floor((new Date() - new Date(oldestOverdue.dueDate)) / (1000 * 60 * 60 * 24)) : 0)
 
     const smsMessage = message || `Dear ${user.name}, your loan account ${loan.loanAccountNumber} has overdue payments. Please contact us immediately to avoid legal action.`
 
-    // Send SMS
-    await sendSMS(user.phone, smsMessage)
+    try {
+      await sendSMS(user.mobile || user.phone, smsMessage)
+      await SmsLog.create({
+        collectionId: collection?._id,
+        loanId: loan._id,
+        userId: user._id,
+        phone: user.mobile || user.phone,
+        message: smsMessage,
+        type: 'WARNING',
+        status: 'SENT'
+      })
+    } catch (smsError) {
+      await SmsLog.create({
+        collectionId: collection?._id,
+        loanId: loan._id,
+        userId: user._id,
+        phone: user.mobile || user.phone,
+        message: smsMessage,
+        type: 'WARNING',
+        status: 'FAILED',
+        error: smsError.message
+      })
+      throw smsError
+    }
 
     // Send Email
-    const emailSubject = 'Warning: Overdue Loan Payment'
-    const emailBody = `
-      Dear ${user.name},
+    if (shouldSendEmail) {
+      const emailSubject = 'Warning: Overdue Loan Payment'
+      const emailBody = `
+        Dear ${user.name},
 
-      This is a warning regarding your outstanding loan payments.
+        This is a warning regarding your outstanding loan payments.
 
-      Loan Account Number: ${loan.loanAccountNumber}
-      Overdue Amount: ₹${collection.daysOverdue * 100} (approximate)
-      Days Overdue: ${collection.daysOverdue}
+        Loan Account Number: ${loan.loanAccountNumber}
+        Overdue Amount: Rs. ${overdueInstallments.reduce((sum, inst) => sum + Number(inst.total || 0), 0)} (approximate)
+        Days Overdue: ${daysOverdue}
 
-      Message: ${message}
+        Message: ${message}
 
-      Please contact us immediately to resolve this matter and avoid further action.
+        Please contact us immediately to resolve this matter and avoid further action.
 
-      Regards,
-      Khatu Pay Collections Team
-    `
+        Regards,
+        Khatu Pay Collections Team
+      `
 
-    await sendEmail(user.email, emailSubject, emailBody)
+      await sendEmail(user.email, emailSubject, emailBody)
+    }
 
     res.json({
       success: true,
@@ -549,6 +694,82 @@ router.post('/warning-sms', async (req, res) => {
   } catch (error) {
     console.error('Error sending warning SMS:', error)
     res.status(500).json({ success: false, message: 'Failed to send warning SMS' })
+  }
+})
+
+router.post('/bulk-warning-sms', async (req, res) => {
+  try {
+    const { loanIds = [], collectionIds = [], message } = req.body
+    const collectionQuery = [
+      loanIds.length ? { loanId: { $in: loanIds } } : null,
+      collectionIds.length ? { _id: { $in: collectionIds } } : null
+    ].filter(Boolean)
+
+    const collections = collectionQuery.length
+      ? await Collection.find({ $or: collectionQuery, status: { $in: ['ACTIVE', 'LEGAL'] } }).populate('loanId').populate('userId')
+      : []
+
+    const collectionLoanIds = new Set(collections.map(collection => collection.loanId?._id?.toString()))
+    const directLoanIds = loanIds.filter(id => !collectionLoanIds.has(String(id)))
+    const directLoans = directLoanIds.length ? await Loan.find({ _id: { $in: directLoanIds } }).populate('userId') : []
+
+    let sent = 0
+    let failed = 0
+    let total = 0
+    for (const collection of collections) {
+      total++
+      const user = collection.userId
+      const loan = collection.loanId
+      const smsMessage = message || `Dear ${user.name}, your loan account ${loan.loanAccountNumber} is overdue by ${collection.daysOverdue} days. Please make payment immediately. Khatu Pay`
+      try {
+        await sendSMS(user.mobile || user.phone, smsMessage)
+        await SmsLog.create({ collectionId: collection._id, loanId: loan._id, userId: user._id, phone: user.mobile || user.phone, message: smsMessage, type: 'WARNING', status: 'SENT' })
+        sent++
+      } catch (error) {
+        await SmsLog.create({ collectionId: collection._id, loanId: loan._id, userId: user._id, phone: user.mobile || user.phone, message: smsMessage, type: 'WARNING', status: 'FAILED', error: error.message })
+        failed++
+      }
+    }
+
+    for (const loan of directLoans) {
+      total++
+      const user = loan.userId
+      const overdueInstallments = loan.schedule?.filter(inst => !inst.paid && new Date(inst.dueDate) < new Date()) || []
+      const oldestOverdue = overdueInstallments[0]
+      const daysOverdue = oldestOverdue ? Math.floor((new Date() - new Date(oldestOverdue.dueDate)) / (1000 * 60 * 60 * 24)) : 0
+      const smsMessage = message || `Dear ${user.name}, your loan account ${loan.loanAccountNumber} is overdue by ${daysOverdue} days. Please make payment immediately. Khatu Pay`
+      try {
+        await sendSMS(user.mobile || user.phone, smsMessage)
+        await SmsLog.create({ loanId: loan._id, userId: user._id, phone: user.mobile || user.phone, message: smsMessage, type: 'WARNING', status: 'SENT' })
+        sent++
+      } catch (error) {
+        await SmsLog.create({ loanId: loan._id, userId: user._id, phone: user.mobile || user.phone, message: smsMessage, type: 'WARNING', status: 'FAILED', error: error.message })
+        failed++
+      }
+    }
+
+    res.json({ success: true, message: 'Bulk warning SMS processed', data: { sent, failed, total } })
+  } catch (error) {
+    console.error('Error sending bulk warning SMS:', error)
+    res.status(500).json({ success: false, message: 'Failed to send bulk warning SMS' })
+  }
+})
+
+router.get('/sms-history', async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query
+    const smsHistory = await SmsLog.find()
+      .populate('loanId', 'loanAccountNumber')
+      .populate('userId', 'name mobile email')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+
+    const total = await SmsLog.countDocuments()
+    res.json({ success: true, data: { smsHistory, pagination: { page: Number(page), limit: Number(limit), total, pages: Math.ceil(total / limit) } } })
+  } catch (error) {
+    console.error('Error fetching SMS history:', error)
+    res.status(500).json({ success: false, message: 'Failed to fetch SMS history' })
   }
 })
 
@@ -584,7 +805,7 @@ router.post('/legal-notice', async (req, res) => {
       This is a legal notice regarding your outstanding loan payments.
 
       Loan Account: ${loan.loanAccountNumber}
-      Outstanding Amount: ₹${collection.daysOverdue * 100} (approximate)
+      Outstanding Amount: Rs. ${collection.daysOverdue * 100} (approximate)
 
       You are hereby notified that legal proceedings will be initiated if payment is not made within 7 days.
 
@@ -612,16 +833,21 @@ router.post('/legal-notice', async (req, res) => {
 // Get PTP tracking
 router.get('/ptp-tracking', async (req, res) => {
   try {
-    const { status, agentId, page = 1, limit = 20 } = req.query
+    const { status, agentId, dateFrom, dateTo, page = 1, limit = 20 } = req.query
 
     const query = {}
     if (status) query.status = status
     if (agentId) query.agentId = agentId
+    if (dateFrom || dateTo) {
+      query.promisedDate = {}
+      if (dateFrom) query.promisedDate.$gte = new Date(dateFrom)
+      if (dateTo) query.promisedDate.$lte = new Date(`${dateTo}T23:59:59.999Z`)
+    }
 
     const ptps = await PromiseToPay.find(query)
       .populate('loanId', 'loanAccountNumber')
-      .populate('userId', 'name phone')
-      .populate('agentId', 'name')
+      .populate('userId', 'name email mobile')
+      .populate('agentId', 'name email phone')
       .sort({ promisedDate: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -650,9 +876,10 @@ router.get('/ptp-tracking', async (req, res) => {
 router.put('/ptp/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const { status, actualPaymentDate, actualPaymentAmount, notes } = req.body
+    const { status, promisedDate, actualPaymentDate, actualPaymentAmount, notes } = req.body
 
     const updateData = { status }
+    if (promisedDate) updateData.promisedDate = promisedDate
     if (actualPaymentDate) updateData.actualPaymentDate = actualPaymentDate
     if (actualPaymentAmount) updateData.actualPaymentAmount = actualPaymentAmount
     if (notes) updateData.notes = notes
@@ -697,7 +924,7 @@ router.post('/settlement-approve', async (req, res) => {
     const user = collection.userId
     const loan = collection.loanId
 
-    const smsMessage = `SETTLEMENT APPROVED: Dear ${user.name}, your settlement offer of ₹${settlementAmount} for loan ${loan.loanAccountNumber} has been approved. Please contact us to complete the payment.`
+    const smsMessage = `SETTLEMENT APPROVED: Dear ${user.name}, your settlement offer of Rs. ${settlementAmount} for loan ${loan.loanAccountNumber} has been approved. Please contact us to complete the payment.`
 
     const emailSubject = 'Settlement Offer Approved'
     const emailBody = `
@@ -706,7 +933,7 @@ router.post('/settlement-approve', async (req, res) => {
       Your settlement offer has been approved.
 
       Loan Account: ${loan.loanAccountNumber}
-      Approved Settlement Amount: ₹${settlementAmount}
+      Approved Settlement Amount: Rs. ${settlementAmount}
       Terms: ${terms}
 
       Please contact us within 7 days to complete the settlement.

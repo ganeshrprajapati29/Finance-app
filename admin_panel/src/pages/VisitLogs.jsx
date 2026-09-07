@@ -1,627 +1,331 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Badge, Alert, Row, Col, Form, Modal, InputGroup } from 'react-bootstrap'
-import api from '../api/axios'
-import { MapPin, User, MessageSquare, Camera, FileText, Phone } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Col, Form, InputGroup, Modal, Row, Table } from 'react-bootstrap';
+import { CheckCircle2, Download, Eye, IndianRupee, MapPin, Plus, RefreshCw, Route, Search, XCircle } from 'lucide-react';
+import api from '../api/axios';
 
-export default function VisitLogs(){
-  const [visitLogs, setVisitLogs] = useState([])
-  const [loans, setLoans] = useState([])
-  const [agents, setAgents] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [filters, setFilters] = useState({
-    loanId: '',
-    agentId: '',
-    page: 1,
-    limit: 20
-  })
-  const [pagination, setPagination] = useState({
-    page: 1,
-    limit: 20,
-    total: 0,
-    pages: 0
-  })
-  const [visitData, setVisitData] = useState({
-    collectionId: '',
-    loanId: '',
-    userId: '',
-    agentId: '',
-    visitType: 'FIELD_VISIT',
-    visitStatus: 'COMPLETED',
-    contactPerson: '',
-    relationship: '',
-    location: '',
-    visitPurpose: 'COLLECTION',
-    conversationSummary: '',
-    nextAction: 'FOLLOW_UP',
-    nextActionDate: '',
-    documentsCollected: '',
-    paymentReceived: 0,
-    promiseToPay: {
-      amount: '',
-      date: ''
-    },
-    photos: [],
-    notes: ''
-  })
+const visitTypes = ['FIELD_VISIT', 'OFFICE_VISIT', 'HOME_VISIT'];
+const visitStatuses = ['COMPLETED', 'PARTIAL', 'FAILED', 'RESCHEDULED'];
+const visitPurposes = ['COLLECTION', 'VERIFICATION', 'LEGAL_NOTICE', 'SETTLEMENT', 'OTHER'];
+const relationships = ['SELF', 'FAMILY', 'FRIEND', 'NEIGHBOR', 'COLLEAGUE', 'OTHER'];
+const nextActions = ['FOLLOW_UP', 'VISIT_AGAIN', 'LEGAL', 'SETTLEMENT', 'PAYMENT_REMINDER', 'NONE'];
 
-  const loadVisitLogs = async ()=>{
-    setLoading(true)
+const formatCurrency = (amount) => `Rs. ${Number(amount || 0).toLocaleString('en-IN')}`;
+const formatDateTime = (date) => date ? new Date(date).toLocaleString('en-IN') : 'N/A';
+const paymentAmount = (log) => Number(log.paymentReceived?.amount || 0);
+const locationText = (location) => {
+  if (!location) return '-';
+  if (typeof location === 'string') return location;
+  return [location.address, location.city, location.state, location.pincode].filter(Boolean).join(', ') || '-';
+};
+const statusTone = (status) => ({ COMPLETED: 'success', PARTIAL: 'warning', FAILED: 'danger', RESCHEDULED: 'info' }[status] || 'secondary');
+
+const downloadCsv = (rows, filename) => {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const emptyForm = {
+  loanId: '',
+  collectionId: '',
+  agentId: '',
+  visitType: 'FIELD_VISIT',
+  visitStatus: 'COMPLETED',
+  contactPerson: '',
+  relationship: 'SELF',
+  address: '',
+  city: '',
+  state: '',
+  pincode: '',
+  visitPurpose: 'COLLECTION',
+  conversationSummary: '',
+  nextAction: 'FOLLOW_UP',
+  nextActionDate: '',
+  paymentAmount: '',
+  paymentMethod: 'CASH',
+  paymentReference: '',
+  notes: ''
+};
+
+const StatCard = ({ icon: Icon, label, value, tone }) => (
+  <div className={`vl-stat vl-stat-${tone}`}>
+    <div className="vl-stat-icon"><Icon size={20} /></div>
+    <div><span>{label}</span><strong>{value}</strong></div>
+  </div>
+);
+
+const VisitLogs = () => {
+  const [logs, setLogs] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [overdueUsers, setOverdueUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [selectedLog, setSelectedLog] = useState(null);
+  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, pages: 1 });
+  const [filters, setFilters] = useState({ visitType: '', status: '', agentId: '', search: '', dateFrom: '', dateTo: '' });
+  const [form, setForm] = useState(emptyForm);
+
+  const fetchAgents = async () => {
     try {
-      const params = new URLSearchParams()
-      if (filters.loanId) params.append('loanId', filters.loanId)
-      if (filters.agentId) params.append('agentId', filters.agentId)
-      params.append('page', filters.page)
-      params.append('limit', filters.limit)
+      const res = await api.get('/employees');
+      setAgents(res.data?.data?.items || res.data?.data || []);
+    } catch {
+      setAgents([]);
+    }
+  };
 
-      const r = await api.get(`/admin/collections/visit-logs?${params}`)
-      setVisitLogs(r.data.data.visitLogs)
-      setPagination(r.data.data.pagination)
-    } catch (error) {
-      console.error('Failed to load visit logs:', error)
+  const fetchOverdueUsers = async () => {
+    try {
+      const res = await api.get('/admin/collections/overdue-users');
+      setOverdueUsers(res.data?.data?.users || []);
+    } catch {
+      setOverdueUsers([]);
+    }
+  };
+
+  const fetchLogs = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const query = new URLSearchParams({ page: pagination.page, limit: pagination.limit });
+      ['visitType', 'status', 'agentId', 'dateFrom', 'dateTo'].forEach((key) => filters[key] && query.append(key, filters[key]));
+      const res = await api.get(`/admin/collections/visit-logs?${query}`);
+      setLogs(res.data?.data?.visitLogs || []);
+      setPagination((current) => ({ ...current, ...(res.data?.data?.pagination || {}) }));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Visit logs load nahi ho paaye.');
+      setLogs([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  const loadLoans = async ()=>{
+  useEffect(() => {
+    fetchAgents();
+    fetchOverdueUsers();
+  }, []);
+
+  useEffect(() => {
+    fetchLogs();
+  }, [pagination.page, pagination.limit, filters.visitType, filters.status, filters.agentId, filters.dateFrom, filters.dateTo]);
+
+  const filteredLogs = useMemo(() => {
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return logs;
+    return logs.filter((log) => [log.userId?.name, log.userId?.mobile, log.loanId?.loanAccountNumber, log.agentId?.name, locationText(log.location), log.conversationSummary].some((value) => String(value || '').toLowerCase().includes(term)));
+  }, [filters.search, logs]);
+
+  const stats = useMemo(() => ({
+    total: logs.length,
+    completed: logs.filter((log) => log.visitStatus === 'COMPLETED').length,
+    failed: logs.filter((log) => log.visitStatus === 'FAILED').length,
+    collected: logs.reduce((sum, log) => sum + paymentAmount(log), 0)
+  }), [logs]);
+
+  const updateFilter = (field, value) => {
+    setFilters((current) => ({ ...current, [field]: value }));
+    setPagination((current) => ({ ...current, page: 1 }));
+  };
+
+  const handleLoanChange = (loanId) => {
+    const selected = overdueUsers.find((user) => String(user.loanId) === String(loanId));
+    setForm((current) => ({ ...current, loanId, collectionId: selected?.collectionId || '', contactPerson: selected?.userName || current.contactPerson }));
+  };
+
+  const handleCreate = async (event) => {
+    event.preventDefault();
     try {
-      const r = await api.get('/admin/loans')
-      setLoans(r.data.data.items || r.data.data || [])
-    } catch (error) {
-      console.error('Failed to load loans:', error)
+      setProcessing(true);
+      setError('');
+      await api.post('/admin/collections/visit-log', {
+        collectionId: form.collectionId || undefined,
+        loanId: form.loanId,
+        agentId: form.agentId,
+        visitType: form.visitType,
+        visitStatus: form.visitStatus,
+        contactPerson: form.contactPerson,
+        relationship: form.relationship,
+        location: { address: form.address, city: form.city, state: form.state, pincode: form.pincode },
+        visitPurpose: form.visitPurpose,
+        conversationSummary: form.conversationSummary,
+        nextAction: form.nextAction,
+        nextActionDate: form.nextActionDate || undefined,
+        paymentReceived: form.paymentAmount ? { amount: Number(form.paymentAmount), method: form.paymentMethod, reference: form.paymentReference } : undefined,
+        notes: form.notes
+      });
+      setSuccess('Visit log create ho gaya.');
+      setShowCreate(false);
+      setForm(emptyForm);
+      fetchLogs();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Visit log save nahi ho paaya.');
+    } finally {
+      setProcessing(false);
     }
-  }
+  };
 
-  const loadAgents = async ()=>{
-    try {
-      const r = await api.get('/admin/agents')
-      setAgents(r.data.data.agents || [])
-    } catch (error) {
-      console.error('Failed to load agents:', error)
-    }
-  }
-
-  useEffect(()=>{ 
-    loadVisitLogs()
-    loadLoans()
-    loadAgents()
-  }, [filters])
-
-  const handleAddVisitLog = ()=>{
-    setVisitData({
-      collectionId: '',
-      loanId: '',
-      userId: '',
-      agentId: '',
-      visitType: 'FIELD_VISIT',
-      visitStatus: 'COMPLETED',
-      contactPerson: '',
-      relationship: '',
-      location: '',
-      visitPurpose: 'COLLECTION',
-      conversationSummary: '',
-      nextAction: 'FOLLOW_UP',
-      nextActionDate: '',
-      documentsCollected: '',
-      paymentReceived: 0,
-      promiseToPay: {
-        amount: '',
-        date: ''
-      },
-      photos: [],
-      notes: ''
-    })
-    setShowModal(true)
-  }
-
-  const submitVisitLog = async ()=>{
-    try {
-      await api.post('/admin/collections/visit-log', visitData)
-      setShowModal(false)
-      await loadVisitLogs()
-      alert('Visit log added successfully')
-    } catch (error) {
-      console.error('Failed to add visit log:', error)
-      alert('Failed to add visit log')
-    }
-  }
-
-  const getVisitStatusIcon = (status)=>{
-    switch(status) {
-      case 'COMPLETED': return <MapPin size={16} className="text-success" />
-      case 'PARTIAL': return <MapPin size={16} className="text-warning" />
-      case 'FAILED': return <MapPin size={16} className="text-danger" />
-      case 'RESCHEDULED': return <MapPin size={16} className="text-info" />
-      default: return <MapPin size={16} />
-    }
-  }
-
-  const getVisitStatusColor = (status)=>{
-    switch(status) {
-      case 'COMPLETED': return 'success'
-      case 'PARTIAL': return 'warning'
-      case 'FAILED': return 'danger'
-      case 'RESCHEDULED': return 'info'
-      default: return 'primary'
-    }
-  }
+  const exportRows = () => {
+    downloadCsv(filteredLogs.map((log) => ({
+      date: formatDateTime(log.createdAt),
+      borrower: log.userId?.name || '',
+      mobile: log.userId?.mobile || '',
+      loan: log.loanId?.loanAccountNumber || '',
+      agent: log.agentId?.name || '',
+      type: log.visitType,
+      status: log.visitStatus,
+      location: locationText(log.location),
+      collected: paymentAmount(log),
+      nextAction: log.nextAction || ''
+    })), 'visit-logs.csv');
+  };
 
   return (
-    <div>
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2 className="mb-0">
-          <MapPin className="me-2" />
-          Visit Logs
-        </h2>
-        <Button variant="primary" onClick={handleAddVisitLog}>
-          <MapPin className="me-2" size={16} />
-          Add Visit Log
-        </Button>
+    <div className="vl-page">
+      <div className="vl-header">
+        <div>
+          <div className="vl-eyebrow">Collections</div>
+          <h1>Visit Logs</h1>
+          <p>Field visit outcomes, collection amount, borrower contact, and follow-up planning.</p>
+        </div>
+        <div className="vl-actions">
+          <Button variant="light" onClick={() => setShowCreate(true)}><Plus size={16} /> New Visit</Button>
+          <Button variant="outline-light" onClick={fetchLogs}><RefreshCw size={16} /> Refresh</Button>
+          <Button variant="outline-light" onClick={exportRows} disabled={!filteredLogs.length}><Download size={16} /> Export</Button>
+        </div>
       </div>
 
-      <Alert variant="info" className="mb-4">
-        <strong>Note:</strong> Track all field visits made by collection agents to customers.
-        Maintain detailed visit records, photos, and follow-up actions.
-      </Alert>
+      {error && <Alert variant="danger" className="mt-3" dismissible onClose={() => setError('')}>{error}</Alert>}
+      {success && <Alert variant="success" className="mt-3" dismissible onClose={() => setSuccess('')}>{success}</Alert>}
 
-      {/* Filters */}
-      <Card className="mb-4">
-        <Card.Header>
-          <h5 className="mb-0">Filters</h5>
-        </Card.Header>
-        <Card.Body>
-          <Row>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Loan ID</Form.Label>
-                <Form.Select
-                  value={filters.loanId}
-                  onChange={(e) => setFilters({...filters, loanId: e.target.value, page: 1})}
-                >
-                  <option value="">All Loans</option>
-                  {loans.map(loan => (
-                    <option key={loan._id} value={loan._id}>
-                      {loan.loanAccountNumber} - {loan.application?.personal?.name}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Agent</Form.Label>
-                <Form.Select
-                  value={filters.agentId}
-                  onChange={(e) => setFilters({...filters, agentId: e.target.value, page: 1})}
-                >
-                  <option value="">All Agents</option>
-                  {agents.map(agent => (
-                    <option key={agent._id} value={agent._id}>{agent.name}</option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Records per page</Form.Label>
-                <Form.Select
-                  value={filters.limit}
-                  onChange={(e) => setFilters({...filters, limit: e.target.value, page: 1})}
-                >
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </Form.Select>
-              </Form.Group>
-            </Col>
-          </Row>
-        </Card.Body>
-      </Card>
-
-      {/* Summary Cards */}
-      <Row className="mb-4">
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <MapPin size={32} className="text-success mb-2" />
-              <h4>{visitLogs.filter(log => log.visitStatus === 'COMPLETED').length}</h4>
-              <small className="text-muted">Completed Visits</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <MapPin size={32} className="text-warning mb-2" />
-              <h4>{visitLogs.filter(log => log.visitStatus === 'PARTIAL').length}</h4>
-              <small className="text-muted">Partial Visits</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <Camera size={32} className="text-info mb-2" />
-              <h4>{visitLogs.filter(log => log.photos?.length > 0).length}</h4>
-              <small className="text-muted">Visits with Photos</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <MessageSquare size={32} className="text-primary mb-2" />
-              <h4>{visitLogs.filter(log => log.promiseToPay?.amount).length}</h4>
-              <small className="text-muted">PTP Created</small>
-            </Card.Body>
-          </Card>
-        </Col>
+      <Row className="g-3 mt-1">
+        <Col xl={3} md={6}><StatCard icon={Route} label="Total Visits" value={stats.total} tone="blue" /></Col>
+        <Col xl={3} md={6}><StatCard icon={CheckCircle2} label="Completed" value={stats.completed} tone="green" /></Col>
+        <Col xl={3} md={6}><StatCard icon={XCircle} label="Failed" value={stats.failed} tone="red" /></Col>
+        <Col xl={3} md={6}><StatCard icon={IndianRupee} label="Collected" value={formatCurrency(stats.collected)} tone="amber" /></Col>
       </Row>
 
-      {/* Visit Logs Table */}
-      <Card>
-        <Card.Header>
-          <h5 className="mb-0">Visit Logs ({pagination.total} records)</h5>
-        </Card.Header>
-        <Card.Body>
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : visitLogs.length === 0 ? (
-            <div className="text-center text-muted py-5">
-              <MapPin size={48} className="mb-3 opacity-50" />
-              <p>No visit logs found</p>
-            </div>
-          ) : (
-            <>
-              <Table striped hover responsive>
-                <thead className="table-dark">
-                  <tr>
-                    <th>Date</th>
-                    <th>Loan ID</th>
-                    <th>Customer</th>
-                    <th>Agent</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Location</th>
-                    <th>Contact Person</th>
-                    <th>Payment Received</th>
-                    <th>PTP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visitLogs.map(log => (
-                    <tr key={log._id}>
-                      <td>{new Date(log.createdAt).toLocaleDateString()}</td>
-                      <td>{log.loanId?.loanAccountNumber}</td>
-                      <td>{log.userId?.name}</td>
-                      <td>{log.agentId?.name}</td>
-                      <td>
-                        <Badge bg={log.visitType === 'FIELD_VISIT' ? 'primary' : 'secondary'}>
-                          {log.visitType}
-                        </Badge>
-                      </td>
-                      <td>
-                        <div className="d-flex align-items-center gap-1">
-                          {getVisitStatusIcon(log.visitStatus)}
-                          <Badge bg={getVisitStatusColor(log.visitStatus)}>
-                            {log.visitStatus}
-                          </Badge>
-                        </div>
-                      </td>
-                      <td>{log.location || 'N/A'}</td>
-                      <td>
-                        <div>
-                          <div>{log.contactPerson}</div>
-                          <small className="text-muted">{log.relationship}</small>
-                        </div>
-                      </td>
-                      <td>
-                        {log.paymentReceived ? (
-                          <Badge bg="success">₹{log.paymentReceived.toLocaleString()}</Badge>
-                        ) : (
-                          <Badge bg="secondary">No Payment</Badge>
-                        )}
-                      </td>
-                      <td>
-                        {log.promiseToPay?.amount ? (
-                          <div>
-                            <div>₹{log.promiseToPay.amount.toLocaleString()}</div>
-                            <small className="text-muted">
-                              {new Date(log.promiseToPay.date).toLocaleDateString()}
-                            </small>
-                          </div>
-                        ) : (
-                          <Badge bg="secondary">No PTP</Badge>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
+      <div className="vl-panel">
+        <Row className="g-3">
+          <Col lg={2} md={6}><Form.Select value={filters.visitType} onChange={(e) => updateFilter('visitType', e.target.value)}><option value="">All type</option>{visitTypes.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+          <Col lg={2} md={6}><Form.Select value={filters.status} onChange={(e) => updateFilter('status', e.target.value)}><option value="">All status</option>{visitStatuses.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+          <Col lg={2} md={6}><Form.Select value={filters.agentId} onChange={(e) => updateFilter('agentId', e.target.value)}><option value="">All agents</option>{agents.map((agent) => <option key={agent._id} value={agent._id}>{agent.name}</option>)}</Form.Select></Col>
+          <Col lg={2} md={6}><Form.Control type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} /></Col>
+          <Col lg={2} md={6}><Form.Control type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} /></Col>
+          <Col lg={2} md={6}><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search..." /></InputGroup></Col>
+        </Row>
+      </div>
 
-              {/* Pagination */}
-              {pagination.pages > 1 && (
-                <div className="d-flex justify-content-between align-items-center mt-3">
-                  <div>
-                    Showing {((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total} records
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === 1}
-                      onClick={() => setFilters({...filters, page: pagination.page - 1})}
-                    >
-                      Previous
-                    </Button>
-                    <span className="mx-2">
-                      Page {pagination.page} of {pagination.pages}
-                    </span>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === pagination.pages}
-                      onClick={() => setFilters({...filters, page: pagination.page + 1})}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </Card.Body>
-      </Card>
+      <div className="vl-table-card">
+        <div className="table-responsive">
+          <Table hover className="vl-table mb-0">
+            <thead><tr><th>Date</th><th>Borrower</th><th>Loan</th><th>Agent</th><th>Type</th><th>Status</th><th>Location</th><th>Collected</th><th>Action</th></tr></thead>
+            <tbody>
+              {loading && <tr><td colSpan="9" className="text-center py-5">Loading visit logs...</td></tr>}
+              {!loading && filteredLogs.map((log) => (
+                <tr key={log._id}>
+                  <td>{formatDateTime(log.createdAt)}</td>
+                  <td><strong>{log.userId?.name || 'N/A'}</strong><span>{log.userId?.mobile || ''}</span></td>
+                  <td>{log.loanId?.loanAccountNumber || '-'}</td>
+                  <td>{log.agentId?.name || 'N/A'}</td>
+                  <td><Badge bg="info">{log.visitType}</Badge></td>
+                  <td><Badge bg={statusTone(log.visitStatus)}>{log.visitStatus}</Badge></td>
+                  <td>{locationText(log.location)}</td>
+                  <td><strong>{formatCurrency(paymentAmount(log))}</strong></td>
+                  <td><Button size="sm" variant="outline-secondary" onClick={() => setSelectedLog(log)}><Eye size={15} /></Button></td>
+                </tr>
+              ))}
+              {!loading && !filteredLogs.length && <tr><td colSpan="9" className="text-center py-5 text-muted">No visit logs found</td></tr>}
+            </tbody>
+          </Table>
+        </div>
+        <div className="vl-pagination">
+          <span>Page {pagination.page} of {pagination.pages || 1} - {pagination.total} records</span>
+          <div>
+            <Button size="sm" variant="outline-secondary" disabled={pagination.page <= 1} onClick={() => setPagination((current) => ({ ...current, page: current.page - 1 }))}>Previous</Button>
+            <Button size="sm" variant="outline-secondary" disabled={pagination.page >= pagination.pages} onClick={() => setPagination((current) => ({ ...current, page: current.page + 1 }))}>Next</Button>
+          </div>
+        </div>
+      </div>
 
-      {/* Add Visit Log Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg">
-        <Modal.Header closeButton>
-          <Modal.Title>Add Visit Log</Modal.Title>
-        </Modal.Header>
+      <Modal show={!!selectedLog} onHide={() => setSelectedLog(null)} size="lg" centered>
+        <Modal.Header closeButton><Modal.Title>Visit Details</Modal.Title></Modal.Header>
         <Modal.Body>
-          <Form>
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Loan *</Form.Label>
-                  <Form.Select
-                    value={visitData.loanId}
-                    onChange={(e) => {
-                      const selectedLoan = loans.find(l => l._id === e.target.value)
-                      setVisitData({
-                        ...visitData,
-                        loanId: e.target.value,
-                        userId: selectedLoan?.userId || '',
-                        collectionId: '' // Will be set when collection is found
-                      })
-                    }}
-                  >
-                    <option value="">Select loan</option>
-                    {loans.map(loan => (
-                      <option key={loan._id} value={loan._id}>
-                        {loan.loanAccountNumber} - {loan.application?.personal?.name}
-                      </option>
-                    ))}
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Agent *</Form.Label>
-                  <Form.Select
-                    value={visitData.agentId}
-                    onChange={(e) => setVisitData({...visitData, agentId: e.target.value})}
-                  >
-                    <option value="">Select agent</option>
-                    {agents.map(agent => (
-                      <option key={agent._id} value={agent._id}>{agent.name}</option>
-                    ))}
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Row>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Visit Type *</Form.Label>
-                  <Form.Select
-                    value={visitData.visitType}
-                    onChange={(e) => setVisitData({...visitData, visitType: e.target.value})}
-                  >
-                    <option value="FIELD_VISIT">Field Visit</option>
-                    <option value="OFFICE_VISIT">Office Visit</option>
-                    <option value="HOME_VISIT">Home Visit</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Visit Status *</Form.Label>
-                  <Form.Select
-                    value={visitData.visitStatus}
-                    onChange={(e) => setVisitData({...visitData, visitStatus: e.target.value})}
-                  >
-                    <option value="COMPLETED">Completed</option>
-                    <option value="PARTIAL">Partial</option>
-                    <option value="FAILED">Failed</option>
-                    <option value="RESCHEDULED">Rescheduled</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Payment Received</Form.Label>
-                  <Form.Control
-                    type="number"
-                    value={visitData.paymentReceived}
-                    onChange={(e) => setVisitData({...visitData, paymentReceived: parseInt(e.target.value) || 0})}
-                    placeholder="0"
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Contact Person *</Form.Label>
-                  <Form.Control
-                    type="text"
-                    value={visitData.contactPerson}
-                    onChange={(e) => setVisitData({...visitData, contactPerson: e.target.value})}
-                    placeholder="Person who was contacted"
-                  />
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Relationship *</Form.Label>
-                  <Form.Select
-                    value={visitData.relationship}
-                    onChange={(e) => setVisitData({...visitData, relationship: e.target.value})}
-                  >
-                    <option value="">Select relationship</option>
-                    <option value="SELF">Self</option>
-                    <option value="FAMILY">Family</option>
-                    <option value="FRIEND">Friend</option>
-                    <option value="NEIGHBOR">Neighbor</option>
-                    <option value="OTHER">Other</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Location</Form.Label>
-              <Form.Control
-                type="text"
-                value={visitData.location}
-                onChange={(e) => setVisitData({...visitData, location: e.target.value})}
-                placeholder="Visit location/address"
-              />
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Visit Purpose</Form.Label>
-              <Form.Select
-                value={visitData.visitPurpose}
-                onChange={(e) => setVisitData({...visitData, visitPurpose: e.target.value})}
-              >
-                <option value="COLLECTION">Collection</option>
-                <option value="VERIFICATION">Verification</option>
-                <option value="LEGAL_NOTICE">Legal Notice</option>
-                <option value="SETTLEMENT">Settlement</option>
-                <option value="OTHER">Other</option>
-              </Form.Select>
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Conversation Summary *</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={visitData.conversationSummary}
-                onChange={(e) => setVisitData({...visitData, conversationSummary: e.target.value})}
-                placeholder="Brief summary of the visit conversation"
-              />
-            </Form.Group>
-
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Next Action *</Form.Label>
-                  <Form.Select
-                    value={visitData.nextAction}
-                    onChange={(e) => setVisitData({...visitData, nextAction: e.target.value})}
-                  >
-                    <option value="FOLLOW_UP">Follow Up</option>
-                    <option value="VISIT_AGAIN">Visit Again</option>
-                    <option value="LEGAL">Legal Action</option>
-                    <option value="SETTLEMENT">Settlement</option>
-                    <option value="PAYMENT_REMINDER">Payment Reminder</option>
-                    <option value="NONE">None</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Next Action Date</Form.Label>
-                  <Form.Control
-                    type="date"
-                    value={visitData.nextActionDate}
-                    onChange={(e) => setVisitData({...visitData, nextActionDate: e.target.value})}
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Form.Group className="mb-3">
-              <Form.Label>PTP (Promise to Pay)</Form.Label>
-              <Row>
-                <Col md={6}>
-                  <Form.Control
-                    type="number"
-                    placeholder="Amount"
-                    value={visitData.promiseToPay.amount}
-                    onChange={(e) => setVisitData({
-                      ...visitData,
-                      promiseToPay: {...visitData.promiseToPay, amount: e.target.value}
-                    })}
-                  />
-                </Col>
-                <Col md={6}>
-                  <Form.Control
-                    type="date"
-                    placeholder="Date"
-                    value={visitData.promiseToPay.date}
-                    onChange={(e) => setVisitData({
-                      ...visitData,
-                      promiseToPay: {...visitData.promiseToPay, date: e.target.value}
-                    })}
-                  />
-                </Col>
-              </Row>
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Documents Collected</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={2}
-                value={visitData.documentsCollected}
-                onChange={(e) => setVisitData({...visitData, documentsCollected: e.target.value})}
-                placeholder="List any documents collected during visit"
-              />
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Additional Notes</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={2}
-                value={visitData.notes}
-                onChange={(e) => setVisitData({...visitData, notes: e.target.value})}
-                placeholder="Any additional notes"
-              />
-            </Form.Group>
-          </Form>
+          {selectedLog && <div className="vl-detail">
+            <p><span>Borrower</span><strong>{selectedLog.userId?.name || 'N/A'}</strong></p>
+            <p><span>Loan</span><strong>{selectedLog.loanId?.loanAccountNumber || 'N/A'}</strong></p>
+            <p><span>Agent</span><strong>{selectedLog.agentId?.name || 'N/A'}</strong></p>
+            <p><span>Location</span><strong>{locationText(selectedLog.location)}</strong></p>
+            <p><span>Contact</span><strong>{selectedLog.contactPerson || 'N/A'} ({selectedLog.relationship || 'N/A'})</strong></p>
+            <p><span>Summary</span><strong>{selectedLog.conversationSummary || 'N/A'}</strong></p>
+            <p><span>Payment</span><strong>{formatCurrency(paymentAmount(selectedLog))} {selectedLog.paymentReceived?.method || ''}</strong></p>
+            <p><span>Next Action</span><strong>{selectedLog.nextAction || 'N/A'} {selectedLog.nextActionDate ? `on ${formatDateTime(selectedLog.nextActionDate)}` : ''}</strong></p>
+            <p><span>Notes</span><strong>{selectedLog.notes || 'N/A'}</strong></p>
+          </div>}
         </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowModal(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={submitVisitLog}
-            disabled={!visitData.loanId || !visitData.agentId || !visitData.contactPerson || !visitData.relationship || !visitData.conversationSummary}
-          >
-            Save Visit Log
-          </Button>
-        </Modal.Footer>
+        <Modal.Footer><Button variant="secondary" onClick={() => setSelectedLog(null)}>Close</Button></Modal.Footer>
       </Modal>
+
+      <Modal show={showCreate} onHide={() => setShowCreate(false)} size="lg" centered>
+        <Modal.Header closeButton><Modal.Title>Create Visit Log</Modal.Title></Modal.Header>
+        <Form onSubmit={handleCreate}>
+          <Modal.Body>
+            <Row className="g-3">
+              <Col md={6}><Form.Label>Loan</Form.Label><Form.Select required value={form.loanId} onChange={(e) => handleLoanChange(e.target.value)}><option value="">Select overdue loan</option>{overdueUsers.map((user) => <option key={user.loanId} value={user.loanId}>{user.loanAccountNumber} - {user.userName}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Label>Agent</Form.Label><Form.Select required value={form.agentId} onChange={(e) => setForm({ ...form, agentId: e.target.value })}><option value="">Select agent</option>{agents.map((agent) => <option key={agent._id} value={agent._id}>{agent.name}</option>)}</Form.Select></Col>
+              <Col md={4}><Form.Label>Visit Type</Form.Label><Form.Select value={form.visitType} onChange={(e) => setForm({ ...form, visitType: e.target.value })}>{visitTypes.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={4}><Form.Label>Status</Form.Label><Form.Select value={form.visitStatus} onChange={(e) => setForm({ ...form, visitStatus: e.target.value })}>{visitStatuses.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={4}><Form.Label>Purpose</Form.Label><Form.Select value={form.visitPurpose} onChange={(e) => setForm({ ...form, visitPurpose: e.target.value })}>{visitPurposes.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Label>Contact Person</Form.Label><Form.Control required value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} /></Col>
+              <Col md={6}><Form.Label>Relationship</Form.Label><Form.Select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })}>{relationships.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={12}><Form.Label>Address</Form.Label><Form.Control value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>City</Form.Label><Form.Control value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>State</Form.Label><Form.Control value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>Pincode</Form.Label><Form.Control value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} /></Col>
+              <Col md={12}><Form.Label>Conversation Summary</Form.Label><Form.Control required as="textarea" rows={3} value={form.conversationSummary} onChange={(e) => setForm({ ...form, conversationSummary: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>Payment Amount</Form.Label><Form.Control type="number" value={form.paymentAmount} onChange={(e) => setForm({ ...form, paymentAmount: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>Method</Form.Label><Form.Select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>{['CASH', 'CHEQUE', 'ONLINE_TRANSFER', 'OTHER'].map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={4}><Form.Label>Reference</Form.Label><Form.Control value={form.paymentReference} onChange={(e) => setForm({ ...form, paymentReference: e.target.value })} /></Col>
+              <Col md={6}><Form.Label>Next Action</Form.Label><Form.Select value={form.nextAction} onChange={(e) => setForm({ ...form, nextAction: e.target.value })}>{nextActions.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Label>Next Action Date</Form.Label><Form.Control type="date" value={form.nextActionDate} onChange={(e) => setForm({ ...form, nextActionDate: e.target.value })} /></Col>
+              <Col md={12}><Form.Label>Notes</Form.Label><Form.Control as="textarea" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Col>
+            </Row>
+          </Modal.Body>
+          <Modal.Footer><Button variant="secondary" onClick={() => setShowCreate(false)}>Cancel</Button><Button type="submit" disabled={processing}>{processing ? 'Saving...' : 'Save Visit Log'}</Button></Modal.Footer>
+        </Form>
+      </Modal>
+
+      <style>{`
+        .vl-page { color: #0f172a; }
+        .vl-header { background: linear-gradient(135deg, #0f172a 0%, #047857 58%, #0e7490 100%); border-radius: 18px; padding: 28px; color: #fff; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; box-shadow: 0 18px 45px rgba(15,23,42,.18); }
+        .vl-header h1 { margin: 2px 0 8px; font-size: 30px; font-weight: 850; } .vl-header p { margin: 0; color: rgba(255,255,255,.78); font-weight: 500; }
+        .vl-eyebrow { font-size: 12px; text-transform: uppercase; font-weight: 800; color: #bbf7d0; }
+        .vl-actions { display: flex; gap: 10px; flex-wrap: wrap; } .vl-actions .btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }
+        .vl-stat, .vl-panel, .vl-table-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 30px rgba(15,23,42,.06); }
+        .vl-stat { min-height: 112px; padding: 17px; display: flex; gap: 13px; align-items: flex-start; }
+        .vl-stat-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; }
+        .vl-stat-blue .vl-stat-icon { background: #2563eb; } .vl-stat-green .vl-stat-icon { background: #059669; } .vl-stat-red .vl-stat-icon { background: #dc2626; } .vl-stat-amber .vl-stat-icon { background: #d97706; }
+        .vl-stat span { display: block; color: #64748b; font-size: 12px; font-weight: 850; text-transform: uppercase; } .vl-stat strong { font-size: 22px; font-weight: 850; }
+        .vl-panel { padding: 18px; margin: 18px 0; } .vl-table-card { overflow: hidden; }
+        .vl-table thead th { background: #f8fafc; color: #475569; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
+        .vl-table td { vertical-align: middle; font-weight: 600; } .vl-table td span { display: block; color: #64748b; font-size: 12px; }
+        .vl-pagination { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid #e2e8f0; color: #64748b; font-weight: 700; } .vl-pagination div { display: flex; gap: 8px; }
+        .vl-detail p { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #f1f5f9; padding: 10px 0; margin: 0; }
+        .vl-detail span { color: #64748b; font-weight: 850; text-transform: uppercase; font-size: 12px; } .vl-detail strong { text-align: right; overflow-wrap: anywhere; }
+        @media (max-width: 768px) { .vl-header { flex-direction: column; padding: 22px; } .vl-actions { width: 100%; } .vl-actions .btn { flex: 1; justify-content: center; } .vl-pagination { flex-direction: column; } }
+      `}</style>
     </div>
-  )
-}
+  );
+};
+
+export default VisitLogs;

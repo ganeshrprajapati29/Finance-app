@@ -20,6 +20,20 @@ const employeeSchema = new mongoose.Schema({
     canViewReports: { type: Boolean, default: false },
   },
   department: { type: String, default: 'GENERAL' },
+  agentProfile: {
+    employeeId: String,
+    designation: String,
+    joiningDate: Date,
+    address: String,
+    aadhaarNumber: String,
+    panNumber: String,
+    salary: { type: Number, default: 0 },
+    emergencyContact: String,
+    emergencyContactName: String,
+    targetCollection: { type: Number, default: 0 },
+    area: String,
+    zone: String
+  },
   isActive: { type: Boolean, default: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });

@@ -1,588 +1,338 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Badge, Alert, Row, Col, Form, Modal, InputGroup } from 'react-bootstrap'
-import api from '../api/axios'
-import { Phone, PhoneCall, PhoneOff, Clock, User, MessageSquare } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Col, Form, InputGroup, Modal, Row, Table } from 'react-bootstrap';
+import { Download, Eye, PhoneCall, Plus, RefreshCw, Search, Timer, UserCheck, Users } from 'lucide-react';
+import api from '../api/axios';
 
-export default function CallLogs(){
-  const [callLogs, setCallLogs] = useState([])
-  const [loans, setLoans] = useState([])
-  const [agents, setAgents] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [filters, setFilters] = useState({
-    loanId: '',
-    agentId: '',
-    page: 1,
-    limit: 20
-  })
-  const [pagination, setPagination] = useState({
-    page: 1,
-    limit: 20,
-    total: 0,
-    pages: 0
-  })
-  const [callData, setCallData] = useState({
-    collectionId: '',
-    loanId: '',
-    userId: '',
-    agentId: '',
-    callType: 'OUTBOUND',
-    callStatus: 'CONNECTED',
-    callDuration: 0,
-    contactPerson: '',
-    relationship: '',
-    conversationSummary: '',
-    nextAction: 'FOLLOW_UP',
-    nextActionDate: '',
-    promiseToPay: {
-      amount: '',
-      date: ''
-    },
-    notes: ''
-  })
+const callStatuses = ['CONNECTED', 'NO_ANSWER', 'BUSY', 'WRONG_NUMBER', 'DISCONNECTED'];
+const callTypes = ['OUTBOUND', 'INBOUND'];
+const relationships = ['SELF', 'FAMILY', 'FRIEND', 'COLLEAGUE', 'OTHER'];
+const nextActions = ['FOLLOW_UP', 'VISIT', 'LEGAL', 'SETTLEMENT', 'PAYMENT_REMINDER', 'NONE'];
 
-  const loadCallLogs = async ()=>{
-    setLoading(true)
+const formatDateTime = (date) => date ? new Date(date).toLocaleString('en-IN') : 'N/A';
+const formatDuration = (seconds) => {
+  const value = Number(seconds || 0);
+  if (value < 60) return `${value}s`;
+  return `${Math.floor(value / 60)}m ${value % 60}s`;
+};
+
+const downloadCsv = (rows, filename) => {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const statusTone = (status) => ({
+  CONNECTED: 'success',
+  NO_ANSWER: 'warning',
+  BUSY: 'info',
+  WRONG_NUMBER: 'danger',
+  DISCONNECTED: 'secondary'
+}[status] || 'secondary');
+
+const StatCard = ({ icon: Icon, label, value, tone }) => (
+  <div className={`cl-stat cl-stat-${tone}`}>
+    <div className="cl-stat-icon"><Icon size={20} /></div>
+    <div><span>{label}</span><strong>{value}</strong></div>
+  </div>
+);
+
+const emptyForm = {
+  loanId: '',
+  collectionId: '',
+  agentId: '',
+  callType: 'OUTBOUND',
+  callStatus: 'CONNECTED',
+  callDuration: 120,
+  contactPerson: '',
+  relationship: 'SELF',
+  conversationSummary: '',
+  nextAction: 'FOLLOW_UP',
+  nextActionDate: '',
+  ptpAmount: '',
+  ptpDate: '',
+  notes: ''
+};
+
+const CallLogs = () => {
+  const [logs, setLogs] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [overdueUsers, setOverdueUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [selectedLog, setSelectedLog] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, pages: 1 });
+  const [filters, setFilters] = useState({ callStatus: '', callType: '', agentId: '', search: '' });
+  const [form, setForm] = useState(emptyForm);
+
+  const fetchAgents = async () => {
     try {
-      const params = new URLSearchParams()
-      if (filters.loanId) params.append('loanId', filters.loanId)
-      if (filters.agentId) params.append('agentId', filters.agentId)
-      params.append('page', filters.page)
-      params.append('limit', filters.limit)
+      const res = await api.get('/employees');
+      setAgents(res.data?.data?.items || res.data?.data || []);
+    } catch {
+      setAgents([]);
+    }
+  };
 
-      const r = await api.get(`/admin/collections/call-logs?${params}`)
-      setCallLogs(r.data.data.callLogs)
-      setPagination(r.data.data.pagination)
-    } catch (error) {
-      console.error('Failed to load call logs:', error)
+  const fetchOverdueUsers = async () => {
+    try {
+      const res = await api.get('/admin/collections/overdue-users');
+      setOverdueUsers(res.data?.data?.users || []);
+    } catch {
+      setOverdueUsers([]);
+    }
+  };
+
+  const fetchLogs = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const query = new URLSearchParams({ page: pagination.page, limit: pagination.limit });
+      if (filters.callStatus) query.append('callStatus', filters.callStatus);
+      if (filters.callType) query.append('callType', filters.callType);
+      if (filters.agentId) query.append('agentId', filters.agentId);
+      const res = await api.get(`/admin/collections/call-logs?${query}`);
+      setLogs(res.data?.data?.callLogs || []);
+      setPagination((current) => ({ ...current, ...(res.data?.data?.pagination || {}) }));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Call logs load nahi ho paaye.');
+      setLogs([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  const loadLoans = async ()=>{
+  useEffect(() => {
+    fetchAgents();
+    fetchOverdueUsers();
+  }, []);
+
+  useEffect(() => {
+    fetchLogs();
+  }, [pagination.page, pagination.limit, filters.callStatus, filters.callType, filters.agentId]);
+
+  const filteredLogs = useMemo(() => {
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return logs;
+    return logs.filter((log) => [
+      log.userId?.name,
+      log.userId?.mobile,
+      log.loanId?.loanAccountNumber,
+      log.agentId?.name,
+      log.conversationSummary
+    ].some((value) => String(value || '').toLowerCase().includes(term)));
+  }, [filters.search, logs]);
+
+  const stats = useMemo(() => ({
+    total: logs.length,
+    connected: logs.filter((log) => log.callStatus === 'CONNECTED').length,
+    followUp: logs.filter((log) => log.nextAction && log.nextAction !== 'NONE').length,
+    avgDuration: logs.length ? Math.round(logs.reduce((sum, log) => sum + Number(log.callDuration || 0), 0) / logs.length) : 0
+  }), [logs]);
+
+  const updateFilter = (field, value) => {
+    setFilters((current) => ({ ...current, [field]: value }));
+    setPagination((current) => ({ ...current, page: 1 }));
+  };
+
+  const handleLoanChange = (loanId) => {
+    const selected = overdueUsers.find((user) => String(user.loanId) === String(loanId));
+    setForm((current) => ({
+      ...current,
+      loanId,
+      collectionId: selected?.collectionId || '',
+      contactPerson: selected?.userName || current.contactPerson
+    }));
+  };
+
+  const handleCreate = async (event) => {
+    event.preventDefault();
     try {
-      const r = await api.get('/admin/loans')
-      setLoans(r.data.data.items || r.data.data || [])
-    } catch (error) {
-      console.error('Failed to load loans:', error)
+      setProcessing(true);
+      setError('');
+      const payload = {
+        collectionId: form.collectionId || undefined,
+        loanId: form.loanId,
+        agentId: form.agentId,
+        callType: form.callType,
+        callStatus: form.callStatus,
+        callDuration: Number(form.callDuration || 0),
+        contactPerson: form.contactPerson,
+        relationship: form.relationship,
+        conversationSummary: form.conversationSummary,
+        nextAction: form.nextAction,
+        nextActionDate: form.nextActionDate || undefined,
+        promiseToPay: form.ptpAmount && form.ptpDate ? { amount: Number(form.ptpAmount), date: form.ptpDate } : undefined,
+        notes: form.notes
+      };
+      await api.post('/admin/collections/call-log', payload);
+      setSuccess('Call log create ho gaya.');
+      setShowCreate(false);
+      setForm(emptyForm);
+      fetchLogs();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Call log save nahi ho paaya.');
+    } finally {
+      setProcessing(false);
     }
-  }
+  };
 
-  const loadAgents = async ()=>{
-    try {
-      const r = await api.get('/admin/agents')
-      setAgents(r.data.data.agents || [])
-    } catch (error) {
-      console.error('Failed to load agents:', error)
-    }
-  }
-
-  useEffect(()=>{ 
-    loadCallLogs()
-    loadLoans()
-    loadAgents()
-  }, [filters])
-
-  const handleAddCallLog = ()=>{
-    setCallData({
-      collectionId: '',
-      loanId: '',
-      userId: '',
-      agentId: '',
-      callType: 'OUTBOUND',
-      callStatus: 'CONNECTED',
-      callDuration: 0,
-      contactPerson: '',
-      relationship: '',
-      conversationSummary: '',
-      nextAction: 'FOLLOW_UP',
-      nextActionDate: '',
-      promiseToPay: {
-        amount: '',
-        date: ''
-      },
-      notes: ''
-    })
-    setShowModal(true)
-  }
-
-  const submitCallLog = async ()=>{
-    try {
-      await api.post('/admin/collections/call-log', callData)
-      setShowModal(false)
-      await loadCallLogs()
-      alert('Call log added successfully')
-    } catch (error) {
-      console.error('Failed to add call log:', error)
-      alert('Failed to add call log')
-    }
-  }
-
-  const getCallStatusIcon = (status)=>{
-    switch(status) {
-      case 'CONNECTED': return <PhoneCall size={16} className="text-success" />
-      case 'NO_ANSWER': return <PhoneOff size={16} className="text-warning" />
-      case 'BUSY': return <Phone size={16} className="text-warning" />
-      case 'WRONG_NUMBER': return <PhoneOff size={16} className="text-danger" />
-      case 'DISCONNECTED': return <PhoneOff size={16} className="text-secondary" />
-      default: return <Phone size={16} />
-    }
-  }
-
-  const getCallStatusColor = (status)=>{
-    switch(status) {
-      case 'CONNECTED': return 'success'
-      case 'NO_ANSWER': return 'warning'
-      case 'BUSY': return 'warning'
-      case 'WRONG_NUMBER': return 'danger'
-      case 'DISCONNECTED': return 'secondary'
-      default: return 'primary'
-    }
-  }
-
-  const formatDuration = (seconds)=>{
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
+  const exportRows = () => {
+    downloadCsv(filteredLogs.map((log) => ({
+      date: formatDateTime(log.createdAt),
+      borrower: log.userId?.name || '',
+      mobile: log.userId?.mobile || '',
+      loan: log.loanId?.loanAccountNumber || '',
+      agent: log.agentId?.name || '',
+      type: log.callType,
+      status: log.callStatus,
+      duration: log.callDuration || 0,
+      nextAction: log.nextAction || '',
+      summary: log.conversationSummary || ''
+    })), 'call-logs.csv');
+  };
 
   return (
-    <div>
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2 className="mb-0">
-          <Phone className="me-2" />
-          Call Logs
-        </h2>
-        <Button variant="primary" onClick={handleAddCallLog}>
-          <PhoneCall className="me-2" size={16} />
-          Add Call Log
-        </Button>
+    <div className="cl-page">
+      <div className="cl-header">
+        <div>
+          <div className="cl-eyebrow">Collections</div>
+          <h1>Call Logs</h1>
+          <p>Borrower calling activity, outcomes, next action, and Promise to Pay records.</p>
+        </div>
+        <div className="cl-actions">
+          <Button variant="light" onClick={() => setShowCreate(true)}><Plus size={16} /> Add Call</Button>
+          <Button variant="outline-light" onClick={fetchLogs}><RefreshCw size={16} /> Refresh</Button>
+          <Button variant="outline-light" onClick={exportRows} disabled={!filteredLogs.length}><Download size={16} /> Export</Button>
+        </div>
       </div>
 
-      <Alert variant="info" className="mb-4">
-        <strong>Note:</strong> Track all collection calls made to customers.
-        Maintain detailed conversation records and follow-up actions.
-      </Alert>
+      {error && <Alert variant="danger" className="mt-3" dismissible onClose={() => setError('')}>{error}</Alert>}
+      {success && <Alert variant="success" className="mt-3" dismissible onClose={() => setSuccess('')}>{success}</Alert>}
 
-      {/* Filters */}
-      <Card className="mb-4">
-        <Card.Header>
-          <h5 className="mb-0">Filters</h5>
-        </Card.Header>
-        <Card.Body>
-          <Row>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Loan ID</Form.Label>
-                <Form.Select
-                  value={filters.loanId}
-                  onChange={(e) => setFilters({...filters, loanId: e.target.value, page: 1})}
-                >
-                  <option value="">All Loans</option>
-                  {loans.map(loan => (
-                    <option key={loan._id} value={loan._id}>
-                      {loan.loanAccountNumber} - {loan.application?.personal?.name}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Agent</Form.Label>
-                <Form.Select
-                  value={filters.agentId}
-                  onChange={(e) => setFilters({...filters, agentId: e.target.value, page: 1})}
-                >
-                  <option value="">All Agents</option>
-                  {agents.map(agent => (
-                    <option key={agent._id} value={agent._id}>{agent.name}</option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-            </Col>
-            <Col md={4}>
-              <Form.Group className="mb-3">
-                <Form.Label>Records per page</Form.Label>
-                <Form.Select
-                  value={filters.limit}
-                  onChange={(e) => setFilters({...filters, limit: e.target.value, page: 1})}
-                >
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </Form.Select>
-              </Form.Group>
-            </Col>
-          </Row>
-        </Card.Body>
-      </Card>
-
-      {/* Summary Cards */}
-      <Row className="mb-4">
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <PhoneCall size={32} className="text-success mb-2" />
-              <h4>{callLogs.filter(log => log.callStatus === 'CONNECTED').length}</h4>
-              <small className="text-muted">Connected Calls</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <PhoneOff size={32} className="text-warning mb-2" />
-              <h4>{callLogs.filter(log => log.callStatus !== 'CONNECTED').length}</h4>
-              <small className="text-muted">Failed Calls</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <Clock size={32} className="text-info mb-2" />
-              <h4>{callLogs.reduce((sum, log) => sum + (log.callDuration || 0), 0)}</h4>
-              <small className="text-muted">Total Talk Time (sec)</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={3}>
-          <Card className="text-center">
-            <Card.Body>
-              <MessageSquare size={32} className="text-primary mb-2" />
-              <h4>{callLogs.filter(log => log.promiseToPay?.amount).length}</h4>
-              <small className="text-muted">PTP Created</small>
-            </Card.Body>
-          </Card>
-        </Col>
+      <Row className="g-3 mt-1">
+        <Col xl={3} md={6}><StatCard icon={PhoneCall} label="Total Calls" value={stats.total} tone="blue" /></Col>
+        <Col xl={3} md={6}><StatCard icon={UserCheck} label="Connected" value={stats.connected} tone="green" /></Col>
+        <Col xl={3} md={6}><StatCard icon={Timer} label="Avg Duration" value={formatDuration(stats.avgDuration)} tone="amber" /></Col>
+        <Col xl={3} md={6}><StatCard icon={Users} label="Follow-ups" value={stats.followUp} tone="purple" /></Col>
       </Row>
 
-      {/* Call Logs Table */}
-      <Card>
-        <Card.Header>
-          <h5 className="mb-0">Call Logs ({pagination.total} records)</h5>
-        </Card.Header>
-        <Card.Body>
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : callLogs.length === 0 ? (
-            <div className="text-center text-muted py-5">
-              <Phone size={48} className="mb-3 opacity-50" />
-              <p>No call logs found</p>
-            </div>
-          ) : (
-            <>
-              <Table striped hover responsive>
-                <thead className="table-dark">
-                  <tr>
-                    <th>Date</th>
-                    <th>Loan ID</th>
-                    <th>Customer</th>
-                    <th>Agent</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                    <th>Contact Person</th>
-                    <th>Next Action</th>
-                    <th>PTP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {callLogs.map(log => (
-                    <tr key={log._id}>
-                      <td>{new Date(log.createdAt).toLocaleDateString()}</td>
-                      <td>{log.loanId?.loanAccountNumber}</td>
-                      <td>{log.userId?.name}</td>
-                      <td>{log.agentId?.name}</td>
-                      <td>
-                        <Badge bg={log.callType === 'OUTBOUND' ? 'primary' : 'secondary'}>
-                          {log.callType}
-                        </Badge>
-                      </td>
-                      <td>
-                        <div className="d-flex align-items-center gap-1">
-                          {getCallStatusIcon(log.callStatus)}
-                          <Badge bg={getCallStatusColor(log.callStatus)}>
-                            {log.callStatus}
-                          </Badge>
-                        </div>
-                      </td>
-                      <td>{formatDuration(log.callDuration || 0)}</td>
-                      <td>
-                        <div>
-                          <div>{log.contactPerson}</div>
-                          <small className="text-muted">{log.relationship}</small>
-                        </div>
-                      </td>
-                      <td>
-                        <Badge bg="info">{log.nextAction}</Badge>
-                      </td>
-                      <td>
-                        {log.promiseToPay?.amount ? (
-                          <div>
-                            <div>₹{log.promiseToPay.amount.toLocaleString()}</div>
-                            <small className="text-muted">
-                              {new Date(log.promiseToPay.date).toLocaleDateString()}
-                            </small>
-                          </div>
-                        ) : (
-                          <Badge bg="secondary">No PTP</Badge>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
+      <div className="cl-panel">
+        <Row className="g-3">
+          <Col lg={3} md={6}><Form.Select value={filters.callStatus} onChange={(e) => updateFilter('callStatus', e.target.value)}><option value="">All status</option>{callStatuses.map((status) => <option key={status}>{status}</option>)}</Form.Select></Col>
+          <Col lg={3} md={6}><Form.Select value={filters.callType} onChange={(e) => updateFilter('callType', e.target.value)}><option value="">All type</option>{callTypes.map((type) => <option key={type}>{type}</option>)}</Form.Select></Col>
+          <Col lg={3} md={6}><Form.Select value={filters.agentId} onChange={(e) => updateFilter('agentId', e.target.value)}><option value="">All agents</option>{agents.map((agent) => <option key={agent._id} value={agent._id}>{agent.name}</option>)}</Form.Select></Col>
+          <Col lg={3} md={6}><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search..." /></InputGroup></Col>
+        </Row>
+      </div>
 
-              {/* Pagination */}
-              {pagination.pages > 1 && (
-                <div className="d-flex justify-content-between align-items-center mt-3">
-                  <div>
-                    Showing {((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total} records
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === 1}
-                      onClick={() => setFilters({...filters, page: pagination.page - 1})}
-                    >
-                      Previous
-                    </Button>
-                    <span className="mx-2">
-                      Page {pagination.page} of {pagination.pages}
-                    </span>
-                    <Button
-                      variant="outline-primary"
-                      size="sm"
-                      disabled={pagination.page === pagination.pages}
-                      onClick={() => setFilters({...filters, page: pagination.page + 1})}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </Card.Body>
-      </Card>
+      <div className="cl-table-card">
+        <div className="table-responsive">
+          <Table hover className="cl-table mb-0">
+            <thead><tr><th>Date</th><th>Borrower</th><th>Loan</th><th>Agent</th><th>Type</th><th>Status</th><th>Duration</th><th>Next Action</th><th>Action</th></tr></thead>
+            <tbody>
+              {loading && <tr><td colSpan="9" className="text-center py-5">Loading call logs...</td></tr>}
+              {!loading && filteredLogs.map((log) => (
+                <tr key={log._id}>
+                  <td>{formatDateTime(log.createdAt)}</td>
+                  <td><strong>{log.userId?.name || 'N/A'}</strong><span>{log.userId?.mobile || ''}</span></td>
+                  <td>{log.loanId?.loanAccountNumber || '-'}</td>
+                  <td>{log.agentId?.name || 'N/A'}</td>
+                  <td><Badge bg={log.callType === 'OUTBOUND' ? 'info' : 'primary'}>{log.callType}</Badge></td>
+                  <td><Badge bg={statusTone(log.callStatus)}>{log.callStatus}</Badge></td>
+                  <td>{formatDuration(log.callDuration)}</td>
+                  <td>{log.nextAction || '-'}</td>
+                  <td><Button size="sm" variant="outline-secondary" onClick={() => setSelectedLog(log)}><Eye size={15} /></Button></td>
+                </tr>
+              ))}
+              {!loading && !filteredLogs.length && <tr><td colSpan="9" className="text-center py-5 text-muted">No call logs found</td></tr>}
+            </tbody>
+          </Table>
+        </div>
+        <div className="cl-pagination">
+          <span>Page {pagination.page} of {pagination.pages || 1} - {pagination.total} records</span>
+          <div>
+            <Button size="sm" variant="outline-secondary" disabled={pagination.page <= 1} onClick={() => setPagination((current) => ({ ...current, page: current.page - 1 }))}>Previous</Button>
+            <Button size="sm" variant="outline-secondary" disabled={pagination.page >= pagination.pages} onClick={() => setPagination((current) => ({ ...current, page: current.page + 1 }))}>Next</Button>
+          </div>
+        </div>
+      </div>
 
-      {/* Add Call Log Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg">
-        <Modal.Header closeButton>
-          <Modal.Title>Add Call Log</Modal.Title>
-        </Modal.Header>
+      <Modal show={!!selectedLog} onHide={() => setSelectedLog(null)} size="lg" centered>
+        <Modal.Header closeButton><Modal.Title>Call Details</Modal.Title></Modal.Header>
         <Modal.Body>
-          <Form>
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Loan *</Form.Label>
-                  <Form.Select
-                    value={callData.loanId}
-                    onChange={(e) => {
-                      const selectedLoan = loans.find(l => l._id === e.target.value)
-                      setCallData({
-                        ...callData,
-                        loanId: e.target.value,
-                        userId: selectedLoan?.userId || '',
-                        collectionId: '' // Will be set when collection is found
-                      })
-                    }}
-                  >
-                    <option value="">Select loan</option>
-                    {loans.map(loan => (
-                      <option key={loan._id} value={loan._id}>
-                        {loan.loanAccountNumber} - {loan.application?.personal?.name}
-                      </option>
-                    ))}
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Agent *</Form.Label>
-                  <Form.Select
-                    value={callData.agentId}
-                    onChange={(e) => setCallData({...callData, agentId: e.target.value})}
-                  >
-                    <option value="">Select agent</option>
-                    {agents.map(agent => (
-                      <option key={agent._id} value={agent._id}>{agent.name}</option>
-                    ))}
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Row>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Call Type *</Form.Label>
-                  <Form.Select
-                    value={callData.callType}
-                    onChange={(e) => setCallData({...callData, callType: e.target.value})}
-                  >
-                    <option value="OUTBOUND">Outbound</option>
-                    <option value="INBOUND">Inbound</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Call Status *</Form.Label>
-                  <Form.Select
-                    value={callData.callStatus}
-                    onChange={(e) => setCallData({...callData, callStatus: e.target.value})}
-                  >
-                    <option value="CONNECTED">Connected</option>
-                    <option value="NO_ANSWER">No Answer</option>
-                    <option value="BUSY">Busy</option>
-                    <option value="WRONG_NUMBER">Wrong Number</option>
-                    <option value="DISCONNECTED">Disconnected</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Duration (seconds)</Form.Label>
-                  <Form.Control
-                    type="number"
-                    value={callData.callDuration}
-                    onChange={(e) => setCallData({...callData, callDuration: parseInt(e.target.value) || 0})}
-                    placeholder="0"
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Contact Person *</Form.Label>
-                  <Form.Control
-                    type="text"
-                    value={callData.contactPerson}
-                    onChange={(e) => setCallData({...callData, contactPerson: e.target.value})}
-                    placeholder="Person who was contacted"
-                  />
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Relationship *</Form.Label>
-                  <Form.Select
-                    value={callData.relationship}
-                    onChange={(e) => setCallData({...callData, relationship: e.target.value})}
-                  >
-                    <option value="">Select relationship</option>
-                    <option value="SELF">Self</option>
-                    <option value="FAMILY">Family</option>
-                    <option value="FRIEND">Friend</option>
-                    <option value="COLLEAGUE">Colleague</option>
-                    <option value="OTHER">Other</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Conversation Summary *</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={callData.conversationSummary}
-                onChange={(e) => setCallData({...callData, conversationSummary: e.target.value})}
-                placeholder="Brief summary of the conversation"
-              />
-            </Form.Group>
-
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Next Action *</Form.Label>
-                  <Form.Select
-                    value={callData.nextAction}
-                    onChange={(e) => setCallData({...callData, nextAction: e.target.value})}
-                  >
-                    <option value="FOLLOW_UP">Follow Up</option>
-                    <option value="VISIT">Visit</option>
-                    <option value="LEGAL">Legal Action</option>
-                    <option value="SETTLEMENT">Settlement</option>
-                    <option value="PAYMENT_REMINDER">Payment Reminder</option>
-                    <option value="NONE">None</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Next Action Date</Form.Label>
-                  <Form.Control
-                    type="date"
-                    value={callData.nextActionDate}
-                    onChange={(e) => setCallData({...callData, nextActionDate: e.target.value})}
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Form.Group className="mb-3">
-              <Form.Label>PTP (Promise to Pay)</Form.Label>
-              <Row>
-                <Col md={6}>
-                  <Form.Control
-                    type="number"
-                    placeholder="Amount"
-                    value={callData.promiseToPay.amount}
-                    onChange={(e) => setCallData({
-                      ...callData,
-                      promiseToPay: {...callData.promiseToPay, amount: e.target.value}
-                    })}
-                  />
-                </Col>
-                <Col md={6}>
-                  <Form.Control
-                    type="date"
-                    placeholder="Date"
-                    value={callData.promiseToPay.date}
-                    onChange={(e) => setCallData({
-                      ...callData,
-                      promiseToPay: {...callData.promiseToPay, date: e.target.value}
-                    })}
-                  />
-                </Col>
-              </Row>
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Additional Notes</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={2}
-                value={callData.notes}
-                onChange={(e) => setCallData({...callData, notes: e.target.value})}
-                placeholder="Any additional notes"
-              />
-            </Form.Group>
-          </Form>
+          {selectedLog && <div className="cl-detail">
+            <p><span>Borrower</span><strong>{selectedLog.userId?.name || 'N/A'}</strong></p>
+            <p><span>Loan</span><strong>{selectedLog.loanId?.loanAccountNumber || 'N/A'}</strong></p>
+            <p><span>Agent</span><strong>{selectedLog.agentId?.name || 'N/A'}</strong></p>
+            <p><span>Outcome</span><strong>{selectedLog.callStatus}</strong></p>
+            <p><span>Contact Person</span><strong>{selectedLog.contactPerson || 'N/A'} ({selectedLog.relationship || 'N/A'})</strong></p>
+            <p><span>Summary</span><strong>{selectedLog.conversationSummary || 'N/A'}</strong></p>
+            <p><span>Next Action</span><strong>{selectedLog.nextAction || 'N/A'} {selectedLog.nextActionDate ? `on ${formatDateTime(selectedLog.nextActionDate)}` : ''}</strong></p>
+            <p><span>Notes</span><strong>{selectedLog.notes || 'N/A'}</strong></p>
+          </div>}
         </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowModal(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={submitCallLog}
-            disabled={!callData.loanId || !callData.agentId || !callData.contactPerson || !callData.relationship || !callData.conversationSummary}
-          >
-            Save Call Log
-          </Button>
-        </Modal.Footer>
+        <Modal.Footer><Button variant="secondary" onClick={() => setSelectedLog(null)}>Close</Button></Modal.Footer>
       </Modal>
+
+      <Modal show={showCreate} onHide={() => setShowCreate(false)} size="lg" centered>
+        <Modal.Header closeButton><Modal.Title>Add Call Log</Modal.Title></Modal.Header>
+        <Form onSubmit={handleCreate}>
+          <Modal.Body>
+            <Row className="g-3">
+              <Col md={6}><Form.Label>Loan</Form.Label><Form.Select required value={form.loanId} onChange={(e) => handleLoanChange(e.target.value)}><option value="">Select overdue loan</option>{overdueUsers.map((user) => <option key={user.loanId} value={user.loanId}>{user.loanAccountNumber} - {user.userName}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Label>Agent</Form.Label><Form.Select required value={form.agentId} onChange={(e) => setForm({ ...form, agentId: e.target.value })}><option value="">Select agent</option>{agents.map((agent) => <option key={agent._id} value={agent._id}>{agent.name}</option>)}</Form.Select></Col>
+              <Col md={3}><Form.Label>Type</Form.Label><Form.Select value={form.callType} onChange={(e) => setForm({ ...form, callType: e.target.value })}>{callTypes.map((type) => <option key={type}>{type}</option>)}</Form.Select></Col>
+              <Col md={3}><Form.Label>Status</Form.Label><Form.Select value={form.callStatus} onChange={(e) => setForm({ ...form, callStatus: e.target.value })}>{callStatuses.map((status) => <option key={status}>{status}</option>)}</Form.Select></Col>
+              <Col md={3}><Form.Label>Duration Seconds</Form.Label><Form.Control type="number" value={form.callDuration} onChange={(e) => setForm({ ...form, callDuration: e.target.value })} /></Col>
+              <Col md={3}><Form.Label>Relationship</Form.Label><Form.Select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })}>{relationships.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Label>Contact Person</Form.Label><Form.Control required value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} /></Col>
+              <Col md={6}><Form.Label>Next Action</Form.Label><Form.Select value={form.nextAction} onChange={(e) => setForm({ ...form, nextAction: e.target.value })}>{nextActions.map((item) => <option key={item}>{item}</option>)}</Form.Select></Col>
+              <Col md={12}><Form.Label>Conversation Summary</Form.Label><Form.Control required as="textarea" rows={3} value={form.conversationSummary} onChange={(e) => setForm({ ...form, conversationSummary: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>Next Action Date</Form.Label><Form.Control type="date" value={form.nextActionDate} onChange={(e) => setForm({ ...form, nextActionDate: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>PTP Amount</Form.Label><Form.Control type="number" value={form.ptpAmount} onChange={(e) => setForm({ ...form, ptpAmount: e.target.value })} /></Col>
+              <Col md={4}><Form.Label>PTP Date</Form.Label><Form.Control type="date" value={form.ptpDate} onChange={(e) => setForm({ ...form, ptpDate: e.target.value })} /></Col>
+              <Col md={12}><Form.Label>Notes</Form.Label><Form.Control as="textarea" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Col>
+            </Row>
+          </Modal.Body>
+          <Modal.Footer><Button variant="secondary" onClick={() => setShowCreate(false)}>Cancel</Button><Button type="submit" disabled={processing}>{processing ? 'Saving...' : 'Save Call Log'}</Button></Modal.Footer>
+        </Form>
+      </Modal>
+
+      <style>{`
+        .cl-page { color: #0f172a; }
+        .cl-header { background: linear-gradient(135deg, #0f172a 0%, #155e75 58%, #2563eb 100%); border-radius: 18px; padding: 28px; color: #fff; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; box-shadow: 0 18px 45px rgba(15,23,42,.18); }
+        .cl-header h1 { margin: 2px 0 8px; font-size: 30px; font-weight: 850; }
+        .cl-header p { margin: 0; color: rgba(255,255,255,.78); font-weight: 500; }
+        .cl-eyebrow { font-size: 12px; text-transform: uppercase; font-weight: 800; color: #bfdbfe; }
+        .cl-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+        .cl-actions .btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }
+        .cl-stat, .cl-panel, .cl-table-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 30px rgba(15,23,42,.06); }
+        .cl-stat { min-height: 112px; padding: 17px; display: flex; gap: 13px; align-items: flex-start; }
+        .cl-stat-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; }
+        .cl-stat-blue .cl-stat-icon { background: #2563eb; } .cl-stat-green .cl-stat-icon { background: #059669; } .cl-stat-amber .cl-stat-icon { background: #d97706; } .cl-stat-purple .cl-stat-icon { background: #7c3aed; }
+        .cl-stat span { display: block; color: #64748b; font-size: 12px; font-weight: 850; text-transform: uppercase; } .cl-stat strong { font-size: 22px; font-weight: 850; }
+        .cl-panel { padding: 18px; margin: 18px 0; }
+        .cl-table-card { overflow: hidden; } .cl-table thead th { background: #f8fafc; color: #475569; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
+        .cl-table td { vertical-align: middle; font-weight: 600; } .cl-table td span { display: block; color: #64748b; font-size: 12px; }
+        .cl-pagination { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid #e2e8f0; color: #64748b; font-weight: 700; }
+        .cl-pagination div { display: flex; gap: 8px; }
+        .cl-detail p { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #f1f5f9; padding: 10px 0; margin: 0; }
+        .cl-detail span { color: #64748b; font-weight: 850; text-transform: uppercase; font-size: 12px; } .cl-detail strong { text-align: right; overflow-wrap: anywhere; }
+        @media (max-width: 768px) { .cl-header { flex-direction: column; padding: 22px; } .cl-actions { width: 100%; } .cl-actions .btn { flex: 1; justify-content: center; } .cl-pagination { flex-direction: column; } }
+      `}</style>
     </div>
-  )
-}
+  );
+};
+
+export default CallLogs;

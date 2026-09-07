@@ -1,494 +1,204 @@
-import React, { useState, useEffect } from 'react';
-import axios from '../api/axios';
-import { toast } from 'react-toastify';
-import { Table, Button, Modal, Form, Badge, Row, Col, Card, Spinner, Alert } from 'react-bootstrap';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, Col, Form, InputGroup, Modal, Pagination, Row, Spinner, Table } from 'react-bootstrap';
+import { Edit, KeyRound, RefreshCw, Search, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import api from '../api/axios';
+
+const unwrap = (res) => res?.data?.data || res?.data || {};
+const today = () => new Date().toISOString().slice(0, 10);
+
+const permissionGroups = [
+  { key: 'canManageUsers', label: 'Users' },
+  { key: 'canManageLoans', label: 'Loans' },
+  { key: 'canManagePayments', label: 'Payments' },
+  { key: 'canManageSupport', label: 'Support' },
+  { key: 'canSendNotifications', label: 'Push Notifications' },
+  { key: 'canManageCollections', label: 'Collections' },
+  { key: 'canViewReports', label: 'Reports' },
+  { key: 'canViewAudit', label: 'Audit Log' },
+  { key: 'canManageSettings', label: 'Settings' }
+];
+
+const blankPermissions = Object.fromEntries(permissionGroups.map((item) => [item.key, item.key === 'canManageSupport']));
+const blankForm = {
+  name: '',
+  email: '',
+  phone: '',
+  password: '',
+  department: 'SUPPORT',
+  designation: 'Support Executive',
+  employeeId: '',
+  joiningDate: today(),
+  roles: ['employee'],
+  permissions: blankPermissions
+};
 
 const Employees = () => {
   const [employees, setEmployees] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [filters, setFilters] = useState({ search: '', role: '' });
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [editingEmployee, setEditingEmployee] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    password: '',
-    roles: ['employee'],
-    permissions: {
-      canManageUsers: false,
-      canManageLoans: false,
-      canManagePayments: false,
-      canManageSupport: true,
-      canSendNotifications: false,
-      canViewAudit: false,
-      canManageSettings: false,
-    },
-  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState(blankForm);
+  const [resetPassword, setResetPassword] = useState('');
+  const limit = 20;
 
-  useEffect(() => {
-    fetchEmployees();
-  }, []);
-
-  const fetchEmployees = async () => {
+  const load = async (page = pagination.page, filterValues = filters) => {
     try {
-      const response = await axios.get('/employees');
-      const responseData = response.data.data || response.data;
-      setEmployees(Array.isArray(responseData) ? responseData : []);
-    } catch (error) {
-      toast.error('Failed to fetch employees');
+      setLoading(true);
+      setError('');
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+      if (filterValues.search) params.set('search', filterValues.search);
+      if (filterValues.role) params.set('role', filterValues.role);
+      const res = await api.get(`/employees?${params.toString()}`);
+      const data = unwrap(res);
+      setEmployees(Array.isArray(data.items) ? data.items : []);
+      setPagination({ page: data.page || page, pages: data.pages || 1, total: data.total || 0 });
+    } catch (err) {
       setEmployees([]);
+      setPagination({ page: 1, pages: 1, total: 0 });
+      setError(err.response?.data?.message || err.message || 'Employees load nahi ho paaye');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      if (editingEmployee) {
-        await axios.put(`/employees/${editingEmployee._id}`, formData);
-        toast.success('✅ Employee updated successfully');
-      } else {
-        const response = await axios.post('/employees', formData);
-        toast.success('✅ Employee created successfully');
-        const { email, password } = formData;
-        toast.info(`📋 Employee Login Credentials:\nEmail: ${email}\nPassword: ${password}`, {
-          autoClose: 10000,
-          position: "top-center"
-        });
-      }
-      setShowModal(false);
-      setEditingEmployee(null);
-      resetForm();
-      setTimeout(() => {
-        fetchEmployees();
-      }, 500);
-    } catch (error) {
-      toast.error('❌ ' + (error.response?.data?.message || 'Operation failed'));
-    } finally {
-      setSubmitting(false);
-    }
+  useEffect(() => { load(1); }, []);
+
+  const stats = useMemo(() => ({
+    total: pagination.total || employees.length,
+    active: employees.filter((item) => item.status === 'active' || item.isActive).length,
+    inactive: employees.filter((item) => item.status === 'inactive' || item.isActive === false).length,
+    adminLike: employees.filter((item) => Object.values(item.permissions || {}).filter(Boolean).length >= 5).length
+  }), [employees, pagination.total]);
+
+  const openCreate = () => {
+    setSelected(null);
+    setForm(blankForm);
+    setShowForm(true);
   };
 
-  const handleEdit = (employee) => {
-    setEditingEmployee(employee);
-    setFormData({
-      name: employee.name,
-      email: employee.email,
-      phone: employee.phone,
-      permissions: { ...employee.permissions },
-    });
-    setShowModal(true);
-  };
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this employee?')) return;
-    try {
-      await axios.delete(`/employees/${id}`);
-      toast.success('✅ Employee deleted successfully');
-      fetchEmployees();
-    } catch (error) {
-      toast.error('❌ Failed to delete employee');
-    }
-  };
-
-  const handleResetPassword = async (id) => {
-    if (!window.confirm('Are you sure you want to reset this employee\'s password?')) return;
-    try {
-      await axios.post(`/employees/${id}/reset-password`);
-      toast.success('✅ Password reset successfully');
-    } catch (error) {
-      toast.error('❌ Failed to reset password');
-    }
-  };
-
-  const resetForm = () => {
-    setFormData({
-      name: '',
-      email: '',
-      phone: '',
+  const openEdit = (employee) => {
+    setSelected(employee);
+    setForm({
+      name: employee.name || '',
+      email: employee.email || '',
+      phone: employee.phone || '',
       password: '',
-      roles: ['employee'],
-      permissions: {
-        canManageUsers: false,
-        canManageLoans: false,
-        canManagePayments: false,
-        canManageSupport: true,
-        canSendNotifications: false,
-        canViewAudit: false,
-        canManageSettings: false,
-      },
+      department: employee.department || 'SUPPORT',
+      designation: employee.agentProfile?.designation || 'Support Executive',
+      employeeId: employee.agentProfile?.employeeId || '',
+      joiningDate: employee.agentProfile?.joiningDate ? new Date(employee.agentProfile.joiningDate).toISOString().slice(0, 10) : today(),
+      roles: employee.roles || ['employee'],
+      permissions: { ...blankPermissions, ...(employee.permissions || {}) }
     });
+    setShowForm(true);
   };
 
-  const handlePermissionChange = (permission, value) => {
-    setFormData(prev => ({
-      ...prev,
-      permissions: {
-        ...prev.permissions,
-        [permission]: value,
-      },
-    }));
+  const updatePermission = (key, value) => {
+    setForm((current) => ({ ...current, permissions: { ...current.permissions, [key]: value } }));
   };
 
-  const getPermissionIcon = (permission) => {
-    const icons = {
-      canManageUsers: '👤',
-      canManageLoans: '💰',
-      canManagePayments: '💳',
-      canManageSupport: '🎟️',
-      canSendNotifications: '📢',
-      canViewAudit: '📜',
-      canManageSettings: '⚙️'
-    };
-    return icons[permission] || '🔐';
+  const saveEmployee = async () => {
+    if (!form.name || !form.email || !form.phone) return setError('Name, email aur phone required hai');
+    if (!selected && form.password.length < 6) return setError('New employee password minimum 6 characters hona chahiye');
+    try {
+      setSaving(true);
+      setError('');
+      const payload = {
+        name: form.name,
+        email: form.email.toLowerCase(),
+        phone: form.phone,
+        roles: form.roles,
+        department: form.department,
+        permissions: form.permissions,
+        agentProfile: {
+          designation: form.designation,
+          employeeId: form.employeeId,
+          joiningDate: form.joiningDate
+        }
+      };
+      if (!selected) payload.password = form.password;
+      if (selected) await api.put(`/employees/${selected._id}`, payload);
+      else await api.post('/employees', payload);
+      setSuccess(selected ? 'Employee updated successfully' : 'Employee created successfully');
+      setShowForm(false);
+      await load(1);
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Employee save nahi ho paya');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const getPermissionLabel = (permission) => {
-    return permission.replace('can', '').replace(/([A-Z])/g, ' $1').trim();
+  const toggleStatus = async (employee) => {
+    try {
+      setSaving(true);
+      await api.put(`/employees/${employee._id}/status`, { status: employee.status === 'active' || employee.isActive ? 'inactive' : 'active' });
+      await load(pagination.page);
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Employee status update nahi ho paya');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const getStats = () => {
-    return {
-      total: employees.length,
-      active: employees.filter(e => e.status === 'active').length,
-      inactive: employees.filter(e => e.status === 'inactive').length
-    };
+  const resetEmployeePassword = async () => {
+    if (!selected || resetPassword.length < 6) return setError('Password minimum 6 characters hona chahiye');
+    try {
+      setSaving(true);
+      await api.post(`/employees/${selected._id}/reset-password`, { password: resetPassword });
+      setSuccess('Employee password reset successfully');
+      setSelected(null);
+      setResetPassword('');
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Password reset nahi ho paya');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const stats = getStats();
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
-        <Spinner animation="border" style={{ color: '#1abc9c' }} />
-      </div>
-    );
-  }
+  const permissionText = (permissions = {}) => permissionGroups.filter((item) => permissions[item.key]).map((item) => item.label).join(', ') || 'No permissions';
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%)', padding: '40px 20px' }}>
-      
-      {/* Premium Header */}
-      <div style={{ 
-        background: 'linear-gradient(135deg, #001f5c 0%, #003d99 100%)',
-        borderRadius: '16px',
-        padding: '35px',
-        marginBottom: '35px',
-        boxShadow: '0 15px 50px rgba(0, 31, 92, 0.2)',
-        color: 'white'
-      }}>
-        <Row className="align-items-center">
-          <Col md={8}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-              <div style={{
-                width: '70px',
-                height: '70px',
-                background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)',
-                borderRadius: '14px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '40px',
-                fontWeight: 'bold',
-                boxShadow: '0 10px 30px rgba(26, 188, 156, 0.3)'
-              }}>
-                👥
-              </div>
-              <div>
-                <h2 style={{ margin: 0, fontWeight: '700', fontSize: '28px' }}>Employee Management</h2>
-                <p style={{ margin: '8px 0 0 0', opacity: 0.9, fontSize: '14px' }}>KhatuPay - Manage Your Team</p>
-              </div>
-            </div>
-          </Col>
-          <Col md={4} className="text-end">
-            <Button
-              onClick={() => {
-                setEditingEmployee(null);
-                resetForm();
-                setShowModal(true);
-              }}
-              style={{ 
-                background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)',
-                border: 'none',
-                borderRadius: '8px',
-                fontWeight: '700',
-                padding: '10px 25px'
-              }}
-            >
-              ➕ Add Employee
-            </Button>
-          </Col>
-        </Row>
+    <div className="emp-page">
+      <div className="emp-head">
+        <div><p>Team Access</p><h2><Users size={28} /> Manage Employees</h2><span>Create employee logins and control exactly which admin modules they can access.</span></div>
+        <div className="emp-actions"><Button variant="outline-secondary" onClick={() => load(pagination.page)}><RefreshCw size={16} /> Refresh</Button><Button onClick={openCreate}><UserPlus size={16} /> Add Employee</Button></div>
       </div>
+      {error && <Alert variant="warning" dismissible onClose={() => setError('')}>{error}</Alert>}
+      {success && <Alert variant="success" dismissible onClose={() => setSuccess('')}>{success}</Alert>}
 
-      {/* Statistics Cards */}
-      <Row className="mb-4" style={{ display: 'flex', gap: '15px' }}>
-        <Col style={{ flex: 1, minWidth: '150px' }}>
-          <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', overflow: 'hidden', height: '100%' }}>
-            <Card.Body style={{ padding: '20px', background: 'linear-gradient(135deg, rgba(26, 188, 156, 0.1) 0%, rgba(22, 160, 133, 0.05) 100%)' }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '28px', fontWeight: '700', color: '#1abc9c', marginBottom: '8px' }}>{stats.total}</div>
-                <div style={{ color: '#6c757d', fontWeight: '600', fontSize: '13px' }}>👥 Total Employees</div>
-              </div>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col style={{ flex: 1, minWidth: '150px' }}>
-          <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', overflow: 'hidden', height: '100%' }}>
-            <Card.Body style={{ padding: '20px', background: 'linear-gradient(135deg, rgba(40, 167, 69, 0.1) 0%, rgba(32, 130, 55, 0.05) 100%)' }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '28px', fontWeight: '700', color: '#28a745', marginBottom: '8px' }}>{stats.active}</div>
-                <div style={{ color: '#6c757d', fontWeight: '600', fontSize: '13px' }}>✅ Active</div>
-              </div>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col style={{ flex: 1, minWidth: '150px' }}>
-          <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', overflow: 'hidden', height: '100%' }}>
-            <Card.Body style={{ padding: '20px', background: 'linear-gradient(135deg, rgba(220, 53, 69, 0.1) 0%, rgba(200, 35, 51, 0.05) 100%)' }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '28px', fontWeight: '700', color: '#dc3545', marginBottom: '8px' }}>{stats.inactive}</div>
-                <div style={{ color: '#6c757d', fontWeight: '600', fontSize: '13px' }}>❌ Inactive</div>
-              </div>
-            </Card.Body>
-          </Card>
-        </Col>
+      <Row className="g-3 mb-3">
+        <Col md={3}><Card className="emp-stat"><span>Total Employees</span><strong>{stats.total}</strong></Card></Col>
+        <Col md={3}><Card className="emp-stat success"><span>Active</span><strong>{stats.active}</strong></Card></Col>
+        <Col md={3}><Card className="emp-stat danger"><span>Inactive</span><strong>{stats.inactive}</strong></Card></Col>
+        <Col md={3}><Card className="emp-stat"><span>Power Access</span><strong>{stats.adminLike}</strong></Card></Col>
       </Row>
 
-      {/* Employees Table */}
-      <Card style={{
-        border: 'none',
-        borderRadius: '16px',
-        boxShadow: '0 15px 50px rgba(0, 31, 92, 0.1)',
-        overflow: 'hidden'
-      }}>
-        <Card.Header style={{ background: 'linear-gradient(135deg, #001f5c 0%, #003d99 100%)', color: 'white', padding: '20px', fontWeight: '700', fontSize: '16px' }}>
-          👥 Team Members
-        </Card.Header>
-        <Card.Body style={{ padding: '0' }}>
-          {employees.length === 0 ? (
-            <Alert variant="info" style={{ margin: '30px', borderRadius: '8px' }}>
-              📭 No employees found. Add your first employee to get started!
-            </Alert>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <Table striped hover responsive style={{ marginBottom: '0' }}>
-                <thead style={{ background: 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)', borderBottom: '2px solid #dee2e6' }}>
-                  <tr>
-                    <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Employee</th>
-                    <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Permissions</th>
-                    <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Status</th>
-                    <th style={{ padding: '18px', fontWeight: '700', color: '#001f5c' }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {employees.map((employee) => (
-                    <tr key={employee._id} style={{ borderBottom: '1px solid #dee2e6', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f8f9fa'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}>
-                      <td style={{ padding: '16px' }}>
-                        <div style={{ fontWeight: '700', color: '#001f5c', marginBottom: '4px' }}>👤 {employee.name}</div>
-                        <div style={{ color: '#6c757d', fontSize: '13px', marginBottom: '4px' }}>📧 {employee.email}</div>
-                        <div style={{ color: '#6c757d', fontSize: '13px' }}>📱 {employee.phone}</div>
-                      </td>
-                      <td style={{ padding: '16px' }}>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                          {Object.entries(employee.permissions)
-                            .filter(([_, value]) => value)
-                            .map(([key, _]) => (
-                              <Badge key={key} style={{ background: '#1abc9c', padding: '6px 10px', borderRadius: '4px', fontWeight: '600', fontSize: '11px' }}>
-                                {getPermissionIcon(key)} {getPermissionLabel(key)}
-                              </Badge>
-                            ))}
-                          {Object.values(employee.permissions).every(v => !v) && (
-                            <span style={{ color: '#6c757d', fontSize: '13px' }}>No permissions</span>
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '16px' }}>
-                        <Badge bg={employee.status === 'active' ? 'success' : 'danger'} style={{ padding: '8px 12px', borderRadius: '6px', fontWeight: '600' }}>
-                          {employee.status === 'active' ? '✅ Active' : '❌ Inactive'}
-                        </Badge>
-                      </td>
-                      <td style={{ padding: '16px' }}>
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                          <Button 
-                            size="sm" 
-                            variant="outline-primary"
-                            onClick={() => handleEdit(employee)}
-                            style={{ borderRadius: '6px', fontWeight: '600', fontSize: '12px' }}
-                          >
-                            ✏️ Edit
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline-warning"
-                            onClick={() => handleResetPassword(employee._id)}
-                            style={{ borderRadius: '6px', fontWeight: '600', fontSize: '12px' }}
-                          >
-                            🔑 Reset
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline-danger"
-                            onClick={() => handleDelete(employee._id)}
-                            style={{ borderRadius: '6px', fontWeight: '600', fontSize: '12px' }}
-                          >
-                            🗑️ Delete
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            </div>
-          )}
-        </Card.Body>
+      <Card className="emp-panel mb-3">
+        <Row className="g-2">
+          <Col md={8}><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control placeholder="Search name, email, phone, department..." value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} /></InputGroup></Col>
+          <Col md={2}><Button className="w-100" variant="dark" onClick={() => load(1)}>Search</Button></Col>
+          <Col md={2}><Button className="w-100" variant="outline-secondary" onClick={() => { const clean = { search: '', role: '' }; setFilters(clean); load(1, clean); }}>Reset</Button></Col>
+        </Row>
       </Card>
 
-      {/* Add/Edit Employee Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)} centered size="lg">
-        <Modal.Header closeButton style={{ background: 'linear-gradient(135deg, #001f5c 0%, #003d99 100%)', color: 'white', border: 'none' }}>
-          <Modal.Title style={{ fontWeight: '700' }}>
-            {editingEmployee ? '✏️ Edit Employee' : '➕ Add New Employee'}
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body style={{ padding: '30px', background: '#f8f9fa' }}>
-          <Form onSubmit={handleSubmit}>
-            {/* Basic Info */}
-            <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)', marginBottom: '20px' }}>
-              <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                📋 Basic Information
-              </Card.Header>
-              <Card.Body style={{ padding: '20px' }}>
-                <Row className="g-3">
-                  <Col md={6}>
-                    <Form.Group>
-                      <Form.Label style={{ fontWeight: '700', color: '#001f5c', marginBottom: '8px' }}>👤 Full Name</Form.Label>
-                      <Form.Control
-                        type="text"
-                        required
-                        value={formData.name}
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        placeholder="Enter full name"
-                        style={{ borderRadius: '8px', border: '2px solid #dee2e6', padding: '10px 12px', fontWeight: '500' }}
-                      />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group>
-                      <Form.Label style={{ fontWeight: '700', color: '#001f5c', marginBottom: '8px' }}>📧 Email</Form.Label>
-                      <Form.Control
-                        type="email"
-                        required
-                        value={formData.email}
-                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                        placeholder="Enter email"
-                        style={{ borderRadius: '8px', border: '2px solid #dee2e6', padding: '10px 12px', fontWeight: '500' }}
-                      />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group>
-                      <Form.Label style={{ fontWeight: '700', color: '#001f5c', marginBottom: '8px' }}>📱 Phone</Form.Label>
-                      <Form.Control
-                        type="tel"
-                        required
-                        value={formData.phone}
-                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                        placeholder="Enter phone number"
-                        style={{ borderRadius: '8px', border: '2px solid #dee2e6', padding: '10px 12px', fontWeight: '500' }}
-                      />
-                    </Form.Group>
-                  </Col>
-                  {!editingEmployee && (
-                    <Col md={6}>
-                      <Form.Group>
-                        <Form.Label style={{ fontWeight: '700', color: '#001f5c', marginBottom: '8px' }}>🔐 Password</Form.Label>
-                        <Form.Control
-                          type="password"
-                          required
-                          value={formData.password}
-                          onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                          placeholder="Create password"
-                          style={{ borderRadius: '8px', border: '2px solid #dee2e6', padding: '10px 12px', fontWeight: '500' }}
-                        />
-                      </Form.Group>
-                    </Col>
-                  )}
-                </Row>
-              </Card.Body>
-            </Card>
+      <Card className="emp-table-card">
+        <Table responsive hover className="align-middle mb-0">
+          <thead><tr><th>Employee</th><th>Department</th><th>Permissions</th><th>Status</th><th>Created</th><th className="text-end">Action</th></tr></thead>
+          <tbody>{loading ? <tr><td colSpan="6" className="text-center py-5"><Spinner animation="border" size="sm" /> Loading...</td></tr> : employees.length === 0 ? <tr><td colSpan="6" className="text-center py-5">No employees found.</td></tr> : employees.map((emp) => <tr key={emp._id}><td><strong>{emp.name}</strong><small>{emp.email} / {emp.phone}</small></td><td>{emp.department || 'GENERAL'}<small>{emp.agentProfile?.designation || ''}</small></td><td><small>{permissionText(emp.permissions)}</small></td><td><Badge bg={emp.status === 'active' || emp.isActive ? 'success' : 'secondary'}>{emp.status || (emp.isActive ? 'active' : 'inactive')}</Badge></td><td>{emp.createdAt ? new Date(emp.createdAt).toLocaleDateString('en-IN') : 'N/A'}</td><td className="text-end"><Button size="sm" variant="outline-primary" onClick={() => openEdit(emp)}><Edit size={14} /></Button> <Button size="sm" variant="outline-warning" onClick={() => { setSelected(emp); setResetPassword(''); }}><KeyRound size={14} /></Button> <Button size="sm" variant={emp.status === 'active' || emp.isActive ? 'outline-danger' : 'outline-success'} onClick={() => toggleStatus(emp)}>{emp.status === 'active' || emp.isActive ? 'Disable' : 'Enable'}</Button></td></tr>)}</tbody>
+        </Table>
+      </Card>
+      {pagination.pages > 1 && <Pagination className="justify-content-center mt-3"><Pagination.Prev disabled={pagination.page <= 1} onClick={() => load(pagination.page - 1)} /><Pagination.Item active>{pagination.page}</Pagination.Item><Pagination.Next disabled={pagination.page >= pagination.pages} onClick={() => load(pagination.page + 1)} /></Pagination>}
 
-            {/* Permissions */}
-            <Card style={{ border: 'none', borderRadius: '12px', boxShadow: '0 5px 20px rgba(0, 31, 92, 0.1)' }}>
-              <Card.Header style={{ background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)', color: 'white', fontWeight: '700', borderRadius: '12px 12px 0 0', border: 'none', padding: '15px' }}>
-                🔐 Permissions
-              </Card.Header>
-              <Card.Body style={{ padding: '20px' }}>
-                <Row className="g-3">
-                  {Object.entries(formData.permissions).map(([permission, value]) => (
-                    <Col md={6} key={permission}>
-                      <Form.Check
-                        type="checkbox"
-                        id={permission}
-                        label={
-                          <span style={{ fontWeight: '600', color: '#001f5c' }}>
-                            {getPermissionIcon(permission)} {getPermissionLabel(permission)}
-                          </span>
-                        }
-                        checked={value}
-                        onChange={(e) => handlePermissionChange(permission, e.target.checked)}
-                        style={{ cursor: 'pointer' }}
-                      />
-                    </Col>
-                  ))}
-                </Row>
-              </Card.Body>
-            </Card>
-          </Form>
-        </Modal.Body>
-        <Modal.Footer style={{ borderTop: '1px solid #dee2e6', padding: '20px', background: '#f8f9fa' }}>
-          <Button 
-            variant="secondary" 
-            onClick={() => {
-              setShowModal(false);
-              setEditingEmployee(null);
-              resetForm();
-            }}
-            style={{ borderRadius: '8px', fontWeight: '600' }}
-          >
-            Cancel
-          </Button>
-          <Button 
-            variant="primary" 
-            onClick={handleSubmit}
-            disabled={submitting}
-            style={{ 
-              background: 'linear-gradient(135deg, #1abc9c 0%, #16a085 100%)',
-              border: 'none',
-              borderRadius: '8px',
-              fontWeight: '700',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            {submitting ? (
-              <>
-                <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />
-                {editingEmployee ? 'Updating...' : 'Creating...'}
-              </>
-            ) : (
-              <>
-                {editingEmployee ? '💾 Update Employee' : '➕ Create Employee'}
-              </>
-            )}
-          </Button>
-        </Modal.Footer>
-      </Modal>
+      <Modal show={showForm} onHide={() => setShowForm(false)} size="lg"><Modal.Header closeButton><Modal.Title>{selected ? 'Edit Employee' : 'Add Employee'}</Modal.Title></Modal.Header><Modal.Body><Row className="g-3"><Col md={6}><Form.Label>Name</Form.Label><Form.Control value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Col><Col md={6}><Form.Label>Email</Form.Label><Form.Control type="email" disabled={!!selected} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Col><Col md={6}><Form.Label>Phone</Form.Label><Form.Control value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} /></Col>{!selected && <Col md={6}><Form.Label>Password</Form.Label><Form.Control type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Col>}<Col md={4}><Form.Label>Department</Form.Label><Form.Select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>{['SUPPORT','OPERATIONS','COLLECTIONS','LEGAL','FINANCE','ADMIN'].map((d) => <option key={d}>{d}</option>)}</Form.Select></Col><Col md={4}><Form.Label>Designation</Form.Label><Form.Control value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} /></Col><Col md={4}><Form.Label>Joining Date</Form.Label><Form.Control type="date" value={form.joiningDate} onChange={(e) => setForm({ ...form, joiningDate: e.target.value })} /></Col><Col md={12}><div className="perm-grid">{permissionGroups.map((permission) => <Form.Check key={permission.key} type="switch" label={permission.label} checked={!!form.permissions[permission.key]} onChange={(e) => updatePermission(permission.key, e.target.checked)} />)}</div></Col></Row></Modal.Body><Modal.Footer><Button variant="outline-secondary" onClick={() => setShowForm(false)}>Cancel</Button><Button disabled={saving} onClick={saveEmployee}>{saving ? 'Saving...' : 'Save Employee'}</Button></Modal.Footer></Modal>
+
+      <Modal show={!!selected && !showForm} onHide={() => setSelected(null)}><Modal.Header closeButton><Modal.Title>Reset Password</Modal.Title></Modal.Header><Modal.Body><Alert variant="info">{selected?.name}</Alert><Form.Label>New Password</Form.Label><Form.Control type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} /></Modal.Body><Modal.Footer><Button variant="outline-secondary" onClick={() => setSelected(null)}>Cancel</Button><Button disabled={saving || resetPassword.length < 6} onClick={resetEmployeePassword}>Reset Password</Button></Modal.Footer></Modal>
+      <style>{`.emp-page{padding:8px 0 24px;color:#111827}.emp-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.emp-head p{margin:0 0 4px;color:#0f766e;font-size:12px;font-weight:900;text-transform:uppercase}.emp-head h2{display:flex;gap:10px;align-items:center;margin:0;font-weight:850}.emp-head span,.emp-table-card td small{color:#64748b}.emp-actions{display:flex;gap:8px;flex-wrap:wrap}.emp-actions .btn,.emp-table-card .btn{display:inline-flex;align-items:center;gap:6px}.emp-stat,.emp-panel,.emp-table-card{border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 10px 26px rgba(15,23,42,.06)}.emp-stat{padding:16px}.emp-stat span{display:block;color:#64748b;font-weight:800}.emp-stat strong{display:block;font-size:24px;margin:4px 0}.emp-stat.success strong{color:#047857}.emp-stat.danger strong{color:#b91c1c}.emp-panel{padding:16px}.emp-table-card{overflow:hidden}.emp-table-card thead th{background:#f8fafc;color:#475569;font-size:12px;text-transform:uppercase}.emp-table-card td small{display:block}.perm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc}@media(max-width:768px){.emp-head{flex-direction:column}.perm-grid{grid-template-columns:1fr}}`}</style>
     </div>
   );
 };

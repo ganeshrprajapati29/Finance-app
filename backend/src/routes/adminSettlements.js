@@ -18,7 +18,7 @@ router.use(requireAuth, requireAdmin);
 // Get all loans for settlement
 router.get('/loans/overdue', async (req, res, next) => {
   try {
-    const allLoans = await Loan.find({})
+    const allLoans = await Loan.find({ status: { $ne: 'CLOSED' } })
     .populate('userId', 'name email mobile')
     .sort({ createdAt: -1 });
 
@@ -28,9 +28,12 @@ router.get('/loans/overdue', async (req, res, next) => {
 
       return {
         _id: loan._id,
+        loanAccountNumber: loan.loanAccountNumber,
         userId: loan.userId,
         decision: loan.decision,
         outstandingAmount,
+        paidAmount: loan.schedule.reduce((sum, s) => sum + (s.paid ? s.total : 0), 0),
+        totalAmount: loan.schedule.reduce((sum, s) => sum + (s.total || 0), 0),
         status: loan.status,
         nextPaymentDate: loan.nextPaymentDate,
         lastPaymentDate: loan.lastPaymentDate,
@@ -45,7 +48,7 @@ router.get('/loans/overdue', async (req, res, next) => {
 // Get all loans for legal action (all users who have taken loans)
 router.get('/loans/defaulted', async (req, res, next) => {
   try {
-    const allLoans = await Loan.find({})
+    const allLoans = await Loan.find({ status: { $ne: 'CLOSED' } })
     .populate('userId', 'name email mobile')
     .sort({ createdAt: -1 });
 
@@ -55,9 +58,12 @@ router.get('/loans/defaulted', async (req, res, next) => {
 
       return {
         _id: loan._id,
+        loanAccountNumber: loan.loanAccountNumber,
         userId: loan.userId,
         decision: loan.decision,
         outstandingAmount,
+        paidAmount: loan.schedule.reduce((sum, s) => sum + (s.paid ? s.total : 0), 0),
+        totalAmount: loan.schedule.reduce((sum, s) => sum + (s.total || 0), 0),
         status: loan.status,
         nextPaymentDate: loan.nextPaymentDate,
         lastPaymentDate: loan.lastPaymentDate,
@@ -227,7 +233,7 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
         </div>
 
         <div style="text-align: center;">
-            <div class="success-icon">✓</div>
+            <div class="success-icon">OK</div>
         </div>
 
         <div class="greeting">
@@ -235,7 +241,7 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
         </div>
 
         <div class="highlight-box">
-            <h3 style="margin: 0; color: white;">🎉 Loan Settlement Completed Successfully!</h3>
+            <h3 style="margin: 0; color: white;">Loan Settlement Completed Successfully!</h3>
             <p style="margin: 10px 0 0 0; opacity: 0.9;">Your loan account has been settled and closed</p>
         </div>
 
@@ -244,12 +250,12 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
 
             <div class="detail-row">
                 <span class="detail-label">Original Outstanding Amount:</span>
-                <span class="detail-value">₹${settlement.originalOutstanding.toLocaleString()}</span>
+                <span class="detail-value">Rs. ${settlement.originalOutstanding.toLocaleString()}</span>
             </div>
 
             <div class="detail-row">
                 <span class="detail-label">Settlement Amount Paid:</span>
-                <span class="detail-value">₹${settlementAmount.toLocaleString()}</span>
+                <span class="detail-value">Rs. ${settlementAmount.toLocaleString()}</span>
             </div>
 
             <div class="detail-row">
@@ -259,7 +265,7 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
         </div>
 
         <div class="savings-highlight">
-            💰 You saved: ₹${(settlement.originalOutstanding - settlementAmount).toLocaleString()}
+            You saved: Rs. ${(settlement.originalOutstanding - settlementAmount).toLocaleString()}
         </div>
 
         <div class="contact-info">
@@ -294,7 +300,7 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
 
     // Send SMS notification
     try {
-      await sendSMS(loan.userId.mobile, `Khatu Pay: Your loan has been settled for ₹${settlementAmount}. Account closed. Thank you!`);
+      await sendSMS(loan.userId.mobile, `Khatu Pay: Your loan has been settled for Rs. ${settlementAmount}. Account closed. Thank you!`);
     } catch (smsError) {
       console.error('Failed to send settlement SMS:', smsError);
     }
@@ -307,7 +313,7 @@ router.post('/loans/:loanId/settlement', async (req, res, next) => {
 router.get('/settlements', async (req, res, next) => {
   try {
     const settlements = await Settlement.find()
-      .populate('loanId', 'outstandingAmount status')
+      .populate('loanId', 'loanAccountNumber status decision schedule')
       .populate('userId', 'name email mobile')
       .populate('offeredBy', 'name')
       .sort({ createdAt: -1 });
@@ -320,7 +326,7 @@ router.get('/settlements', async (req, res, next) => {
 router.post('/loans/:loanId/legal-action', async (req, res, next) => {
   try {
     const { loanId } = req.params;
-    const { actionType, noticeType, message, sendEmail, sendSMS, language } = await Joi.object({
+    const { actionType, noticeType, message, sendEmail: shouldSendEmail, sendSMS: shouldSendSMS, language } = await Joi.object({
       actionType: Joi.string().valid('warning_notice', 'legal_notice', 'court_notice').required(),
       noticeType: Joi.string().valid('warning', 'formal', 'court').default('warning'),
       message: Joi.string().required(),
@@ -343,15 +349,15 @@ router.post('/loans/:loanId/legal-action', async (req, res, next) => {
       noticeType,
       message,
       language,
-      sendEmail,
-      sendSMS,
+      sendEmail: shouldSendEmail,
+      sendSMS: shouldSendSMS,
       initiatedBy: req.admin.id
     });
 
     await legalAction.save();
 
     // Send notifications
-    if (sendEmail) {
+    if (shouldSendEmail) {
       try {
         const subject = getEmailSubject(actionType, language);
         await sendMail(loan.userId.email, subject, message);
@@ -362,9 +368,11 @@ router.post('/loans/:loanId/legal-action', async (req, res, next) => {
       }
     }
 
-    if (sendSMS) {
+    const outstandingAmount = loan.schedule?.reduce((sum, s) => sum + (s.paid ? 0 : s.total), 0) || loan.outstandingAmount || 0;
+
+    if (shouldSendSMS) {
       try {
-        const smsMessage = getSMSMessage(actionType, language, loan.outstandingAmount);
+        const smsMessage = getSMSMessage(actionType, language, outstandingAmount);
         await sendSMS(loan.userId.mobile, smsMessage);
         legalAction.smsSent = true;
         legalAction.smsSentAt = new Date();
@@ -383,13 +391,55 @@ router.post('/loans/:loanId/legal-action', async (req, res, next) => {
 // Get all legal actions
 router.get('/legal-actions', async (req, res, next) => {
   try {
-    const legalActions = await LegalAction.find()
-      .populate('loanId', 'outstandingAmount status')
+    const { status, actionType, language } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (actionType) query.actionType = actionType;
+    if (language) query.language = language;
+
+    const legalActions = await LegalAction.find(query)
+      .populate('loanId', 'loanAccountNumber outstandingAmount status decision schedule')
       .populate('userId', 'name email mobile')
       .populate('initiatedBy', 'name')
       .sort({ createdAt: -1 });
 
     return ok(res, legalActions);
+  } catch (e) { next(e); }
+});
+
+// Update legal action follow-up/status
+router.put('/legal-actions/:id/status', async (req, res, next) => {
+  try {
+    const { status, response, notes, followUpDate } = await Joi.object({
+      status: Joi.string().valid('initiated', 'sent', 'responded', 'escalated', 'resolved').required(),
+      response: Joi.string().allow('').optional(),
+      notes: Joi.string().allow('').optional(),
+      followUpDate: Joi.date().allow(null).optional()
+    }).validateAsync(req.body);
+
+    const update = {
+      status,
+      response,
+      notes,
+      followUpDate: followUpDate || null,
+      ...(response ? { responseDate: new Date() } : {})
+    };
+
+    if (status === 'resolved') {
+      update.resolvedBy = req.admin.id;
+      update.resolvedAt = new Date();
+    }
+
+    const legalAction = await LegalAction.findByIdAndUpdate(req.params.id, update, { new: true })
+      .populate('loanId', 'loanAccountNumber outstandingAmount status decision schedule')
+      .populate('userId', 'name email mobile')
+      .populate('initiatedBy', 'name');
+
+    if (!legalAction) {
+      return fail(res, 'NOT_FOUND', 'Legal action not found', 404);
+    }
+
+    return ok(res, legalAction);
   } catch (e) { next(e); }
 });
 

@@ -10,6 +10,50 @@ const router = Router();
 
 router.get('/health', (req,res)=> ok(res, { status:'ok', time:new Date().toISOString() }));
 
+router.get('/public/overview', async (req, res, next) => {
+  try {
+    ok(res, {
+      status: 'online',
+      updatedAt: new Date().toISOString(),
+      highlights: [
+        { label: 'API status', value: 'Online' },
+        { label: 'Recharge & Bills', value: 'Available' },
+        { label: 'QR support', value: 'Enabled' },
+        { label: 'Loan assistance', value: 'Partner based' },
+        { label: 'Customer portal', value: 'Enabled' },
+        { label: 'Service status', value: 'Online' },
+      ],
+      services: [
+        { key: 'mobile-recharge', label: 'Mobile Recharge', status: 'live' },
+        { key: 'dth-recharge', label: 'DTH Recharge', status: 'live' },
+        { key: 'bbps-bills', label: 'Bill Payments', status: 'live' },
+        { key: 'qr-payments', label: 'QR Support', status: 'live' },
+        { key: 'partner-loan-assistance', label: 'Partner Loan Assistance', status: 'partner_service' },
+        { key: 'service-requests', label: 'Service Requests', status: 'available' },
+        { key: 'utility-bills', label: 'Utility Bill Payments', status: 'coming_soon' },
+        { key: 'business-tools', label: 'Business Tools', status: 'coming_soon' },
+      ],
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/public/contact', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const email = String(req.body?.email || '').trim();
+  const message = String(req.body?.message || '').trim();
+
+  if (!name || !email || !message) {
+    return res.status(400).json({ success: false, message: 'Name, email and message are required' });
+  }
+
+  ok(res, {
+    received: true,
+    reference: `KP-${Date.now()}`,
+  }, 'Message received');
+});
+
 router.get('/admin/metrics', requireAuth, requireRole(['admin']), async (req,res,next)=>{
   try{
     const users = await User.countDocuments();

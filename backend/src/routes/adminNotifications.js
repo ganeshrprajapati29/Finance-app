@@ -5,6 +5,7 @@ import { ok, fail } from '../utils/response.js';
 import Notification from '../models/Notification.js';
 import SupportTicket from '../models/SupportTicket.js';
 import User from '../models/User.js';
+import { notifyUserSmart } from '../services/smartNotifications.js';
 
 const router = Router();
 
@@ -116,11 +117,14 @@ router.post('/', async (req, res, next) => {
       return fail(res, 'NOT_FOUND', 'User not found', 404);
     }
 
-    const notification = await Notification.create({
-      userId: payload.userId,
-      title: payload.title,
+    const notification = await notifyUserSmart(payload.userId, 'admin_user_action', {
+      force: true,
+      email: true,
       message: payload.message,
       type: payload.type,
+      priority: payload.priority,
+      adminAction: payload.title,
+      route: payload.data?.route || '/notifications',
       data: {
         ...payload.data,
         priority: payload.priority,

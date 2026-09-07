@@ -1,342 +1,76 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Badge, Alert, Row, Col, Form, Modal, InputGroup, ProgressBar } from 'react-bootstrap'
-import api from '../api/axios'
-import { Split, DollarSign, CheckCircle, Clock, AlertTriangle, Calculator } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, Col, Form, InputGroup, Modal, Row, Spinner, Table } from 'react-bootstrap';
+import { RefreshCw, Search, Split } from 'lucide-react';
+import api from '../api/axios';
 
-export default function PartPaymentSupport(){
-  const [loans, setLoans] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [selectedLoan, setSelectedLoan] = useState(null)
-  const [selectedInstallment, setSelectedInstallment] = useState(null)
-  const [partPaymentData, setPartPaymentData] = useState({
-    amount: '',
-    paymentDate: '',
-    reference: '',
-    notes: ''
-  })
+const unwrap = (res) => res?.data?.data || res?.data || {};
+const money = (value) => `Rs. ${Number(value || 0).toLocaleString('en-IN')}`;
+const date = (value) => (value ? new Date(value).toLocaleDateString('en-IN') : 'N/A');
+const today = () => new Date().toISOString().slice(0, 10);
+const paidPart = (emi) => (emi.partPayments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-  const loadLoans = async ()=>{
-    setLoading(true)
+export default function PartPaymentSupport() {
+  const [loans, setLoans] = useState([]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState({ amount: '', paymentDate: today(), reference: '', notes: '' });
+
+  const load = async () => {
     try {
-      const r = await api.get('/admin/loans?status=DISBURSED')
-      setLoans(r.data.data.items)
-    } catch (error) {
-      console.error('Failed to load loans:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+      setLoading(true); setError('');
+      const res = await api.get('/admin/loans?status=DISBURSED');
+      setLoans(unwrap(res).items || []);
+    } catch (err) {
+      setLoans([]); setError(err.response?.data?.message || err.message || 'Loans load nahi ho paaye');
+    } finally { setLoading(false); }
+  };
 
-  useEffect(()=>{ loadLoans() }, [])
+  useEffect(() => { load(); }, []);
 
-  const handlePartPayment = (loan, installment)=>{
-    setSelectedLoan(loan)
-    setSelectedInstallment(installment)
-    setPartPaymentData({
-      amount: '',
-      paymentDate: new Date().toISOString().split('T')[0],
-      reference: '',
-      notes: `Part payment for EMI ${installment.installmentNo}`
-    })
-    setShowModal(true)
-  }
+  const rows = useMemo(() => loans.flatMap((loan) => (loan.schedule || []).filter((emi) => !emi.paid).map((emi) => ({ loan, emi, remaining: Number(emi.total || 0) - paidPart(emi) }))).filter(({ loan }) => {
+    const q = query.trim().toLowerCase();
+    return !q || loan.loanAccountNumber?.toLowerCase().includes(q) || loan.userId?.name?.toLowerCase().includes(q) || loan.application?.personal?.name?.toLowerCase().includes(q);
+  }), [loans, query]);
 
-  const submitPartPayment = async ()=>{
+  const stats = useMemo(() => ({
+    loans: loans.length,
+    count: loans.reduce((sum, loan) => sum + (loan.schedule || []).reduce((s, emi) => s + (emi.partPayments?.length || 0), 0), 0),
+    amount: loans.reduce((sum, loan) => sum + (loan.schedule || []).reduce((s, emi) => s + paidPart(emi), 0), 0)
+  }), [loans]);
+
+  const open = (row) => {
+    setSelected(row);
+    setForm({ amount: Math.max(0, row.remaining).toString(), paymentDate: today(), reference: '', notes: `Part payment for EMI ${row.emi.installmentNo}` });
+  };
+
+  const submit = async () => {
+    if (!selected || Number(form.amount) <= 0) return setError('Valid amount required hai');
+    if (Number(form.amount) > selected.remaining) return setError('Part payment remaining amount se zyada nahi ho sakta');
     try {
-      await api.post(`/admin/emi-control/part-payment/${selectedLoan._id}/${selectedInstallment.installmentNo}`, {
-        amount: partPaymentData.amount,
-        paymentDate: partPaymentData.paymentDate,
-        reference: partPaymentData.reference,
-        notes: partPaymentData.notes
-      })
-      setShowModal(false)
-      await loadLoans()
-      alert('Part payment recorded successfully')
-    } catch (error) {
-      console.error('Failed to submit part payment:', error)
-      alert('Failed to record part payment')
-    }
-  }
-
-  const getPendingInstallments = (loan)=>{
-    return loan.schedule?.filter(inst => !inst.paid) || []
-  }
-
-  const getPartPaymentProgress = (installment)=>{
-    // Calculate actual part payment progress based on installment data
-    // In real implementation, this would track part payments from database
-    const total = installment.total || 0
-    const paid = installment.partPayments?.reduce((sum, payment) => sum + payment.amount, 0) || 0
-    const remaining = total - paid
-    const percentage = total > 0 ? Math.round((paid / total) * 100) : 0
-
-    return {
-      paid,
-      remaining: Math.max(0, remaining),
-      percentage: Math.min(100, percentage)
-    }
-  }
+      setSaving(true); setError('');
+      await api.post(`/admin/emi-control/part-payment/${selected.loan._id}/${selected.emi.installmentNo}`, { amount: Number(form.amount), paymentDate: form.paymentDate, reference: form.reference, notes: form.notes });
+      setSuccess('Part payment recorded successfully');
+      setSelected(null);
+      await load();
+    } catch (err) { setError(err.response?.data?.message || err.message || 'Part payment record nahi ho paya'); }
+    finally { setSaving(false); }
+  };
 
   return (
-    <div>
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2 className="mb-0">
-          <Split className="me-2" />
-          Part Payment Support
-        </h2>
-      </div>
-
-      <Alert variant="info" className="mb-4">
-        <strong>Note:</strong> Part payment allows customers to pay partial amounts towards their EMI.
-        This helps maintain payment history while providing flexibility for customers facing temporary financial difficulties.
-      </Alert>
-
-      <Row className="mb-4">
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <Clock size={32} className="text-warning mb-2" />
-              <h4>{Array.isArray(loans) ? loans.reduce((sum, loan) => sum + getPendingInstallments(loan).length, 0) : 0}</h4>
-              <small className="text-muted">Pending EMIs</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <Split size={32} className="text-info mb-2" />
-              <h4>{Array.isArray(loans) ? loans.filter(loan => loan.schedule?.some(inst => inst.partPayments && inst.partPayments.length > 0)).length : 0}</h4>
-              <small className="text-muted">Part Payments Active</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <Calculator size={32} className="text-success mb-2" />
-              <h4>₹{Array.isArray(loans) ? loans.reduce((sum, loan) => sum + (loan.schedule?.reduce((s, inst) => s + (inst.total || 0), 0) || 0), 0).toLocaleString() : '0'}</h4>
-              <small className="text-muted">Total EMI Value</small>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
-
-      <Card className="mb-4">
-        <Card.Header>
-          <h5 className="mb-0">EMIs Eligible for Part Payment</h5>
-        </Card.Header>
-        <Card.Body>
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : !Array.isArray(loans) || loans.length === 0 ? (
-            <div className="text-center text-muted py-5">
-              <Split size={48} className="mb-3 opacity-50" />
-              <p>No active loans found</p>
-            </div>
-          ) : (
-            <Table striped hover responsive>
-              <thead className="table-dark">
-                <tr>
-                  <th>Loan ID</th>
-                  <th>Customer Name</th>
-                  <th>EMI No</th>
-                  <th>Due Date</th>
-                  <th>Total Amount</th>
-                  <th>Payment Progress</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loans.map(loan =>
-                  getPendingInstallments(loan).map((inst, index) => {
-                    const progress = getPartPaymentProgress(inst)
-                    return (
-                      <tr key={`${loan._id}-${index}`}>
-                        <td>{loan.loanAccountNumber}</td>
-                        <td>{loan.application?.personal?.name}</td>
-                        <td>{inst.installmentNo}</td>
-                        <td>{new Date(inst.dueDate).toLocaleDateString()}</td>
-                        <td>₹{inst.total?.toLocaleString()}</td>
-                        <td>
-                          <div style={{ minWidth: '120px' }}>
-                            <div className="d-flex justify-content-between small mb-1">
-                              <span>₹{progress.paid}</span>
-                              <span>₹{progress.remaining}</span>
-                            </div>
-                            <ProgressBar
-                              now={progress.percentage}
-                              variant={progress.percentage > 50 ? 'success' : 'warning'}
-                              style={{ height: '6px' }}
-                            />
-                          </div>
-                        </td>
-                        <td>
-                          <Badge bg={new Date(inst.dueDate) < new Date() ? 'danger' : 'warning'}>
-                            {new Date(inst.dueDate) < new Date() ? 'Overdue' : 'Pending'}
-                          </Badge>
-                        </td>
-                        <td>
-                          <Button
-                            size="sm"
-                            variant="outline-primary"
-                            onClick={() => handlePartPayment(loan, inst)}
-                          >
-                            Add Payment
-                          </Button>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </Table>
-          )}
-        </Card.Body>
-      </Card>
-
-      <Card>
-        <Card.Header>
-          <h5 className="mb-0">Part Payment History</h5>
-        </Card.Header>
-        <Card.Body>
-
-          <Table striped hover responsive>
-            <thead className="table-dark">
-              <tr>
-                <th>Date</th>
-                <th>Loan ID</th>
-                <th>EMI No</th>
-                <th>Part Amount</th>
-                <th>Remaining</th>
-                <th>Reference</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Array.isArray(loans) && loans.map(loan =>
-                loan.schedule?.filter(inst => inst.partPayments && inst.partPayments.length > 0).map((inst, index) =>
-                  inst.partPayments?.map((payment, paymentIndex) => (
-                    <tr key={`${loan._id}-${inst.installmentNo}-${paymentIndex}`}>
-                      <td>{new Date(payment.paymentDate).toLocaleDateString()}</td>
-                      <td>{loan.loanAccountNumber}</td>
-                      <td>{inst.installmentNo}</td>
-                      <td>₹{payment.amount.toLocaleString()}</td>
-                      <td>₹{(inst.total - (inst.partPayments?.reduce((sum, p) => sum + p.amount, 0) || 0)).toLocaleString()}</td>
-                      <td>{payment.reference || 'N/A'}</td>
-                      <td><Badge bg="success">Completed</Badge></td>
-                    </tr>
-                  ))
-                )
-              ).flat().slice(0, 10)}
-              {(!Array.isArray(loans) || loans.filter(loan => loan.schedule?.some(inst => inst.partPayments && inst.partPayments.length > 0)).length === 0) && (
-                <tr>
-                  <td colSpan="7" className="text-center text-muted py-3">
-                    No part payment history available
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </Table>
-        </Card.Body>
-      </Card>
-
-      {/* Part Payment Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg">
-        <Modal.Header closeButton>
-          <Modal.Title>Record Part Payment</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {selectedLoan && selectedInstallment && (
-            <div className="mb-3">
-              <Alert variant="info">
-                <strong>Loan:</strong> {selectedLoan.loanAccountNumber} |
-                <strong>EMI:</strong> {selectedInstallment.installmentNo} |
-                <strong>Total Amount:</strong> ₹{selectedInstallment.total} |
-                <strong>Due Date:</strong> {new Date(selectedInstallment.dueDate).toLocaleDateString()}
-              </Alert>
-            </div>
-          )}
-
-          <Form>
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Part Payment Amount *</Form.Label>
-                  <InputGroup>
-                    <InputGroup.Text>₹</InputGroup.Text>
-                    <Form.Control
-                      type="number"
-                      value={partPaymentData.amount}
-                      onChange={(e) => setPartPaymentData({...partPaymentData, amount: e.target.value})}
-                      placeholder="Enter part payment amount"
-                      max={selectedInstallment?.total || 0}
-                    />
-                  </InputGroup>
-                  {selectedInstallment && (
-                    <Form.Text className="text-muted">
-                      Maximum allowed: ₹{selectedInstallment.total}
-                    </Form.Text>
-                  )}
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Payment Date *</Form.Label>
-                  <Form.Control
-                    type="date"
-                    value={partPaymentData.paymentDate}
-                    onChange={(e) => setPartPaymentData({...partPaymentData, paymentDate: e.target.value})}
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Reference/Transaction ID</Form.Label>
-              <Form.Control
-                type="text"
-                value={partPaymentData.reference}
-                onChange={(e) => setPartPaymentData({...partPaymentData, reference: e.target.value})}
-                placeholder="Bank reference, receipt number, etc."
-              />
-            </Form.Group>
-
-            <Form.Group className="mb-3">
-              <Form.Label>Notes</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={partPaymentData.notes}
-                onChange={(e) => setPartPaymentData({...partPaymentData, notes: e.target.value})}
-                placeholder="Additional notes about the part payment"
-              />
-            </Form.Group>
-
-            {partPaymentData.amount && selectedInstallment && (
-              <Alert variant="info">
-                <strong>Payment Summary:</strong><br />
-                Part Payment: ₹{parseInt(partPaymentData.amount).toLocaleString()}<br />
-                Remaining Amount: ₹{(selectedInstallment.total - parseInt(partPaymentData.amount || 0)).toLocaleString()}<br />
-                Payment Progress: {Math.round((parseInt(partPaymentData.amount || 0) / selectedInstallment.total) * 100)}%
-              </Alert>
-            )}
-          </Form>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowModal(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={submitPartPayment}
-            disabled={!partPaymentData.amount || !partPaymentData.paymentDate}
-          >
-            Record Part Payment
-          </Button>
-        </Modal.Footer>
-      </Modal>
+    <div className="emi-page">
+      <div className="emi-head"><div><p>EMI Control</p><h2><Split size={28} /> Part Payment Support</h2><span>Record partial payments and automatically close EMI once fully paid.</span></div><Button variant="outline-secondary" onClick={load}><RefreshCw size={16} /> Refresh</Button></div>
+      {error && <Alert variant="warning" dismissible onClose={() => setError('')}>{error}</Alert>}{success && <Alert variant="success" dismissible onClose={() => setSuccess('')}>{success}</Alert>}
+      <Row className="g-3 mb-3"><Col md={4}><Card className="emi-stat"><span>Disbursed Loans</span><strong>{stats.loans}</strong></Card></Col><Col md={4}><Card className="emi-stat"><span>Part Payments</span><strong>{stats.count}</strong></Card></Col><Col md={4}><Card className="emi-stat success"><span>Part Amount</span><strong>{money(stats.amount)}</strong></Card></Col></Row>
+      <Card className="emi-panel mb-3"><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control placeholder="Search loan or borrower..." value={query} onChange={(e) => setQuery(e.target.value)} /></InputGroup></Card>
+      <Card className="emi-table-card"><Table responsive hover className="align-middle mb-0"><thead><tr><th>Loan</th><th>Borrower</th><th>EMI</th><th>Total</th><th>Part Paid</th><th>Remaining</th><th>Due</th><th className="text-end">Action</th></tr></thead><tbody>{loading ? <tr><td colSpan="8" className="text-center py-5"><Spinner animation="border" size="sm" /> Loading...</td></tr> : rows.length === 0 ? <tr><td colSpan="8" className="text-center py-5">No pending EMIs found.</td></tr> : rows.map((row) => <tr key={`${row.loan._id}-${row.emi.installmentNo}`}><td><strong>{row.loan.loanAccountNumber}</strong></td><td>{row.loan.userId?.name || row.loan.application?.personal?.name || 'N/A'}<small>{row.loan.userId?.email}</small></td><td>#{row.emi.installmentNo}</td><td>{money(row.emi.total)}</td><td>{money(paidPart(row.emi))}</td><td className="fw-bold">{money(row.remaining)}</td><td>{date(row.emi.dueDate)}</td><td className="text-end"><Button size="sm" disabled={row.remaining <= 0} onClick={() => open(row)}>Add Part Payment</Button></td></tr>)}</tbody></Table></Card>
+      <Modal show={!!selected} onHide={() => setSelected(null)}><Modal.Header closeButton><Modal.Title>Add Part Payment</Modal.Title></Modal.Header><Modal.Body>{selected && <><Alert variant="info">{selected.loan.loanAccountNumber} - EMI #{selected.emi.installmentNo} - Remaining {money(selected.remaining)}</Alert>{selected.emi.partPayments?.length > 0 && <Table size="sm"><thead><tr><th>Date</th><th>Amount</th><th>Reference</th></tr></thead><tbody>{selected.emi.partPayments.map((p, i) => <tr key={i}><td>{date(p.paymentDate)}</td><td>{money(p.amount)}</td><td>{p.reference || '-'}</td></tr>)}</tbody></Table>}<Form.Group className="mb-3"><Form.Label>Amount</Form.Label><Form.Control type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Form.Group><Form.Group className="mb-3"><Form.Label>Payment Date</Form.Label><Form.Control type="date" value={form.paymentDate} onChange={(e) => setForm({ ...form, paymentDate: e.target.value })} /></Form.Group><Form.Group className="mb-3"><Form.Label>Reference</Form.Label><Form.Control value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} /></Form.Group><Form.Group><Form.Label>Notes</Form.Label><Form.Control as="textarea" rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Form.Group></>}</Modal.Body><Modal.Footer><Button variant="outline-secondary" onClick={() => setSelected(null)}>Cancel</Button><Button disabled={saving} onClick={submit}>{saving ? 'Saving...' : 'Save Part Payment'}</Button></Modal.Footer></Modal>
+      <PageStyle />
     </div>
-  )
+  );
 }
+
+const PageStyle = () => <style>{`.emi-page{padding:8px 0 24px;color:#111827}.emi-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.emi-head p{margin:0 0 4px;color:#0f766e;font-size:12px;font-weight:900;text-transform:uppercase}.emi-head h2{display:flex;gap:10px;align-items:center;margin:0;font-weight:850}.emi-head span,.emi-table-card td small{color:#64748b}.emi-head .btn,.emi-table-card .btn{display:inline-flex;align-items:center;gap:6px}.emi-stat,.emi-panel,.emi-table-card{border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 10px 26px rgba(15,23,42,.06)}.emi-stat{padding:16px}.emi-stat span{display:block;color:#64748b;font-weight:800}.emi-stat strong{display:block;font-size:24px;margin:4px 0}.emi-stat.success strong{color:#047857}.emi-panel{padding:16px}.emi-table-card{overflow:hidden}.emi-table-card thead th{background:#f8fafc;color:#475569;font-size:12px;text-transform:uppercase}.emi-table-card td small{display:block}@media(max-width:768px){.emi-head{flex-direction:column}}`}</style>;

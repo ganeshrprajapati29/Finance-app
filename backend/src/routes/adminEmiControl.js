@@ -6,11 +6,17 @@ import { ok, fail } from '../utils/response.js';
 
 const router = Router();
 
+function closeLoanIfAllEmisPaid(loan) {
+  if (loan.status === 'DISBURSED' && loan.schedule?.length && loan.schedule.every((inst) => inst.paid)) {
+    loan.status = 'CLOSED';
+  }
+}
+
 // Get EMI schedule for a loan
 router.get('/schedule/:loanId', requireAdmin, async (req, res, next) => {
   try {
     const loan = await Loan.findById(req.params.loanId)
-      .populate('userId', 'name email phone')
+      .populate('userId', 'name email mobile')
       .populate('application');
 
     if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
@@ -70,7 +76,7 @@ router.post('/mark-paid/:loanId/:installmentNo', requireAdmin, async (req, res, 
       loanId: loan._id,
       type: 'REPAYMENT',
       amount: paymentAmount || installment.total,
-      status: 'COMPLETED',
+      status: 'CONFIRMED',
       method: 'MANUAL',
       reference: reference || `MANUAL-${Date.now()}`,
       metadata: {
@@ -85,6 +91,7 @@ router.post('/mark-paid/:loanId/:installmentNo', requireAdmin, async (req, res, 
     installment.paid = true;
     installment.paidAt = new Date();
     installment.paymentId = payment._id;
+    closeLoanIfAllEmisPaid(loan);
 
     await loan.save();
 
@@ -140,7 +147,7 @@ router.post('/auto-debit/:loanId/toggle', requireAdmin, async (req, res, next) =
 
     loan.autoDebit.enabled = enabled;
     loan.autoDebit.updatedAt = new Date();
-    loan.autoDebit.updatedBy = req.admin.uid;
+    loan.autoDebit.updatedBy = req.admin.id;
 
     await loan.save();
 
@@ -168,7 +175,7 @@ router.post('/manual-payment/:loanId/:installmentNo', requireAdmin, async (req, 
       loanId: loan._id,
       type: 'REPAYMENT',
       amount: parseFloat(amount),
-      status: 'COMPLETED',
+      status: 'CONFIRMED',
       method: 'MANUAL',
       reference: reference || `MANUAL-${Date.now()}`,
       metadata: {
@@ -185,6 +192,7 @@ router.post('/manual-payment/:loanId/:installmentNo', requireAdmin, async (req, 
       installment.paidAt = new Date();
       installment.paymentId = payment._id;
     }
+    closeLoanIfAllEmisPaid(loan);
 
     await loan.save();
 
@@ -212,7 +220,7 @@ router.post('/part-payment/:loanId/:installmentNo', requireAdmin, async (req, re
       loanId: loan._id,
       type: 'PART_PAYMENT',
       amount: parseFloat(amount),
-      status: 'COMPLETED',
+      status: 'CONFIRMED',
       method: 'MANUAL',
       reference: reference || `PART-${Date.now()}`,
       metadata: {
@@ -241,6 +249,7 @@ router.post('/part-payment/:loanId/:installmentNo', requireAdmin, async (req, re
       installment.paid = true;
       installment.paidAt = new Date();
     }
+    closeLoanIfAllEmisPaid(loan);
 
     await loan.save();
 
@@ -263,11 +272,12 @@ router.get('/penalties', requireAdmin, async (req, res, next) => {
     let paidPenalties = 0;
 
     loans.forEach(loan => {
-      loan.penalties.forEach(penalty => {
+      loan.penalties.forEach((penalty, index) => {
         penalties.push({
-          _id: penalty._id,
+          _id: penalty._id || `${loan._id}:${index}`,
           loanId: loan.loanAccountNumber,
           loanMongoId: loan._id,
+          penaltyIndex: index,
           userName: loan.userId?.name || 'N/A',
           userEmail: loan.userId?.email || 'N/A',
           ...penalty.toObject()
@@ -314,7 +324,7 @@ router.post('/penalty/:loanId/:installmentNo', requireAdmin, async (req, res, ne
       dueDate: dueDate ? new Date(dueDate) : new Date(),
       status: 'PENDING',
       createdAt: new Date(),
-      createdBy: req.admin.uid
+      createdBy: req.admin.id
     };
 
     loan.penalties.push(penalty);
@@ -329,11 +339,18 @@ router.post('/penalty/:loanId/:installmentNo', requireAdmin, async (req, res, ne
 router.put('/penalty/:penaltyId/status', requireAdmin, async (req, res, next) => {
   try {
     const { status } = req.body;
-    const loan = await Loan.findOne({ 'penalties._id': req.params.penaltyId });
+    let loan = await Loan.findOne({ 'penalties._id': req.params.penaltyId });
+    let penalty;
 
-    if (!loan) return fail(res, 'NOT_FOUND', 'Penalty not found', 404);
+    if (loan) {
+      penalty = loan.penalties.id(req.params.penaltyId);
+    } else if (req.params.penaltyId.includes(':')) {
+      const [loanId, index] = req.params.penaltyId.split(':');
+      loan = await Loan.findById(loanId);
+      penalty = loan?.penalties?.[Number(index)];
+    }
 
-    const penalty = loan.penalties.id(req.params.penaltyId);
+    if (!loan || !penalty) return fail(res, 'NOT_FOUND', 'Penalty not found', 404);
     penalty.status = status;
     penalty.updatedAt = new Date();
 
@@ -369,7 +386,7 @@ router.post('/extend-due-date/:loanId/:installmentNo', requireAdmin, async (req,
       notes,
       approvedBy,
       approvedAt: new Date(),
-      approvedByAdmin: req.admin.uid
+      approvedByAdmin: req.admin.id
     });
 
     await loan.save();

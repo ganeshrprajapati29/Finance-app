@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button, Card, Form, Container } from 'react-bootstrap'
+import api from '../api/axios'
 
 export default function Login(){
   const [email, setEmail] = useState('')
@@ -12,23 +13,17 @@ export default function Login(){
     e.preventDefault()
     setLoading(true); setErr('')
     try{
-      const res = await fetch('/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.message || 'Login failed')
-      
+      const res = await api.post('/auth/login', { email, password })
+      const data = res.data
       const { accessToken, refreshToken, user } = data.data
       if (!user.roles.includes('admin')) throw new Error('Not an admin user')
       localStorage.setItem('kp_tokens', JSON.stringify({ accessToken, refreshToken }))
       window.location.href = '/dashboard'
-    }catch(e){ 
-      setErr(e.message) 
+    }catch(e){
+      setErr(e.response?.data?.message || e.message || 'Login failed')
     }
-    finally{ 
-      setLoading(false) 
+    finally{
+      setLoading(false)
     }
   }
 

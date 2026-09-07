@@ -1,36 +1,70 @@
-// backend/scripts/createAdmin.js
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
-import User from '../src/models/User.js'; // path adjust karo agar alag ho
+import User from '../src/models/User.js';
 
-dotenv.config({ path: '../.env' }); // agar script backend root se run kar rahe ho
+dotenv.config({ path: '.env' });
+dotenv.config({ path: 'src/.env' });
 
 async function run() {
-  const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/khatupay';
-  await mongoose.connect(uri, {});
+  const uri = process.env.MONGO_URI;
 
-  const email = 'admin@example.com';
-  const password = 'admin123!'; // change after first login
-  const existing = await User.findOne({ email: email.toLowerCase() });
+  if (!uri) {
+    console.error('MONGO_URI not found in .env');
+    process.exit(1);
+  }
+
+  await mongoose.connect(uri);
+
+  const email = process.env.ADMIN_EMAIL || 'khatupay@gmail.com';
+  const password = process.env.ADMIN_PASSWORD;
+  const mobile = process.env.ADMIN_MOBILE || '7080655021';
+
+  if (!password) {
+    console.error('ADMIN_PASSWORD not found in environment');
+    process.exit(1);
+  }
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  const existing = await User.findOne({
+    $or: [{ email: email.toLowerCase() }, { mobile }],
+  });
+
   if (existing) {
-    console.log('Admin already exists:', existing._id.toString());
+    existing.name = 'Khatu Pay Admin';
+    existing.email = email.toLowerCase();
+    existing.mobile = mobile;
+    existing.passwordHash = passwordHash;
+    existing.roles = Array.from(new Set([...(existing.roles || []), 'admin']));
+    existing.status = 'active';
+    existing.emailVerified = true;
+    await existing.save();
+
+    console.log('Admin updated successfully');
+    console.log('ID:', existing._id.toString());
+    console.log('Email:', email);
     process.exit(0);
   }
 
-  const hash = await bcrypt.hash(password, 10);
   const admin = new User({
-    name: 'KhatuPay Admin',
+    name: 'Khatu Pay Admin',
     email: email.toLowerCase(),
-    mobile: '9999999998',
-    passwordHash: hash,
+    mobile,
+    passwordHash,
     roles: ['admin'],
+    status: 'active',
     emailVerified: true,
   });
 
   await admin.save();
-  console.log('Admin created:', admin._id.toString(), ' email:', email, ' password:', password);
+
+  console.log('Admin created successfully');
+  console.log('ID:', admin._id.toString());
+  console.log('Email:', email);
   process.exit(0);
 }
 
-run().catch((e)=>{ console.error(e); process.exit(1); });
+run().catch((err) => {
+  console.error('Error:', err);
+  process.exit(1);
+});

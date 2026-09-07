@@ -24,7 +24,11 @@ router.get('/clubapi', (req, res) => {
   res.json({ success: true, message: 'ClubAPI callback endpoint is active' });
 });
 
-router.post('/clubapi', async (req, res, next) => {
+router.get('/juspay-consumer', (req, res) => {
+  res.json({ success: true, message: 'Juspay Consumer callback endpoint is active' });
+});
+
+async function handleClubAPICallback(req, res, next) {
   try {
     const payload = req.body || {};
     const urid = payload.urid || payload.ourSystemId || payload.ourSystemOrderId || '';
@@ -58,6 +62,12 @@ router.post('/clubapi', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+}
+
+router.post('/', handleClubAPICallback);
+router.post('/clubapi', handleClubAPICallback);
+router.post('/juspay-consumer', (req, res) => {
+  res.json({ success: true, message: 'Juspay Consumer callback received' });
 });
 
 export default router;

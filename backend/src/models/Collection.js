@@ -18,7 +18,7 @@ const collectionSchema = new mongoose.Schema({
   },
   bucket: {
     type: String,
-    enum: ['1-7', '8-15', '16-30', '31-60', '60-90'],
+    enum: ['1-7', '8-15', '16-30', '31-60', '60-90', '90+'],
     required: true
   },
   daysOverdue: {

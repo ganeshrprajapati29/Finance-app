@@ -6,9 +6,9 @@ const paymentSchema = new mongoose.Schema({
   loanId:{ type:mongoose.Schema.Types.ObjectId, ref:'Loan' },
   billId:{ type:mongoose.Schema.Types.ObjectId, ref:'Bill' },
   installmentNo:{ type:Number },
-  type:{ type:String, enum:['REPAYMENT','FULL_REPAYMENT','BILL','DISBURSEMENT','FEE','P2P','WALLET_TOPUP','WALLET_SPEND','RECHARGE','OTHER','PART_PAYMENT','PENALTY'], default:'OTHER' },
+  type:{ type:String, enum:['REPAYMENT','FULL_REPAYMENT','BILL','DISBURSEMENT','FEE','P2P','WALLET_TOPUP','WALLET_SPEND','RECHARGE','BBPS_BILL','OTHER','PART_PAYMENT','PENALTY'], default:'OTHER' },
   amount:{ type:Number, required:true },
-  method:{ type:String, enum:['UPI','BANK','CASH','RAZORPAY','WALLET','OTHER','MANUAL'], default:'RAZORPAY' },
+  method:{ type:String, enum:['UPI','BANK','CASH','RAZORPAY','VELXAPAY','WALLET','OTHER','MANUAL'], default:'RAZORPAY' },
   reference:String,
   status:{ type:String, enum:['PENDING','CONFIRMED','FAILED','REFUNDED'], default:'PENDING' },
   proofUrl:String,
@@ -23,7 +23,9 @@ const paymentSchema = new mongoose.Schema({
     clubapiTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ClubAPITransaction' },
     rechargeProcessedAt: Date,
     recharge: mongoose.Schema.Types.Mixed,
-    refund: mongoose.Schema.Types.Mixed
+    clubapiBill: mongoose.Schema.Types.Mixed,
+    refund: mongoose.Schema.Types.Mixed,
+    velxapay: mongoose.Schema.Types.Mixed
   }
 }, { timestamps:true });
 

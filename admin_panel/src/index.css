@@ -1,68 +1,724 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+/* ===========================================================================
+   Khatu Pay design tokens
+   ===========================================================================
+   One palette for the admin console and the public site. Pulled from the
+   Khatu Pay logo: deep teal for trust and money movement, saffron/gold for
+   rewards, offers and loan CTAs, on an off-white canvas with white surfaces.
+
+   The admin console is an operations tool, so it is deliberately denser and
+   flatter than the public pages: hairline borders instead of drop shadows,
+   compact tables, small status pills, no oversized marketing hero blocks.
+   =========================================================================== */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  /* --- Brand --- */
+  --kp-ink: #08201e;
+  --kp-deep-teal: #0f766e;
+  --kp-teal: #00a884;
+  --kp-teal-dark: #115e59;
+  --kp-mint: #14b8a6;
+  --kp-saffron: #f59e0b;
+  --kp-gold: #b45309;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  /* --- Neutrals --- */
+  --kp-bg: #f7faf9;
+  --kp-surface: #ffffff;
+  --kp-surface-alt: #f1f5f4;
+  --kp-line: #e5ecea;
+  --kp-line-strong: #d3dedb;
+  --kp-text: #0f172a;
+  --kp-muted: #64748b;
+  --kp-faint: #94a3b8;
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+  /* --- Tints --- */
+  --kp-soft-teal: #e8f8f4;
+  --kp-soft-saffron: #fff7e8;
+  --kp-soft-blue: #eff6ff;
+  --kp-soft-red: #fef2f2;
+  --kp-soft-green: #ecfdf5;
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+  /* --- Status --- */
+  --kp-success: #16a34a;
+  --kp-warning: #d97706;
+  --kp-danger: #dc2626;
+  --kp-info: #2563eb;
+
+  /* --- Elevation & shape --- */
+  --kp-radius: 12px;
+  --kp-radius-sm: 8px;
+  --kp-radius-lg: 16px;
+  --kp-radius-pill: 999px;
+  --kp-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --kp-shadow-md: 0 4px 14px rgba(15, 23, 42, 0.06);
+  --kp-shadow-lg: 0 18px 45px rgba(15, 23, 42, 0.08);
+  --kp-transition: all 0.18s ease;
+
+  /* --- Gradients --- */
+  --kp-brand-gradient: linear-gradient(135deg, #0f766e, #00a884);
+  --kp-hero-gradient: linear-gradient(135deg, #08201e 0%, #0f766e 55%, #00a884 100%);
+  --kp-saffron-gradient: linear-gradient(135deg, #f59e0b, #ea580c);
+  --kp-sidebar: linear-gradient(180deg, #08201e 0%, #0f2f2b 100%);
+
+  /* --- Legacy aliases -------------------------------------------------
+     Older markup still references these names. They now resolve to the
+     Khatu palette so nothing renders purple, and they can be deleted once
+     the last consumer is migrated. */
+  --primary-purple-start: var(--kp-deep-teal);
+  --primary-purple-end: var(--kp-teal);
+  --success-green-start: var(--kp-success);
+  --success-green-end: #059669;
+  --dark-bg: var(--kp-ink);
+  --sidebar-dark: var(--kp-sidebar);
+  --brand-blue-green: var(--kp-brand-gradient);
+  --light-bg: var(--kp-bg);
+  --card-bg: var(--kp-surface);
+  --text-primary: var(--kp-text);
+  --text-secondary: var(--kp-muted);
+  --danger-red: var(--kp-danger);
+  --warning-orange: var(--kp-saffron);
+  --shadow-sm: var(--kp-shadow-sm);
+  --shadow-md: var(--kp-shadow-md);
+  --shadow-lg: var(--kp-shadow-lg);
+  --border-radius: var(--kp-radius-lg);
+  --border-radius-sm: var(--kp-radius);
+  --transition: var(--kp-transition);
+  --glow-green: var(--kp-teal);
+  --glow-blue: var(--kp-info);
+  --login-bg-dark-start: var(--kp-ink);
+  --login-bg-dark-end: var(--kp-teal-dark);
+  --glass-bg: rgba(255, 255, 255, 0.08);
+  --glass-bg-white: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.15);
+  --text-glow: rgba(255, 255, 255, 0.9);
 }
 
 body {
-  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--kp-bg);
+  color: var(--kp-text);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 800;
+  color: var(--kp-text);
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--kp-deep-teal);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--kp-teal-dark);
+}
+
+hr {
+  border-color: var(--kp-line);
+  opacity: 1;
+}
+
+.container-fluid,
+.container {
+  max-width: 1600px;
+}
+
+/* ===========================================================================
+   Surfaces
+   =========================================================================== */
+
+.admin-card,
+.kp-card {
+  background: var(--kp-surface);
+  border: 1px solid var(--kp-line);
+  border-radius: var(--kp-radius);
+  box-shadow: none;
+  transition: var(--kp-transition);
+  overflow: hidden;
+}
+
+/* Operations UI: hover is a subtle border cue, not a lift-and-shadow
+   animation that makes a dense dashboard feel unstable. */
+.admin-card:hover,
+.kp-card:hover {
+  border-color: var(--kp-line-strong);
+  box-shadow: var(--kp-shadow-sm);
+}
+
+.kp-card-header {
   display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--kp-line);
+  background: var(--kp-surface);
 }
 
-h1 {
-  font-size: 3.2em;
+.kp-card-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--kp-text);
+  margin: 0;
+}
+
+.kp-card-body {
+  padding: 16px;
+}
+
+.kp-section-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--kp-muted);
+  margin-bottom: 10px;
+}
+
+/* ===========================================================================
+   Metric tiles
+   =========================================================================== */
+
+.kp-metric {
+  background: var(--kp-surface);
+  border: 1px solid var(--kp-line);
+  border-radius: var(--kp-radius);
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  height: 100%;
+  transition: var(--kp-transition);
+}
+
+.kp-metric:hover {
+  border-color: var(--kp-line-strong);
+}
+
+.kp-metric-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--kp-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.kp-metric-value {
+  font-size: 1.5rem;
+  font-weight: 900;
   line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--kp-text);
 }
 
-button {
-  border-radius: 8px;
+.kp-metric-foot {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--kp-faint);
+  margin-top: 4px;
+}
+
+.kp-metric-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: var(--kp-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--kp-soft-teal);
+  color: var(--kp-deep-teal);
+}
+
+.kp-metric-icon.teal { background: var(--kp-soft-teal); color: var(--kp-deep-teal); }
+.kp-metric-icon.saffron { background: var(--kp-soft-saffron); color: var(--kp-gold); }
+.kp-metric-icon.blue { background: var(--kp-soft-blue); color: var(--kp-info); }
+.kp-metric-icon.green { background: var(--kp-soft-green); color: var(--kp-success); }
+.kp-metric-icon.red { background: var(--kp-soft-red); color: var(--kp-danger); }
+
+/* ===========================================================================
+   Buttons
+   =========================================================================== */
+
+.btn {
+  border-radius: var(--kp-radius-sm);
+  font-weight: 700;
+  transition: var(--kp-transition);
+}
+
+.btn-primary,
+.kp-btn-primary {
+  background: var(--kp-deep-teal);
+  border: 1px solid var(--kp-deep-teal);
+  color: #fff;
+  border-radius: var(--kp-radius-sm);
+  padding: 8px 16px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.btn-primary:hover,
+.btn-primary:focus,
+.kp-btn-primary:hover {
+  background: var(--kp-teal-dark);
+  border-color: var(--kp-teal-dark);
+  color: #fff;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-outline-primary {
+  color: var(--kp-deep-teal);
+  border-color: var(--kp-line-strong);
+}
+
+.btn-outline-primary:hover {
+  background: var(--kp-soft-teal);
+  border-color: var(--kp-deep-teal);
+  color: var(--kp-teal-dark);
+}
+
+.btn-success {
+  background: var(--kp-success);
+  border-color: var(--kp-success);
+  color: #fff;
+  border-radius: var(--kp-radius-sm);
+  padding: 8px 16px;
+  font-weight: 700;
+}
+
+.btn-warning,
+.kp-btn-accent {
+  background: var(--kp-saffron);
+  border-color: var(--kp-saffron);
+  color: #fff;
+  border-radius: var(--kp-radius-sm);
+  font-weight: 700;
+}
+
+.btn-warning:hover,
+.kp-btn-accent:hover {
+  background: #ea580c;
+  border-color: #ea580c;
+  color: #fff;
+}
+
+.btn-danger {
+  background: var(--kp-danger);
+  border-color: var(--kp-danger);
+  border-radius: var(--kp-radius-sm);
+  font-weight: 700;
+}
+
+.btn-sm {
+  padding: 5px 11px;
+  font-size: 0.8rem;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--kp-teal);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* ===========================================================================
+   Status pills
+   =========================================================================== */
+
+.status-badge,
+.kp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--kp-radius-pill);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
   border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+.status-success,
+.kp-badge.success {
+  background: var(--kp-soft-green);
+  color: var(--kp-success);
+  border-color: rgba(22, 163, 74, 0.22);
+}
+
+.status-warning,
+.kp-badge.warning {
+  background: var(--kp-soft-saffron);
+  color: var(--kp-warning);
+  border-color: rgba(217, 119, 6, 0.22);
+}
+
+.status-danger,
+.kp-badge.danger {
+  background: var(--kp-soft-red);
+  color: var(--kp-danger);
+  border-color: rgba(220, 38, 38, 0.22);
+}
+
+.status-info,
+.kp-badge.info {
+  background: var(--kp-soft-blue);
+  color: var(--kp-info);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+
+.kp-badge.neutral {
+  background: var(--kp-surface-alt);
+  color: var(--kp-muted);
+  border-color: var(--kp-line);
+}
+
+/* ===========================================================================
+   Tables - compact operations grid
+   =========================================================================== */
+
+.admin-table,
+.kp-table-wrap {
+  border: 1px solid var(--kp-line);
+  border-radius: var(--kp-radius);
+  overflow: hidden;
+  box-shadow: none;
+  background: var(--kp-surface);
+}
+
+.kp-table-scroll {
+  overflow-x: auto;
+}
+
+.admin-table table,
+.kp-table {
+  width: 100%;
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.admin-table th,
+.kp-table th {
+  background: var(--kp-surface-alt);
+  color: var(--kp-muted);
+  font-weight: 800;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--kp-line);
+  white-space: nowrap;
+}
+
+.admin-table td,
+.kp-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--kp-line);
+  vertical-align: middle;
+  color: var(--kp-text);
+}
+
+.kp-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.kp-table tbody tr:hover {
+  background: var(--kp-soft-teal);
+}
+
+.kp-table .kp-cell-mono {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.kp-cell-primary {
+  font-weight: 700;
+  color: var(--kp-text);
+}
+
+.kp-cell-sub {
+  font-size: 0.75rem;
+  color: var(--kp-muted);
+}
+
+/* ===========================================================================
+   Filter / toolbar row
+   =========================================================================== */
+
+.kp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--kp-surface);
+  border: 1px solid var(--kp-line);
+  border-radius: var(--kp-radius);
+  margin-bottom: 14px;
+}
+
+.kp-toolbar .kp-search {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.kp-toolbar .kp-search input {
+  padding-left: 34px;
+}
+
+.kp-toolbar .kp-search svg {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--kp-faint);
+  pointer-events: none;
+}
+
+.kp-toolbar .kp-spacer {
+  flex: 1 1 auto;
+}
+
+.form-control,
+.form-select {
+  border: 1px solid var(--kp-line);
+  border-radius: var(--kp-radius-sm);
+  font-size: 0.86rem;
+  padding: 7px 12px;
+  color: var(--kp-text);
+  background-color: var(--kp-surface);
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--kp-teal);
+  box-shadow: 0 0 0 3px rgba(0, 168, 132, 0.14);
+}
+
+.form-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--kp-muted);
+  margin-bottom: 4px;
+}
+
+/* Segmented status filter */
+.kp-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kp-chip {
+  border: 1px solid var(--kp-line);
+  background: var(--kp-surface);
+  color: var(--kp-muted);
+  border-radius: var(--kp-radius-pill);
+  padding: 5px 13px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--kp-transition);
+  white-space: nowrap;
+}
+
+.kp-chip:hover {
+  border-color: var(--kp-line-strong);
+  color: var(--kp-text);
+}
+
+.kp-chip.active {
+  background: var(--kp-soft-teal);
+  border-color: var(--kp-deep-teal);
+  color: var(--kp-teal-dark);
+}
+
+.kp-chip .kp-chip-count {
+  margin-left: 6px;
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
+
+/* ===========================================================================
+   Page header
+   =========================================================================== */
+
+.kp-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.kp-page-title {
+  font-size: 1.28rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--kp-text);
+}
+
+.kp-page-sub {
+  font-size: 0.8rem;
+  color: var(--kp-muted);
+  margin: 2px 0 0;
+}
+
+/* ===========================================================================
+   Empty / loading / error states
+   =========================================================================== */
+
+.kp-state {
+  text-align: center;
+  padding: 44px 24px;
+  color: var(--kp-muted);
+}
+
+.kp-state-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px;
+  border-radius: var(--kp-radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--kp-soft-teal);
+  color: var(--kp-deep-teal);
+}
+
+.kp-state.danger .kp-state-icon {
+  background: var(--kp-soft-red);
+  color: var(--kp-danger);
+}
+
+.kp-state-title {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--kp-text);
+  margin-bottom: 4px;
+}
+
+.kp-state-text {
+  font-size: 0.85rem;
+  max-width: 380px;
+  margin: 0 auto;
+}
+
+/* Inline alert strip */
+.kp-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: var(--kp-radius-sm);
+  font-size: 0.84rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  margin-bottom: 14px;
+}
+
+.kp-alert.info { background: var(--kp-soft-teal); color: var(--kp-teal-dark); border-color: rgba(15, 118, 110, 0.2); }
+.kp-alert.warning { background: var(--kp-soft-saffron); color: var(--kp-gold); border-color: rgba(217, 119, 6, 0.2); }
+.kp-alert.danger { background: var(--kp-soft-red); color: var(--kp-danger); border-color: rgba(220, 38, 38, 0.2); }
+.kp-alert.success { background: var(--kp-soft-green); color: var(--kp-success); border-color: rgba(22, 163, 74, 0.2); }
+
+/* ===========================================================================
+   Misc
+   =========================================================================== */
+
+.kp-hero-panel {
+  background: var(--kp-hero-gradient);
+  color: #fff;
+  border-radius: var(--kp-radius-lg);
+  padding: 20px 22px;
+}
+
+.kp-hero-panel .kp-hero-amount {
+  font-size: 1.9rem;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.kp-hero-panel .kp-hero-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.kp-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--kp-radius-pill);
+  background: var(--kp-soft-teal);
+  color: var(--kp-deep-teal);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  flex: 0 0 34px;
+}
+
+.text-muted {
+  color: var(--kp-muted) !important;
+}
+
+/* Scrollbars in dense operations views */
+.kp-table-scroll::-webkit-scrollbar,
+.kp-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.kp-table-scroll::-webkit-scrollbar-thumb,
+.kp-scroll::-webkit-scrollbar-thumb {
+  background: var(--kp-line-strong);
+  border-radius: var(--kp-radius-pill);
+}
+
+@media (max-width: 992px) {
+  .kp-page-title { font-size: 1.12rem; }
+  .kp-metric-value { font-size: 1.3rem; }
+}
+
+@media (max-width: 768px) {
+  .admin-container {
+    padding: 14px !important;
   }
-  a:hover {
-    color: #747bff;
+
+  .kp-toolbar {
+    padding: 10px;
   }
-  button {
-    background-color: #f9f9f9;
+
+  .admin-table th,
+  .kp-table th,
+  .admin-table td,
+  .kp-table td {
+    padding: 9px 10px;
+  }
+}
+
+/* Respect reduced-motion preferences across every transition above. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

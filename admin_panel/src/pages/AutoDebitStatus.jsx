@@ -1,190 +1,93 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Badge, Alert, Row, Col, Form, Modal } from 'react-bootstrap'
-import api from '../api/axios'
-import { Zap, CheckCircle, XCircle, Clock, Settings } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, Col, Form, InputGroup, Modal, ProgressBar, Row, Spinner, Table } from 'react-bootstrap';
+import { Eye, RefreshCw, Search, ToggleLeft, Wallet } from 'lucide-react';
+import api from '../api/axios';
 
-export default function AutoDebitStatus(){
-  const [loans, setLoans] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [selectedLoan, setSelectedLoan] = useState(null)
-  const [autoDebitEnabled, setAutoDebitEnabled] = useState(false)
+const unwrap = (res) => res?.data?.data || res?.data || {};
+const money = (value) => `Rs. ${Number(value || 0).toLocaleString('en-IN')}`;
+const date = (value) => (value ? new Date(value).toLocaleDateString('en-IN') : 'N/A');
 
-  const loadLoans = async ()=>{
-    setLoading(true)
+export default function AutoDebitStatus() {
+  const [loans, setLoans] = useState([]);
+  const [stats, setStats] = useState({});
+  const [filters, setFilters] = useState({ search: '', status: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [confirmLoan, setConfirmLoan] = useState(null);
+
+  const load = async () => {
     try {
-      const r = await api.get('/admin/emi-control/auto-debit')
-      setLoans(r.data.data.loans || [])
-    } catch (error) {
-      console.error('Failed to load loans:', error)
-      setLoans([])
+      setLoading(true);
+      setError('');
+      const res = await api.get('/admin/emi-control/auto-debit');
+      const data = unwrap(res);
+      setLoans(Array.isArray(data.loans) ? data.loans : []);
+      setStats(data.statistics || {});
+    } catch (err) {
+      setLoans([]);
+      setStats({});
+      setError(err.response?.data?.message || err.message || 'Auto debit data load nahi ho paya');
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  useEffect(()=>{ loadLoans() }, [])
+  useEffect(() => { load(); }, []);
 
-  const toggleAutoDebit = async (loanId, enabled)=>{
+  const filtered = useMemo(() => {
+    const q = filters.search.trim().toLowerCase();
+    return loans.filter((loan) => {
+      if (filters.status === 'enabled' && !loan.autoDebit?.enabled) return false;
+      if (filters.status === 'disabled' && loan.autoDebit?.enabled) return false;
+      if (!q) return true;
+      return loan.loanAccountNumber?.toLowerCase().includes(q) || loan.userId?.name?.toLowerCase().includes(q) || loan.userId?.email?.toLowerCase().includes(q) || loan.application?.personal?.name?.toLowerCase().includes(q);
+    });
+  }, [loans, filters]);
+
+  const scheduleStats = (loan) => {
+    const schedule = loan.schedule || [];
+    const paid = schedule.filter((item) => item.paid).length;
+    const pending = schedule.length - paid;
+    const next = schedule.find((item) => !item.paid);
+    return { paid, pending, total: schedule.length, next, percent: schedule.length ? Math.round((paid / schedule.length) * 100) : 0 };
+  };
+
+  const toggle = async () => {
+    if (!confirmLoan) return;
     try {
-      await api.post(`/admin/emi-control/auto-debit/${loanId}/toggle`, { enabled })
-      alert(`Auto debit ${enabled ? 'enabled' : 'disabled'} successfully`)
-      await loadLoans()
-    } catch (error) {
-      console.error('Failed to toggle auto debit:', error)
-      alert('Failed to update auto debit status')
+      setSaving(true);
+      await api.post(`/admin/emi-control/auto-debit/${confirmLoan._id}/toggle`, { enabled: !confirmLoan.autoDebit?.enabled });
+      setConfirmLoan(null);
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Auto debit update nahi ho paya');
+    } finally {
+      setSaving(false);
     }
-  }
-
-  const getAutoDebitStatus = (loan)=>{
-    // Mock logic - in real implementation, this would come from loan data
-    return Math.random() > 0.5
-  }
+  };
 
   return (
-    <div>
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2 className="mb-0">
-          <Zap className="me-2" />
-          Auto Debit Status
-        </h2>
-        <Button variant="primary" onClick={() => setShowModal(true)}>
-          <Settings className="me-2" size={16} />
-          Configure Auto Debit
-        </Button>
+    <div className="emi-page">
+      <div className="emi-head">
+        <div><p>EMI Control</p><h2><Wallet size={28} /> Auto Debit Status</h2><span>Monitor and toggle auto debit mandate status for disbursed loans.</span></div>
+        <Button variant="outline-secondary" onClick={load}><RefreshCw size={16} /> Refresh</Button>
       </div>
-
-      <Alert variant="info" className="mb-4">
-        <strong>Note:</strong> Auto debit allows automatic deduction of EMI amounts from customer's bank account on due dates.
-        This feature helps reduce manual follow-ups and ensures timely payments.
-      </Alert>
-
-      <Row className="mb-4">
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <CheckCircle size={32} className="text-success mb-2" />
-              <h4>{Array.isArray(loans) ? loans.filter(loan => loan.autoDebit?.enabled).length : 0}</h4>
-              <small className="text-muted">Auto Debit Enabled</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <XCircle size={32} className="text-danger mb-2" />
-              <h4>{Array.isArray(loans) ? loans.filter(loan => !loan.autoDebit?.enabled).length : 0}</h4>
-              <small className="text-muted">Auto Debit Disabled</small>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card className="text-center">
-            <Card.Body>
-              <Clock size={32} className="text-warning mb-2" />
-              <h4>{Array.isArray(loans) ? loans.length : 0}</h4>
-              <small className="text-muted">Total Active Loans</small>
-            </Card.Body>
-          </Card>
-        </Col>
+      {error && <Alert variant="warning" dismissible onClose={() => setError('')}>{error}</Alert>}
+      <Row className="g-3 mb-3">
+        <Col md={3}><Card className="emi-stat"><span>Total Loans</span><strong>{stats.totalLoans || loans.length}</strong><small>Disbursed loans</small></Card></Col>
+        <Col md={3}><Card className="emi-stat success"><span>Enabled</span><strong>{stats.autoDebitEnabled || 0}</strong><small>Auto debit active</small></Card></Col>
+        <Col md={3}><Card className="emi-stat danger"><span>Disabled</span><strong>{stats.autoDebitDisabled || 0}</strong><small>Manual collection</small></Card></Col>
+        <Col md={3}><Card className="emi-stat"><span>Coverage</span><strong>{stats.autoDebitCoverage || 0}%</strong><ProgressBar now={stats.autoDebitCoverage || 0} /></Card></Col>
       </Row>
-
-      <Card>
-        <Card.Header>
-          <h5 className="mb-0">Loan Auto Debit Status</h5>
-        </Card.Header>
-        <Card.Body>
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : !Array.isArray(loans) || loans.length === 0 ? (
-            <div className="text-center text-muted py-5">
-              <Zap size={48} className="mb-3 opacity-50" />
-              <p>No active loans found</p>
-            </div>
-          ) : (
-            <Table striped hover responsive>
-              <thead className="table-dark">
-                <tr>
-                  <th>Loan ID</th>
-                  <th>Customer Name</th>
-                  <th>Loan Amount</th>
-                  <th>Auto Debit Status</th>
-                  <th>Last Attempt</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loans.map(loan => {
-                  const isEnabled = loan.autoDebit?.enabled || false
-                  return (
-                    <tr key={loan._id}>
-                      <td>{loan.loanAccountNumber}</td>
-                      <td>{loan.application?.personal?.name}</td>
-                      <td>₹{loan.decision?.amountApproved?.toLocaleString()}</td>
-                      <td>
-                        <Badge bg={isEnabled ? 'success' : 'secondary'}>
-                          {isEnabled ? 'Enabled' : 'Disabled'}
-                        </Badge>
-                      </td>
-                      <td>
-                        {isEnabled ? new Date(loan.autoDebit?.updatedAt || new Date()).toLocaleDateString() : 'N/A'}
-                      </td>
-                      <td>
-                        <Button
-                          size="sm"
-                          variant={isEnabled ? 'outline-danger' : 'outline-success'}
-                          onClick={() => toggleAutoDebit(loan._id, !isEnabled)}
-                        >
-                          {isEnabled ? 'Disable' : 'Enable'}
-                        </Button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </Table>
-          )}
-        </Card.Body>
-      </Card>
-
-      {/* Configuration Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg">
-        <Modal.Header closeButton>
-          <Modal.Title>Auto Debit Configuration</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          <Alert variant="warning">
-            This feature is under development. Configuration options will be available soon.
-          </Alert>
-          <Form>
-            <Form.Group className="mb-3">
-              <Form.Label>Default Auto Debit Setting</Form.Label>
-              <Form.Check
-                type="switch"
-                label="Enable auto debit for new loans by default"
-                checked={autoDebitEnabled}
-                onChange={(e) => setAutoDebitEnabled(e.target.checked)}
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Grace Period (days)</Form.Label>
-              <Form.Control type="number" placeholder="3" />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Retry Attempts</Form.Label>
-              <Form.Control type="number" placeholder="3" />
-            </Form.Group>
-          </Form>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowModal(false)}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={() => setShowModal(false)}>
-            Save Configuration
-          </Button>
-        </Modal.Footer>
-      </Modal>
+      <Card className="emi-panel mb-3"><Row className="g-2"><Col md={8}><InputGroup><InputGroup.Text><Search size={16} /></InputGroup.Text><Form.Control placeholder="Search loan, user, email..." value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} /></InputGroup></Col><Col md={4}><Form.Select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">All Status</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></Form.Select></Col></Row></Card>
+      <Card className="emi-table-card"><Table responsive hover className="align-middle mb-0"><thead><tr><th>Loan</th><th>User</th><th>Amount</th><th>EMI Progress</th><th>Auto Debit</th><th>Next Due</th><th className="text-end">Action</th></tr></thead><tbody>{loading ? <tr><td colSpan="7" className="text-center py-5"><Spinner animation="border" size="sm" /> Loading...</td></tr> : filtered.length === 0 ? <tr><td colSpan="7" className="text-center py-5">No loans found.</td></tr> : filtered.map((loan) => { const s = scheduleStats(loan); return <tr key={loan._id}><td><strong>{loan.loanAccountNumber || 'N/A'}</strong><small>{loan._id?.slice(-8)}</small></td><td>{loan.userId?.name || loan.application?.personal?.name || 'N/A'}<small>{loan.userId?.email}</small></td><td>{money(loan.decision?.amountApproved)}</td><td><ProgressBar now={s.percent} label={`${s.paid}/${s.total}`} /></td><td><Badge bg={loan.autoDebit?.enabled ? 'success' : 'danger'}>{loan.autoDebit?.enabled ? 'Enabled' : 'Disabled'}</Badge></td><td>{date(s.next?.dueDate)}</td><td className="text-end"><Button size="sm" variant="outline-primary" onClick={() => setSelected(loan)}><Eye size={14} /></Button> <Button size="sm" variant={loan.autoDebit?.enabled ? 'outline-danger' : 'outline-success'} onClick={() => setConfirmLoan(loan)}><ToggleLeft size={14} /> Toggle</Button></td></tr>; })}</tbody></Table></Card>
+      <Modal show={!!selected} onHide={() => setSelected(null)} size="lg"><Modal.Header closeButton><Modal.Title>Loan EMI Detail</Modal.Title></Modal.Header><Modal.Body>{selected && <Table responsive size="sm"><thead><tr><th>EMI</th><th>Due Date</th><th>Amount</th><th>Status</th></tr></thead><tbody>{(selected.schedule || []).map((item) => <tr key={item.installmentNo}><td>{item.installmentNo}</td><td>{date(item.dueDate)}</td><td>{money(item.total)}</td><td><Badge bg={item.paid ? 'success' : 'warning'}>{item.paid ? 'Paid' : 'Pending'}</Badge></td></tr>)}</tbody></Table>}</Modal.Body></Modal>
+      <Modal show={!!confirmLoan} onHide={() => setConfirmLoan(null)}><Modal.Header closeButton><Modal.Title>Confirm Auto Debit</Modal.Title></Modal.Header><Modal.Body>{confirmLoan && `Auto debit ${confirmLoan.autoDebit?.enabled ? 'disable' : 'enable'} karna hai for ${confirmLoan.loanAccountNumber}?`}</Modal.Body><Modal.Footer><Button variant="outline-secondary" onClick={() => setConfirmLoan(null)}>Cancel</Button><Button disabled={saving} onClick={toggle}>{saving ? 'Updating...' : 'Confirm'}</Button></Modal.Footer></Modal>
+      <PageStyle />
     </div>
-  )
+  );
 }
+
+const PageStyle = () => <style>{`.emi-page{padding:8px 0 24px;color:#111827}.emi-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.emi-head p{margin:0 0 4px;color:#0f766e;font-size:12px;font-weight:900;text-transform:uppercase}.emi-head h2{display:flex;gap:10px;align-items:center;margin:0;font-weight:850}.emi-head span,.emi-table-card td small{color:#64748b}.emi-head .btn,.emi-table-card .btn{display:inline-flex;align-items:center;gap:6px}.emi-stat,.emi-panel,.emi-table-card{border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 10px 26px rgba(15,23,42,.06)}.emi-stat{padding:16px}.emi-stat span,.emi-stat small{display:block;color:#64748b;font-weight:800}.emi-stat strong{display:block;font-size:24px;margin:4px 0}.emi-stat.success strong{color:#047857}.emi-stat.danger strong{color:#b91c1c}.emi-panel{padding:16px}.emi-table-card{overflow:hidden}.emi-table-card thead th{background:#f8fafc;color:#475569;font-size:12px;text-transform:uppercase}.emi-table-card td small{display:block}@media(max-width:768px){.emi-head{flex-direction:column}}`}</style>;

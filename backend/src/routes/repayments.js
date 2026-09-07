@@ -25,6 +25,9 @@ router.post('/:loanId/pay/:installment', requireAuth, async (req, res, next) => 
     inst.paid = true;
     inst.paidAt = new Date();
     inst.paymentId = 'TXN' + Date.now();
+    if (loan.schedule?.length && loan.schedule.every((item) => item.paid)) {
+      loan.status = 'CLOSED';
+    }
 
     await loan.save();
     ok(res, inst, 'Payment recorded successfully');

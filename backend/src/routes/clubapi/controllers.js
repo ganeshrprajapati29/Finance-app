@@ -17,6 +17,81 @@ function clubStatusToLocal(data = {}) {
   return 'processing';
 }
 
+function cleanText(value) {
+  return String(value || '').replace(/^Exception:\s*/i, '').trim();
+}
+
+function pickFirst(data = {}, keys = []) {
+  for (const key of keys) {
+    const value = data?.[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return '';
+}
+
+function pickAmount(data = {}) {
+  const raw = pickFirst(data, [
+    'amount',
+    'dueAmount',
+    'billAmount',
+    'billNetAmount',
+    'billnetamount',
+    'bill_amount',
+    'payableAmount'
+  ]);
+  const number = Number(String(raw || '').replace(/,/g, ''));
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalizeBbpsBillResponse(response = {}, urid = '') {
+  const nested = response.data && typeof response.data === 'object' ? response.data : {};
+  const billData = response.billData && typeof response.billData === 'object' ? response.billData : {};
+  const bill = response.bill && typeof response.bill === 'object' ? response.bill : {};
+  const source = Object.keys(billData).length
+    ? billData
+    : Object.keys(bill).length
+      ? bill
+      : Object.keys(nested).length
+        ? nested
+        : response;
+
+  return {
+    urid: cleanText(pickFirst(source, ['urid', 'billId', '_id']) || pickFirst(response, ['urid', 'billId']) || urid),
+    customerName: cleanText(pickFirst(source, ['customerName', 'consumerName', 'name', 'billName'])),
+    amount: pickAmount(source),
+    dueDate: cleanText(pickFirst(source, ['dueDate', 'billDueDate', 'bill_due_date'])),
+    billNumber: cleanText(pickFirst(source, ['billNumber', 'billNo', 'billId', 'bill_number'])),
+    billDate: cleanText(pickFirst(source, ['billDate', 'bill_date'])),
+    billPeriod: cleanText(pickFirst(source, ['billPeriod', 'bill_period'])),
+    status: cleanText(pickFirst(response, ['status', 'txnStatus', 'resCode'])),
+    message: cleanText(pickFirst(response, ['message', 'resText', 'statusMessage'])),
+    additionalInfo: source.additionalInfo && typeof source.additionalInfo === 'object' ? source.additionalInfo : source,
+    raw: response
+  };
+}
+
+function friendlyBbpsMessage(error) {
+  const raw = cleanText(
+    error?.response?.data?.message ||
+    error?.response?.data?.resText ||
+    error?.message
+  );
+  const lower = raw.toLowerCase();
+  if (/token|unauthori[sz]ed|auth|kyc|whitelist/.test(lower)) {
+    return 'Service configuration issue hai. Please support se contact karein.';
+  }
+  if (/timeout|etimedout|network|econn|enotfound|socket/.test(lower)) {
+    return 'Bill service abhi slow hai. Thodi der baad dobara try karein.';
+  }
+  if (/invalid|not found|no bill|bill not|consumer|account|mobile|parameter|field|required/.test(lower)) {
+    return 'Bill details match nahi ho rahe. Biller aur consumer/account number check karke dobara try karein.';
+  }
+  if (/pending|process/.test(lower)) {
+    return 'Bill fetch request process ho rahi hai. Thodi der baad status check karein.';
+  }
+  return raw || 'Bill fetch nahi ho paya. Details check karke dobara try karein.';
+}
+
 function emitClubTransaction(userId, transaction) {
   if (!userId) return;
   emitToUser(userId, 'clubapi:transaction_updated', {
@@ -48,7 +123,7 @@ class ClubAPIController {
         accountRef,
         bbpsId = provider,
         mobile = accountRef,
-        customerMobile,
+        customerMobile = req.user?.mobile || mobile,
         opvalue1,
         opvalue2,
         opvalue3,
@@ -60,7 +135,16 @@ class ClubAPIController {
       if (!bbpsId || !mobile || !customerMobile) {
         return res.status(400).json({
           success: false,
-          message: 'Missing required fields: bbpsId, mobile, customerMobile'
+          code: 'BBPS_DETAILS_REQUIRED',
+          message: 'Biller, consumer/account number aur customer mobile required hai.'
+        });
+      }
+
+      if (!/^\d{10}$/.test(String(customerMobile))) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_CUSTOMER_MOBILE',
+          message: 'Customer mobile 10 digit ka hona chahiye.'
         });
       }
 
@@ -84,9 +168,9 @@ class ClubAPIController {
       try {
         clubapiResponse = await fetchBbpsBill({
           urid,
-          bbpsId,
-          mobile,
-          customerMobile,
+          bbpsId: String(bbpsId).trim(),
+          mobile: String(mobile).trim(),
+          customerMobile: String(customerMobile).trim(),
           opvalue1,
           opvalue2,
           opvalue3,
@@ -95,9 +179,14 @@ class ClubAPIController {
         });
       } catch (error) {
         await markTransactionFailed(transaction, userId, error);
-        throw error;
+        return res.status(400).json({
+          success: false,
+          code: 'BBPS_FETCH_FAILED',
+          message: friendlyBbpsMessage(error)
+        });
       }
       const validatedResponse = validateResponse(clubapiResponse);
+      const bill = normalizeBbpsBillResponse(validatedResponse, urid);
 
       // Update transaction
       transaction.status = clubStatusToLocal(validatedResponse);
@@ -107,21 +196,31 @@ class ClubAPIController {
 
       res.json({
         success: true,
+        message: bill.amount > 0 ? 'Bill fetched successfully' : (bill.message || 'Bill details fetched'),
         data: {
           urid,
-          bill: validatedResponse.billData || validatedResponse.bill || validatedResponse.data || validatedResponse,
+          bill,
           transaction: transaction
         }
       });
 
     } catch (error) {
-      next(error);
+      return res.status(400).json({
+        success: false,
+        code: 'BBPS_FETCH_FAILED',
+        message: friendlyBbpsMessage(error)
+      });
     }
   }
 
   // Pay bill
   static async payBill(req, res, next) {
     try {
+      return res.status(402).json({
+        success: false,
+        code: 'PAYMENT_REQUIRED',
+        message: 'Please pay with Razorpay first. Bill payment will start automatically after payment verification.'
+      });
       const {
         billId,
         amount,
@@ -223,94 +322,11 @@ class ClubAPIController {
   // Recharge (Mobile/DTH)
   static async recharge(req, res, next) {
     try {
-      const { type, operatorId, accountRef, amount, customerMobile, cbId, opvalue1, opvalue2, opvalue3, opvalue4, opvalue5 } = req.body;
-      const userId = req.user?.uid || req.user?.id;
-
       return res.status(402).json({
         success: false,
         code: 'PAYMENT_REQUIRED',
         message: 'Please pay with Razorpay first. Recharge will start automatically after payment verification.'
       });
-
-      if (!type || !operatorId || !accountRef || !amount) {
-        return res.status(400).json({
-          success: false,
-          message: 'Missing required fields: type, operatorId, accountRef, amount'
-        });
-      }
-
-      const urid = generateURID();
-      const formattedAmount = formatAmount(amount);
-      const transactionType = getTransactionType(type);
-
-      // Create transaction record
-      const transaction = new ClubAPITransaction({
-        urid,
-        type: transactionType,
-        status: 'processing',
-        amount: formattedAmount,
-        provider: operatorId,
-        accountRef,
-        customerMobile,
-        userId
-      });
-      await transaction.save();
-
-      emitClubTransaction(userId, transaction);
-
-      let clubapiResponse;
-      try {
-        clubapiResponse = await callClubAPITransaction({
-          urid,
-          operatorId,
-          mobile: accountRef,
-          amount: formattedAmount,
-          cbId,
-          customerMobile,
-          opvalue1,
-          opvalue2,
-          opvalue3,
-          opvalue4,
-          opvalue5
-        });
-      } catch (error) {
-        await markTransactionFailed(transaction, userId, error);
-        throw error;
-      }
-      const validatedResponse = validateResponse(clubapiResponse);
-
-      // Update transaction
-      transaction.status = clubStatusToLocal(validatedResponse);
-      transaction.response = validatedResponse;
-      await transaction.save();
-      emitClubTransaction(userId, transaction);
-
-      if (transaction.status === 'completed' && userId) {
-        await Invoice.create({
-          invoiceNumber: invoiceNumber('KPRECH'),
-          userId,
-          amount: Number(formattedAmount || 0),
-          taxableAmount: 0,
-          cgst: 0,
-          sgst: 0,
-          igst: 0,
-          status: 'PAID',
-          invoiceType: transactionType.toUpperCase(),
-          description: `${transactionType} payment - ${operatorId}`,
-          notes: `Transaction ID: ${urid} | Account: ${accountRef}`,
-          items: [{ description: `${transactionType} payment - ${operatorId}`, quantity: 1, rate: Number(formattedAmount || 0), total: Number(formattedAmount || 0) }]
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          urid,
-          transaction: transaction,
-          response: validatedResponse
-        }
-      });
-
     } catch (error) {
       next(error);
     }
@@ -371,27 +387,63 @@ class ClubAPIController {
   static async getTransactionHistory(req, res, next) {
     try {
       const userId = req.user?.uid || req.user?.id;
-      const { page = 1, limit = 10 } = req.query;
+      const {
+        page = 1,
+        limit = 100,
+        type,
+        status,
+        q
+      } = req.query;
 
-      const skip = (page - 1) * limit;
+      const safePage = Math.max(parseInt(page, 10) || 1, 1);
+      const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+      const skip = (safePage - 1) * safeLimit;
+      const query = { userId };
+
+      if (type) {
+        const types = String(type)
+          .split(',')
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean);
+        if (types.length) query.type = { $in: types };
+      }
+
+      if (status) {
+        const statuses = String(status)
+          .split(',')
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean);
+        if (statuses.length) query.status = { $in: statuses };
+      }
+
+      if (q) {
+        const pattern = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        query.$or = [
+          { urid: pattern },
+          { provider: pattern },
+          { accountRef: pattern },
+          { billId: pattern },
+          { customerMobile: pattern }
+        ];
+      }
 
       const transactions = await ClubAPITransaction
-        .find({ userId })
+        .find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(parseInt(limit));
+        .limit(safeLimit);
 
-      const total = await ClubAPITransaction.countDocuments({ userId });
+      const total = await ClubAPITransaction.countDocuments(query);
 
       res.json({
         success: true,
         data: {
           transactions,
           pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
+            page: safePage,
+            limit: safeLimit,
             total,
-            pages: Math.ceil(total / limit)
+            pages: Math.ceil(total / safeLimit)
           }
         }
       });
