@@ -6,6 +6,7 @@ import {
   Save,
   Settings as SettingsIcon,
   Shield,
+  Smartphone,
   Wallet,
 } from 'lucide-react'
 import api from '../api/axios'
@@ -29,6 +30,16 @@ const defaults = {
   fcmEnabled: false,
   emailEnabled: true,
   smsEnabled: false,
+  appUpdate: {
+    android: {
+      latestVersion: '1.0.1',
+      latestBuild: 32,
+      minimumSupportedBuild: 32,
+      forceUpdate: false,
+      message: 'A new Khatu Pay update is available. Update now for the latest improvements and security fixes.',
+      storeUrl: 'https://play.google.com/store/apps/details?id=com.finance.khatupay',
+    },
+  },
 }
 
 const unwrap = (res) => res?.data?.data || res?.data || {}
@@ -45,7 +56,19 @@ const Settings = () => {
       setLoading(true)
       setError('')
       const res = await api.get('/admin/settings')
-      setSettings({ ...defaults, ...unwrap(res) })
+      const value = unwrap(res)
+      setSettings({
+        ...defaults,
+        ...value,
+        appUpdate: {
+          ...defaults.appUpdate,
+          ...(value.appUpdate || {}),
+          android: {
+            ...defaults.appUpdate.android,
+            ...(value.appUpdate?.android || {}),
+          },
+        },
+      })
     } catch (err) {
       setError(
         err.response?.data?.message || 'Settings could not be loaded. Please try again.'
@@ -78,6 +101,14 @@ const Settings = () => {
   )
 
   const update = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }))
+  const updateAndroid = (key, value) =>
+    setSettings((prev) => ({
+      ...prev,
+      appUpdate: {
+        ...prev.appUpdate,
+        android: { ...prev.appUpdate.android, [key]: value },
+      },
+    }))
 
   const saveSettings = async (event) => {
     event?.preventDefault?.()
@@ -88,6 +119,8 @@ const Settings = () => {
     const max = Number(settings.maxLoanAmount)
     const rate = Number(settings.interestRate)
     const duration = Number(settings.loanDuration)
+    const latestBuild = Number(settings.appUpdate.android.latestBuild)
+    const minimumBuild = Number(settings.appUpdate.android.minimumSupportedBuild)
 
     if (!(min > 0) || !(max > 0)) {
       setError('Loan amounts must be greater than zero.')
@@ -105,6 +138,14 @@ const Settings = () => {
       setError('Default duration must be a whole number between 1 and 60 months.')
       return
     }
+    if (!Number.isInteger(latestBuild) || latestBuild < 1) {
+      setError('Latest Android build must be a positive whole number.')
+      return
+    }
+    if (!Number.isInteger(minimumBuild) || minimumBuild < 1 || minimumBuild > latestBuild) {
+      setError('Minimum supported build must be between 1 and the latest build.')
+      return
+    }
 
     try {
       setSaving(true)
@@ -116,8 +157,27 @@ const Settings = () => {
         maxLoanAmount: max,
         interestRate: rate,
         loanDuration: duration,
+        appUpdate: {
+          android: {
+            ...settings.appUpdate.android,
+            latestBuild,
+            minimumSupportedBuild: minimumBuild,
+          },
+        },
       })
-      setSettings({ ...defaults, ...unwrap(res) })
+      const value = unwrap(res)
+      setSettings({
+        ...defaults,
+        ...value,
+        appUpdate: {
+          ...defaults.appUpdate,
+          ...(value.appUpdate || {}),
+          android: {
+            ...defaults.appUpdate.android,
+            ...(value.appUpdate?.android || {}),
+          },
+        },
+      })
       setSuccess('Settings saved successfully.')
     } catch (err) {
       setError(
@@ -289,6 +349,73 @@ const Settings = () => {
                       max="60"
                       value={settings.loanDuration}
                       onChange={(e) => update('loanDuration', e.target.value)}
+                    />
+                  </Col>
+                </Row>
+              </div>
+            </Card>
+          </Col>
+
+          <Col xl={12}>
+            <Card className="kp-card">
+              <div className="kp-card-header">
+                <Smartphone size={16} color="var(--kp-deep-teal)" />
+                <h2 className="kp-card-title">Android update policy</h2>
+              </div>
+              <div className="kp-card-body">
+                <Row className="g-3">
+                  <Col md={4}>
+                    <Form.Label>Latest version name</Form.Label>
+                    <Form.Control
+                      value={settings.appUpdate.android.latestVersion}
+                      onChange={(e) => updateAndroid('latestVersion', e.target.value)}
+                      placeholder="1.0.2"
+                    />
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>Latest build number</Form.Label>
+                    <Form.Control
+                      type="number"
+                      min="1"
+                      value={settings.appUpdate.android.latestBuild}
+                      onChange={(e) => updateAndroid('latestBuild', e.target.value)}
+                    />
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>Minimum supported build</Form.Label>
+                    <Form.Control
+                      type="number"
+                      min="1"
+                      value={settings.appUpdate.android.minimumSupportedBuild}
+                      onChange={(e) => updateAndroid('minimumSupportedBuild', e.target.value)}
+                    />
+                    <Form.Text>Builds below this number are blocked when mandatory update is on.</Form.Text>
+                  </Col>
+                  <Col md={12}>
+                    <Form.Label>Play Store URL</Form.Label>
+                    <Form.Control
+                      type="url"
+                      value={settings.appUpdate.android.storeUrl}
+                      onChange={(e) => updateAndroid('storeUrl', e.target.value)}
+                    />
+                  </Col>
+                  <Col md={12}>
+                    <Form.Label>Customer message</Form.Label>
+                    <Form.Control
+                      as="textarea"
+                      rows={2}
+                      maxLength={500}
+                      value={settings.appUpdate.android.message}
+                      onChange={(e) => updateAndroid('message', e.target.value)}
+                    />
+                  </Col>
+                  <Col md={12}>
+                    <Form.Check
+                      type="switch"
+                      id="force-android-update"
+                      label="Require customers below the minimum build to update before using the app"
+                      checked={Boolean(settings.appUpdate.android.forceUpdate)}
+                      onChange={(e) => updateAndroid('forceUpdate', e.target.checked)}
                     />
                   </Col>
                 </Row>

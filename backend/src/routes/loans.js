@@ -40,7 +40,10 @@ function documentFieldFor(originalName = '') {
 
 const router = Router();
 
-const nonClosedLoanStatuses = ['PENDING', 'APPROVED', 'DISBURSED'];
+const nonClosedLoanStatuses = [
+  'PENDING', 'UNDER_REVIEW', 'DOCUMENTS_REQUIRED', 'APPROVED',
+  'DISBURSEMENT_PROCESSING', 'DISBURSED', 'OVERDUE'
+];
 
 function loanOutstanding(loan) {
   const schedule = Array.isArray(loan.schedule) ? loan.schedule : [];
@@ -53,16 +56,16 @@ async function closeIfFullyPaid(loan) {
   const schedule = Array.isArray(loan.schedule) ? loan.schedule : [];
   if (schedule.length && schedule.every((item) => item.paid)) {
     loan.status = 'CLOSED';
+    loan.statusHistory.push({
+      status: 'CLOSED', title: 'Loan closed',
+      message: 'All scheduled repayments have been received.', actorType: 'SYSTEM'
+    });
     await loan.save();
   }
   return loan;
 }
 
 async function getLoanEligibility(userId) {
-  // Users may apply for a new loan even while an existing one is under
-  // review, approved, or still being repaid - re-application is always
-  // allowed. The existing loan's status/outstanding amount is still
-  // returned as context, it just no longer blocks anything.
   const latestActiveLoan = await Loan.findOne({
     userId,
     status: { $in: nonClosedLoanStatuses }
@@ -79,13 +82,18 @@ async function getLoanEligibility(userId) {
 
   const outstandingAmount = loanOutstanding(loan);
   const messages = {
-    PENDING: 'You already have a loan application under review, and you can still apply for another loan.',
-    APPROVED: 'You have an approved loan awaiting disbursement, and you can still apply for another loan.',
-    DISBURSED: 'You have an active loan with an outstanding balance, and you can still apply for another loan.'
+    PENDING: 'Your existing loan application is under review.',
+    UNDER_REVIEW: 'Your existing loan application is under review.',
+    DOCUMENTS_REQUIRED: 'Please complete the requested documents for your existing application.',
+    APPROVED: 'Your approved loan is awaiting disbursement.',
+    DISBURSEMENT_PROCESSING: 'Your approved loan disbursement is being processed.',
+    DISBURSED: 'You already have an active loan. Please close it before applying again.',
+    OVERDUE: 'Please clear the overdue amount on your active loan before applying again.'
   };
 
   return {
-    eligible: true,
+    eligible: false,
+    code: 'ACTIVE_LOAN_EXISTS',
     message: messages[loan.status] || 'You can apply for a new loan.',
     loan: {
       _id: loan._id,
@@ -177,6 +185,15 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
         'any.required': 'Loan tenure is required.',
       }),
       purpose: Joi.string().allow('').default('Personal'),
+      consents: Joi.object({
+        creditReport: Joi.boolean().valid(true).required(),
+        terms: Joi.boolean().valid(true).required(),
+        privacy: Joi.boolean().valid(true).required(),
+        version: Joi.string().max(40).default('2026-09-19')
+      }).required().messages({
+        'any.required': 'Please accept the loan terms, privacy notice and credit report consent.',
+        'any.only': 'Please accept all required consents before submitting.'
+      }),
       // simple mode
       docs: Joi.array().items(Joi.string()).optional(),
     });
@@ -339,7 +356,28 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
         references,
         bankDetails: payload.bankDetails,
       },
-      status: 'PENDING'
+      status: 'PENDING',
+      consents: {
+        creditReport: {
+          accepted: true, acceptedAt: new Date(), version: payload.consents.version,
+          ipAddress: req.ip, userAgent: req.get('user-agent') || ''
+        },
+        terms: {
+          accepted: true, acceptedAt: new Date(), version: payload.consents.version,
+          ipAddress: req.ip, userAgent: req.get('user-agent') || ''
+        },
+        privacy: {
+          accepted: true, acceptedAt: new Date(), version: payload.consents.version,
+          ipAddress: req.ip, userAgent: req.get('user-agent') || ''
+        }
+      },
+      statusHistory: [{
+        status: 'PENDING',
+        title: 'Application submitted',
+        message: 'Your application was received and is awaiting review.',
+        actorType: 'USER',
+        actorId: req.user.uid
+      }]
     });
 
     // Notifications are best-effort. The loan is already persisted at this

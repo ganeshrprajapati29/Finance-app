@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { toPaise, missingRazorpayEnv } from '../src/services/razorpay.js';
+import { toPaise, missingRazorpayEnv, razorpayRefundState } from '../src/services/razorpay.js';
 import { ok, fail, created } from '../src/utils/response.js';
 
 const mockRes = () => ({
@@ -141,4 +141,54 @@ test('fail() can carry context, e.g. the blocking loan', () => {
   fail(res, 'NOT_ELIGIBLE', 'You already have a loan', 409, { loan: { _id: 'l1' } });
   assert.equal(res._status, 409);
   assert.deepEqual(res._body.data, { loan: { _id: 'l1' } });
+});
+
+/* ------------------------------------------------------ gateway errors */
+
+import { describeRazorpayError, isRazorpaySdkError, toPaymentGatewayError } from '../src/services/razorpay.js';
+
+test('Razorpay SDK errors are recognised and described without secrets', () => {
+  const sdkError = { statusCode: 401, error: { code: 'BAD_REQUEST_ERROR', description: 'Authentication failed' } };
+  assert.equal(isRazorpaySdkError(sdkError), true);
+  assert.equal(isRazorpaySdkError(new Error('x')), false);
+  assert.equal(isRazorpaySdkError({ statusCode: 500 }), false);
+
+  const info = describeRazorpayError(sdkError);
+  assert.equal(info.authFailed, true);
+  assert.equal(info.httpStatus, 401);
+
+  const { error } = console;
+  console.error = () => {};
+  try {
+    const gatewayError = toPaymentGatewayError(sdkError);
+    assert.equal(gatewayError.status, 502);
+    assert.equal(gatewayError.code, 'PAYMENT_GATEWAY_ERROR');
+    assert.equal(gatewayError.expose, true);
+    assert.match(gatewayError.message, /gateway authentication failed/);
+  } finally {
+    console.error = error;
+  }
+});
+
+test('partial Razorpay refunds do not mark the whole payment refunded', () => {
+  assert.deepEqual(razorpayRefundState(100, 2500), {
+    paymentPaise: 10000,
+    totalRefundedPaise: 2500,
+    fullyRefunded: false,
+  });
+});
+
+test('cumulative Razorpay refunds become full at the original payment amount', () => {
+  assert.equal(razorpayRefundState(100, 9999).fullyRefunded, false);
+  assert.equal(razorpayRefundState(100, 10000).fullyRefunded, true);
+  assert.equal(razorpayRefundState(100, 11000).fullyRefunded, true);
+});
+
+test('invalid Razorpay refund amounts are rejected', () => {
+  for (const bad of [-1, 1.5, NaN, Infinity]) {
+    assert.throws(
+      () => razorpayRefundState(100, bad),
+      (err) => err.status === 400 && err.code === 'INVALID_REFUND_AMOUNT'
+    );
+  }
 });

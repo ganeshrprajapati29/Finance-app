@@ -84,6 +84,15 @@ router.put('/me/settings', requireAuth, async (req,res,next)=>{
   }catch(e){ next(e) }
 });
 
+router.delete('/me/fcm-token', requireAuth, async (req,res,next)=>{
+  try {
+    const token = String(req.body?.fcmToken || '').trim();
+    if (!token) return fail(res,'BAD_REQUEST','Device token is required',400);
+    await User.findByIdAndUpdate(req.user.uid, { $pull: { fcmTokens: token } });
+    ok(res, null, 'Device unregistered');
+  } catch (e) { next(e) }
+});
+
 router.post('/resolve-upi', requireAuth, async (req,res,next)=>{
   try{
     const mobile = String(req.body.mobile || '').replace(/\D/g, '');

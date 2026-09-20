@@ -1,73 +1,60 @@
+import crypto from 'crypto';
 import express from 'express';
-import ClubAPITransaction from './clubapi/models/transaction.js';
-import { clubStatusToLocal, handleRechargeCallbackRefund } from '../services/rechargePaymentService.js';
-import { emitToUser } from '../realtime.js';
+
+import { applyClubapiCallback } from '../services/rechargePaymentService.js';
 
 const router = express.Router();
 
-function callbackOrderId(payload = {}) {
-  return payload.orderId || payload.order_id || payload.ourSystemId || payload.ourSystemOrderId || '';
+/**
+ * Optional shared secret for the ClubAPI callback URL. When
+ * CLUBAPI_CALLBACK_SECRET is set, register the callback in the ClubAPI panel
+ * as  https://<host>/api/callback/clubapi?key=<secret>  and every other caller
+ * is rejected. Either way a callback can never refund anyone by itself - its
+ * status is verified with ClubAPI's status API first.
+ */
+function callbackAuthorized(req) {
+  const secret = String(process.env.CLUBAPI_CALLBACK_SECRET || '').trim();
+  if (!secret) return true;
+  const supplied = String(req.query.key || req.get('x-callback-key') || '');
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function emitClubTransaction(userId, transaction) {
-  if (!userId) return;
-  emitToUser(userId, 'clubapi:transaction_updated', {
-    urid: transaction.urid,
-    status: transaction.status,
-    type: transaction.type,
-    amount: transaction.amount,
-    transaction
-  });
-}
+async function handleClubAPICallback(req, res) {
+  if (!callbackAuthorized(req)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized', data: null });
+  }
 
-router.get('/clubapi', (req, res) => {
-  res.json({ success: true, message: 'ClubAPI callback endpoint is active' });
-});
+  // ClubAPI may call back with query parameters (GET) or a JSON / form body.
+  const payload = { ...(req.query || {}), ...(req.body && typeof req.body === 'object' ? req.body : {}) };
+  delete payload.key;
 
-router.get('/juspay-consumer', (req, res) => {
-  res.json({ success: true, message: 'Juspay Consumer callback endpoint is active' });
-});
+  const hasReference = payload.urid || payload.orderId || payload.order_id || payload.ourSystemId;
+  if (!hasReference) {
+    return res.json({ success: true, message: 'ClubAPI callback endpoint is active', data: null });
+  }
 
-async function handleClubAPICallback(req, res, next) {
   try {
-    const payload = req.body || {};
-    const urid = payload.urid || payload.ourSystemId || payload.ourSystemOrderId || '';
-    const orderId = callbackOrderId(payload);
-
-    const query = [];
-    if (urid) query.push({ urid });
-    if (orderId) {
-      query.push({ 'response.orderId': orderId });
-      query.push({ 'response.data.orderId': orderId });
-    }
-
-    const transaction = query.length ? await ClubAPITransaction.findOne({ $or: query }) : null;
-    if (transaction) {
-      transaction.status = clubStatusToLocal(payload);
-      transaction.response = {
-        ...(transaction.response?.toObject?.() || transaction.response || {}),
-        callback: payload,
-        callbackReceivedAt: new Date()
-      };
-      await transaction.save();
-
-      if (transaction.status === 'failed') {
-        await handleRechargeCallbackRefund(transaction);
-      }
-
-      emitClubTransaction(transaction.userId, transaction);
-    }
-
-    res.json({ success: true, message: 'Callback received' });
+    const result = await applyClubapiCallback(payload);
+    // Always 200 so ClubAPI does not keep retrying a callback we recorded.
+    return res.json({ success: true, message: 'Callback received', data: { matched: result.matched } });
   } catch (error) {
-    next(error);
+    console.error('ClubAPI callback error:', error.message);
+    return res.json({ success: true, message: 'Callback received', data: { matched: false } });
   }
 }
 
+router.get('/clubapi', handleClubAPICallback);
 router.post('/', handleClubAPICallback);
 router.post('/clubapi', handleClubAPICallback);
+
+router.get('/juspay-consumer', (req, res) => {
+  res.json({ success: true, message: 'Juspay Consumer callback endpoint is active', data: null });
+});
+
 router.post('/juspay-consumer', (req, res) => {
-  res.json({ success: true, message: 'Juspay Consumer callback received' });
+  res.json({ success: true, message: 'Juspay Consumer callback received', data: null });
 });
 
 export default router;

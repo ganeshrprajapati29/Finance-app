@@ -16,9 +16,13 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['loan', 'payment', 'kyc', 'support', 'general'],
+    enum: ['loan', 'payment', 'kyc', 'support', 'general', 'recharge', 'bill', 'business', 'security', 'settlement', 'promotion'],
     default: 'general',
   },
+  category: { type: String, trim: true, lowercase: true },
+  entityId: { type: String, trim: true },
+  actionRequired: { type: Boolean, default: false },
+  readAt: { type: Date },
   isRead: {
     type: Boolean,
     default: false,
@@ -50,5 +54,6 @@ const notificationSchema = new mongoose.Schema({
 // Index for efficient queries
 notificationSchema.index({ userId: 1, createdAt: -1 });
 notificationSchema.index({ userId: 1, isRead: 1 });
+notificationSchema.index({ userId: 1, category: 1, createdAt: -1 });
 
 export default mongoose.model('Notification', notificationSchema);

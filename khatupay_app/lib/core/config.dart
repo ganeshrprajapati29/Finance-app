@@ -1,9 +1,14 @@
 class AppConfig {
-  // Android emulator -> backend on host's localhost
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://192.168.29.124:8080/api',
+    defaultValue: 'https://khatupay.com/api',
   );
-  // for real device on same wifi, put your machine IP: 'http://192.168.1.5:8080'
-  static const String razorpayKey = String.fromEnvironment('RAZORPAY_KEY', defaultValue: 'rzp_live_RIEvsgWYOOAfAT');
+
+  // No placeholder default on purpose: a broken/fake key must fail loudly
+  // (see PaymentService.newCheckout) rather than silently open checkout
+  // with a non-functional key. The real key is always passed at build time
+  // via --dart-define=RAZORPAY_KEY=..., and normally the server-provided
+  // key_id from the order response is used anyway - this is only a
+  // last-resort fallback if that response is ever missing it.
+  static const String razorpayKey = String.fromEnvironment('RAZORPAY_KEY');
 }

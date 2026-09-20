@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:go_router/go_router.dart';
+import '../../routes/app_router.dart';
 import '../../services/payment_service.dart';
+import '../widgets/app_back_button.dart';
 
 class QRScannerPage extends StatefulWidget {
   const QRScannerPage({super.key});
@@ -12,21 +13,92 @@ class QRScannerPage extends StatefulWidget {
 }
 
 class _QRScannerPageState extends State<QRScannerPage> {
-  MobileScannerController controller = MobileScannerController();
+  final MobileScannerController _controller = MobileScannerController();
   bool _hasPermission = false;
-  bool _isProcessing = false;
+  bool _processing = false;
+  String? _message;
 
   @override
   void initState() {
     super.initState();
-    _requestCameraPermission();
+    _requestPermission();
   }
 
-  Future<void> _requestCameraPermission() async {
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _requestPermission() async {
     final status = await Permission.camera.request();
+    if (mounted) setState(() => _hasPermission = status.isGranted);
+  }
+
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_processing) return;
+    final value = capture.barcodes
+        .map((barcode) => barcode.rawValue)
+        .whereType<String>()
+        .where((raw) => raw.trim().isNotEmpty)
+        .firstOrNull;
+    if (value == null) return;
+    await _handleScan(value);
+  }
+
+  Future<void> _handleScan(String raw) async {
     setState(() {
-      _hasPermission = status.isGranted;
+      _processing = true;
+      _message = null;
     });
+
+    try {
+      await _controller.stop();
+      final upi = UpiQrPayload.parse(raw);
+      if (upi == null || upi.vpa.isEmpty) {
+        setState(() => _message = 'This QR is not a valid UPI payment QR.');
+        return;
+      }
+
+      final confirmedPayload = await showModalBottomSheet<UpiQrPayload>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _PaymentSheet(payload: upi),
+      );
+
+      if (confirmedPayload != null) {
+        await _pay(confirmedPayload);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _message = 'QR processing failed: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _processing = false);
+        await _controller.start();
+      }
+    }
+  }
+
+  Future<void> _pay(UpiQrPayload payload) async {
+    try {
+      setState(() => _message = 'Opening secure payment gateway...');
+      final ps = PaymentService();
+      final data = await ps.createP2PPaymentOrder(
+        payload.amount!,
+        payload.vpa,
+        payload.name.isEmpty ? 'UPI Payee' : payload.name,
+        note: payload.note.isEmpty ? 'QR payment' : payload.note,
+      );
+      await ps.openGatewayCheckout(data);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Payment started. Check history for final status.')),
+      );
+      router.go('/payments');
+    } catch (e) {
+      if (mounted) setState(() => _message = 'Payment gateway error: $e');
+    }
   }
 
   @override
@@ -34,179 +106,259 @@ class _QRScannerPageState extends State<QRScannerPage> {
     if (!_hasPermission) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text('QR Scanner'),
-          backgroundColor: Colors.lightBlue,
+          title: const Text('Scan & Pay'),
+          leading: const AppBackButton(),
         ),
         body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text('Camera permission is required to scan QR codes'),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: _requestCameraPermission,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.lightBlue,
-                ),
-                child: const Text('Grant Permission'),
-              ),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.camera_alt_outlined, size: 58, color: Color(0xFF0F766E)),
+                const SizedBox(height: 12),
+                const Text('Camera permission is required to scan payment QR codes.', textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                ElevatedButton(onPressed: _requestPermission, child: const Text('Grant Permission')),
+              ],
+            ),
           ),
         ),
       );
     }
 
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Scan QR Code'),
-        backgroundColor: Colors.lightBlue,
+        title: const Text('Scan & Pay'),
+        leading: const AppBackButton(),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.flash_on),
-            onPressed: () => controller.toggleTorch(),
-          ),
-          IconButton(
-            icon: const Icon(Icons.flip_camera_android),
-            onPressed: () => controller.switchCamera(),
-          ),
+          IconButton(icon: const Icon(Icons.flash_on), onPressed: () => _controller.toggleTorch()),
+          IconButton(icon: const Icon(Icons.cameraswitch), onPressed: () => _controller.switchCamera()),
         ],
       ),
       body: Stack(
         children: [
-          MobileScanner(
-            controller: controller,
-            onDetect: (capture) {
-              final List<Barcode> barcodes = capture.barcodes;
-              for (final barcode in barcodes) {
-                if (barcode.rawValue != null && !_isProcessing) {
-                  _handleScannedQR(barcode.rawValue!);
-                  break;
-                }
-              }
-            },
-          ),
-          if (_isProcessing)
+          MobileScanner(controller: _controller, onDetect: _onDetect),
+          _ScannerOverlay(message: _message),
+          if (_processing)
             Container(
-              color: Colors.black54,
-              child: const Center(
-                child: CircularProgressIndicator(),
-              ),
+              color: Colors.black45,
+              child: const Center(child: CircularProgressIndicator(color: Colors.white)),
             ),
         ],
       ),
     );
   }
+}
 
-  void _handleScannedQR(String qrData) async {
-    setState(() => _isProcessing = true);
+class UpiQrPayload {
+  final String raw;
+  final String vpa;
+  final String name;
+  final String note;
+  final String reference;
+  final double? amount;
 
-    try {
-      // Parse UPI QR code data
-      final upiData = _parseUPIData(qrData);
-      if (upiData != null && upiData['payeeVPA']!.isNotEmpty && upiData['amount']!.isNotEmpty) {
-        // Show confirmation dialog
-        final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Confirm Payment'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Payee: ${upiData['payeeName']}'),
-                Text('VPA: ${upiData['payeeVPA']}'),
-                Text('Amount: ₹${upiData['amount']}'),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
+  const UpiQrPayload({
+    required this.raw,
+    required this.vpa,
+    required this.name,
+    required this.note,
+    required this.reference,
+    required this.amount,
+  });
+
+  UpiQrPayload copyWith({double? amount}) {
+    return UpiQrPayload(
+      raw: raw,
+      vpa: vpa,
+      name: name,
+      note: note,
+      reference: reference,
+      amount: amount ?? this.amount,
+    );
+  }
+
+  static UpiQrPayload? parse(String raw) {
+    final trimmed = raw.trim();
+    if (!trimmed.toLowerCase().startsWith('upi://pay')) return null;
+
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return null;
+    final params = uri.queryParameters;
+    final amount = double.tryParse(params['am'] ?? '');
+    return UpiQrPayload(
+      raw: raw,
+      vpa: params['pa'] ?? '',
+      name: Uri.decodeComponent(params['pn'] ?? ''),
+      note: Uri.decodeComponent(params['tn'] ?? params['cu'] ?? ''),
+      reference: params['tr'] ?? '',
+      amount: amount,
+    );
+  }
+}
+
+class _PaymentSheet extends StatefulWidget {
+  final UpiQrPayload payload;
+
+  const _PaymentSheet({required this.payload});
+
+  @override
+  State<_PaymentSheet> createState() => _PaymentSheetState();
+}
+
+class _PaymentSheetState extends State<_PaymentSheet> {
+  late final TextEditingController _amountController = TextEditingController(
+    text: widget.payload.amount?.toStringAsFixed(0) ?? '',
+  );
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.56,
+      minChildSize: 0.42,
+      maxChildSize: 0.82,
+      builder: (context, scrollController) {
+        return Container(
+          padding: EdgeInsets.only(
+            left: 18,
+            right: 18,
+            top: 18,
+            bottom: 18 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: ListView(
+            controller: scrollController,
+            children: [
+              Center(
+                child: Container(
+                  width: 44,
+                  height: 5,
+                  decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(999)),
+                ),
               ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Pay Now'),
+              const SizedBox(height: 18),
+              const Text('Confirm QR Payment', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF0B1220))),
+              const SizedBox(height: 6),
+              const Text('Payment will be processed through the secure third-party gateway.', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w600)),
+              const SizedBox(height: 18),
+              _DetailRow(label: 'Payee', value: widget.payload.name.isEmpty ? 'UPI Payee' : widget.payload.name),
+              _DetailRow(label: 'UPI ID', value: widget.payload.vpa),
+              if (widget.payload.reference.isNotEmpty) _DetailRow(label: 'Reference', value: widget.payload.reference),
+              if (widget.payload.note.isNotEmpty) _DetailRow(label: 'Note', value: widget.payload.note),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _amountController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Amount',
+                  prefixText: 'Rs. ',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        final amount = double.tryParse(_amountController.text.trim());
+                        if (amount == null || amount <= 0) return;
+                        Navigator.pop(context, widget.payload.copyWith(amount: amount));
+                      },
+                      child: const Text('Pay Now'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         );
-
-        if (confirmed == true) {
-          // Initiate P2P payment
-          await _initiateP2PPayment(upiData);
-        }
-      } else {
-        // Show error for invalid QR
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid QR code. Please scan a valid UPI QR code with amount.')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error processing QR: $e')),
-      );
-    } finally {
-      setState(() => _isProcessing = false);
-    }
+      },
+    );
   }
+}
 
-  Future<void> _initiateP2PPayment(Map<String, String> upiData) async {
-    try {
-      final ps = PaymentService();
-      final amount = double.parse(upiData['amount']!);
-      final data = await ps.createP2PPaymentOrder(
-        amount,
-        upiData['payeeVPA']!,
-        upiData['payeeName'] ?? 'Unknown Payee',
-        note: 'P2P Payment via QR Scan',
-      );
-      final order = data['order'];
+class _ScannerOverlay extends StatelessWidget {
+  final String? message;
 
-      ps.newCheckout(
-        amount: amount,
-        orderId: order['id'],
-        onSuccess: (oid, pid, sig) async {
-          await ps.verifyRazorpay(oid, pid, sig);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('P2P Payment successful!')),
-            );
-            context.go('/'); // Go back to dashboard
-          }
-        },
-        onFail: (m) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Payment failed: $m')),
-            );
-          }
-        },
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error initiating payment: $e')),
-      );
-    }
-  }
-
-  Map<String, String>? _parseUPIData(String qrData) {
-    // Basic UPI QR parsing - in real implementation, use a proper UPI parser
-    if (qrData.contains('upi://pay')) {
-      final uri = Uri.parse(qrData);
-      return {
-        'payeeVPA': uri.queryParameters['pa'] ?? '',
-        'payeeName': uri.queryParameters['pn'] ?? '',
-        'amount': uri.queryParameters['am'] ?? '',
-        'merchantCode': uri.queryParameters['mc'] ?? '',
-        'transactionRef': uri.queryParameters['tr'] ?? '',
-      };
-    }
-    return null;
-  }
+  const _ScannerOverlay({this.message});
 
   @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Column(
+        children: [
+          const Spacer(),
+          Center(
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: const Color(0xFF5EEAD4), width: 4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 22),
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 22),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.62),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              message ?? 'Scan any UPI QR to pay through gateway',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+            ),
+          ),
+          const Spacer(),
+        ],
+      ),
+    );
   }
+}
+
+class _DetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DetailRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 92, child: Text(label, style: const TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w700))),
+          Expanded(child: Text(value, style: const TextStyle(color: Color(0xFF0B1220), fontWeight: FontWeight.w800))),
+        ],
+      ),
+    );
+  }
+}
+
+extension _FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
 }

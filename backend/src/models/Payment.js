@@ -22,9 +22,16 @@ const paymentSchema = new mongoose.Schema({
     stickerOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'QRStickerOrder' },
     clubapiTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ClubAPITransaction' },
     rechargeProcessedAt: Date,
+    billProcessedAt: Date,
     recharge: mongoose.Schema.Types.Mixed,
     clubapiBill: mongoose.Schema.Types.Mixed,
+    // Service/provider snapshot for recharge & bill payments (what the user saw).
+    service: mongoose.Schema.Types.Mixed,
     refund: mongoose.Schema.Types.Mixed,
+    // These were being written by the Razorpay webhook but were not declared,
+    // so Mongoose's strict mode silently discarded them.
+    razorpayFailure: mongoose.Schema.Types.Mixed,
+    razorpayRefund: mongoose.Schema.Types.Mixed,
     velxapay: mongoose.Schema.Types.Mixed
   }
 }, { timestamps:true });

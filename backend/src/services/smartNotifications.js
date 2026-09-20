@@ -101,16 +101,24 @@ function shouldSendEmail(event, context = {}) {
   if (context.email === false) return false;
   if (context.email === true || context.forceEmail === true) return true;
   return [
+    'loan_application_submitted',
     'login_suspicious',
     'security_alert',
     'password_changed',
+    'kyc_submitted',
     'kyc_approved',
     'kyc_rejected',
     'loan_approved',
     'loan_rejected',
     'loan_disbursed',
     'payment_confirmed',
+    'payment_pending',
+    'money_received',
     'service_refunded',
+    'support_created',
+    'support_updated',
+    'emi_due_soon',
+    'emi_overdue',
     'admin_user_action',
   ].includes(event);
 }

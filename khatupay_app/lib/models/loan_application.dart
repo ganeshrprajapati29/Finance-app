@@ -34,12 +34,21 @@ class LoanApplicationDraft {
   String aadhaarBackPath = '';
   String panPath = '';
   String selfiePath = '';
+  bool aadhaarEkycVerified = false;
+  Map<String, dynamic>? aadhaarEkyc;
+  bool panVerified = false;
+  Map<String, dynamic>? panVerification;
+
+  // Income proof: type of document + local file path (PDF or image)
+  String incomeProofType = ''; // SALARY_SLIP / BANK_STATEMENT / OTHER
+  String incomeProofPath = '';
 
   // After upload to backend -> store URLs (optional)
   String? aadhaarFrontUrl;
   String? aadhaarBackUrl;
   String? panUrl;
   String? selfieUrl;
+  String? incomeProofUrl;
 
   // Step 5: References (min 3)
   List<LoanReference> references = [
@@ -53,11 +62,18 @@ class LoanApplicationDraft {
   String accountNumber = '';
   String ifscCode = '';
   String accountHolderName = '';
+  String upiId = '';
+  String upiAccountName = '';
+  Map<String, dynamic>? bankValidation;
+  Map<String, dynamic>? upiValidation;
 
   // Requested loan
   num amountRequested = 0;
   int tenureMonths = 12;
   String purpose = 'Personal';
+  bool creditReportConsent = false;
+  bool termsAccepted = false;
+  bool privacyAccepted = false;
 
   Map<String, dynamic> toJson() => {
     'personal': {
@@ -74,6 +90,9 @@ class LoanApplicationDraft {
     'documents': {
       'aadhaarFrontUrl': aadhaarFrontUrl, 'aadhaarBackUrl': aadhaarBackUrl,
       'panUrl': panUrl, 'selfieUrl': selfieUrl,
+      'incomeProofUrl': incomeProofUrl, 'incomeProofType': incomeProofType,
+      'aadhaarEkyc': aadhaarEkyc,
+      'panVerification': panVerification,
     },
     'references': references.map((r)=>r.toJson()).toList(),
     'bankDetails': {
@@ -81,9 +100,19 @@ class LoanApplicationDraft {
       'accountNumber': accountNumber,
       'ifscCode': ifscCode,
       'accountHolderName': accountHolderName,
+      'upiId': upiId,
+      'upiAccountName': upiAccountName,
+      'bankValidation': bankValidation,
+      'upiValidation': upiValidation,
     },
     'amountRequested': amountRequested,
     'tenureMonths': tenureMonths,
     'purpose': purpose,
+    'consents': {
+      'creditReport': creditReportConsent,
+      'terms': termsAccepted,
+      'privacy': privacyAccepted,
+      'version': '2026-09-19',
+    },
   };
 }

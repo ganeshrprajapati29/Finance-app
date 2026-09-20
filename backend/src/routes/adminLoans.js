@@ -46,19 +46,43 @@ router.get('/', requireAdmin, async (req, res, next) => {
 // 🟡 Approve / Reject Loan
 router.post('/:id/decision', requireAdmin, async (req, res, next) => {
   try {
-    const { decision, amountApproved, rateAPR, tenureMonths } = req.body;
+    const {
+      decision, amountApproved, rateAPR, tenureMonths, rejectionReason,
+      processingFee = 0, taxAmount = 0, lenderName = '', kfsUrl = '', agreementUrl = ''
+    } = req.body;
     const loan = await Loan.findById(req.params.id);
     if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
+    if (!['PENDING', 'UNDER_REVIEW', 'DOCUMENTS_REQUIRED'].includes(loan.status)) {
+      return fail(res, 'INVALID_STATE', 'This application has already been decided.', 409);
+    }
 
     if (decision === 'APPROVED') {
+      const approved = Number(amountApproved);
+      const apr = Number(rateAPR);
+      const tenure = Number(tenureMonths);
+      if (!(approved > 0) || apr < 0 || !(tenure > 0)) {
+        return fail(res, 'INVALID_OFFER', 'Enter a valid approved amount, APR and tenure.', 400);
+      }
+      const fees = Math.max(0, Number(processingFee || 0));
+      const taxes = Math.max(0, Number(taxAmount || 0));
       loan.status = 'APPROVED';
       loan.decision = {
-        amountApproved,
-        rateAPR,
-        tenureMonths,
+        amountApproved: approved,
+        rateAPR: apr,
+        tenureMonths: tenure,
+        processingFee: fees,
+        taxAmount: taxes,
+        netDisbursalAmount: Math.max(0, approved - fees - taxes),
+        lenderName: String(lenderName || '').trim(),
+        kfsUrl: String(kfsUrl || '').trim(),
+        agreementUrl: String(agreementUrl || '').trim(),
         decidedAt: new Date(),
         decidedBy: req.admin.id,
       };
+      loan.statusHistory.push({
+        status: 'APPROVED', title: 'Loan approved',
+        message: 'Your loan offer is ready for review.', actorType: 'ADMIN', actorId: req.admin.id
+      });
 
       // Create notification for user about loan approval
       await Notification.create({
@@ -75,11 +99,20 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
         }
       });
     } else if (decision === 'REJECTED') {
+      if (!String(rejectionReason || '').trim()) {
+        return fail(res, 'REASON_REQUIRED', 'A customer-friendly rejection reason is required.', 400);
+      }
       loan.status = 'REJECTED';
       loan.decision = {
+        rejectionReason: String(rejectionReason).trim(),
         decidedAt: new Date(),
         decidedBy: req.admin.id,
       };
+      loan.statusHistory.push({
+        status: 'REJECTED', title: 'Application not approved',
+        message: 'The application did not meet the current eligibility criteria.',
+        reason: String(rejectionReason).trim(), actorType: 'ADMIN', actorId: req.admin.id
+      });
 
       // Create notification for user about loan rejection
       await Notification.create({
@@ -133,7 +166,10 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
       return fail(res, 'INVALID_STATE', 'Only approved loans can be disbursed');
     }
 
-    const { txnId } = req.body;
+    const txnId = String(req.body?.txnId || '').trim();
+    if (!txnId) {
+      return fail(res, 'REFERENCE_REQUIRED', 'Enter the confirmed bank transfer reference before marking this loan disbursed.', 400);
+    }
 
     // Simulate bank transfer to user's account
     const withdrawalAmount = loan.decision.amountApproved;
@@ -147,7 +183,7 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
       accountNumber: bankDetails.accountNumber,
       ifscCode: bankDetails.ifscCode,
       accountHolderName: bankDetails.accountHolderName,
-      txnId: txnId || `WD-${Date.now()}`,
+      txnId,
       status: 'COMPLETED',
       timestamp: new Date()
     };
@@ -158,6 +194,16 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
 
     loan.status = 'DISBURSED';
     loan.disbursementDate = new Date();
+    loan.disbursement = {
+      status: 'COMPLETED', amount: withdrawalAmount,
+      netAmount: loan.decision?.netDisbursalAmount ?? withdrawalAmount,
+      reference: txnId, initiatedAt: new Date(), completedAt: new Date()
+    };
+    loan.statusHistory.push({
+      status: 'DISBURSED', title: 'Loan disbursed',
+      message: 'Funds were transferred to your verified bank account.',
+      actorType: 'ADMIN', actorId: req.admin.id
+    });
     loan.schedule = createRepaymentSchedule(loan);
     await loan.save();
 

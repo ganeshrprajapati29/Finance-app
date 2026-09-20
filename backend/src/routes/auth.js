@@ -7,7 +7,7 @@ import User from '../models/User.js';
 import Otp from '../models/Otp.js';
 import { ok, fail } from '../utils/response.js';
 import { signAccessToken, signRefreshToken, verifyToken } from '../utils/jwt.js';
-import { sendMail } from '../services/mailer.js';
+import { sendOtpMail } from '../services/mailer.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { ensureUserPaymentQr } from '../services/qrAuto.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
@@ -134,12 +134,7 @@ router.post('/register', async (req, res, next) => {
     // Generate and email OTP
     const otp = await createOtp(normalizedEmail, 'email_verify');
 
-    await sendMail(
-      normalizedEmail,
-      'Verify your email - Khatu Pay',
-      `<p>Hi ${name},</p><p>Your OTP is <b>${otp}</b> (valid for 10 minutes)</p>`,
-      `OTP: ${otp}`
-    );
+    await sendOtpMail(normalizedEmail, { name, otp, purpose: 'email_verify' });
 
     try {
       await ensureUserPaymentQr(user._id);
@@ -173,6 +168,29 @@ router.post('/verify-email', async (req, res, next) => {
     await User.updateOne({ email: email.toLowerCase() }, { $set: { emailVerified: true } });
 
     ok(res, { emailVerified: true }, 'Email verified successfully');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
+    next(err);
+  }
+});
+
+router.post('/resend-verification', credentialLimiter, async (req, res, next) => {
+  try {
+    const { email } = await Joi.object({
+      email: Joi.string().email().required(),
+    }).validateAsync(req.body);
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (user && !user.emailVerified) {
+      const otp = await createOtp(user.email, 'email_verify');
+      await sendOtpMail(user.email, {
+        name: user.name,
+        otp,
+        purpose: 'email_verify',
+      });
+    }
+
+    ok(res, {}, 'If verification is pending, a new code has been sent');
   } catch (err) {
     if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
     next(err);
@@ -340,12 +358,11 @@ router.post('/forgot', async (req, res, next) => {
     if (user) {
       const otp = await createOtp(user.email, 'password_reset');
 
-      await sendMail(
-        user.email,
-        'Reset password OTP - Khatu Pay',
-        `<p>Your password reset OTP is <b>${otp}</b> (valid for 10 minutes)</p>`,
-        `OTP: ${otp}`
-      );
+      await sendOtpMail(user.email, {
+        name: user.name,
+        otp,
+        purpose: 'password_reset',
+      });
     }
 
     ok(res, {}, 'If account exists, OTP has been sent');
@@ -400,12 +417,11 @@ router.post('/forgot-pin', async (req, res, next) => {
     // Always respond generically to avoid account enumeration, but only send mail if the user exists
     if (user) {
       const otp = await createOtp(user.email, 'pin_reset');
-      await sendMail(
-        user.email,
-        'Reset PIN OTP - Khatu Pay',
-        `<p>Your PIN reset OTP is <b>${otp}</b> (valid for 10 minutes)</p>`,
-        `OTP: ${otp}`
-      );
+      await sendOtpMail(user.email, {
+        name: user.name,
+        otp,
+        purpose: 'pin_reset',
+      });
     }
 
     ok(res, {}, 'If account exists, OTP has been sent');

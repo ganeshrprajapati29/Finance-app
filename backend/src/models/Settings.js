@@ -12,6 +12,22 @@ const settingsSchema = new mongoose.Schema({
   fcmEnabled: { type: Boolean, default: false },
   emailEnabled: { type: Boolean, default: true },
   smsEnabled: { type: Boolean, default: false },
+  appUpdate: {
+    android: {
+      latestVersion: { type: String, default: '1.0.1' },
+      latestBuild: { type: Number, default: 32, min: 1 },
+      minimumSupportedBuild: { type: Number, default: 32, min: 1 },
+      forceUpdate: { type: Boolean, default: false },
+      message: {
+        type: String,
+        default: 'A new Khatu Pay update is available. Update now for the latest improvements and security fixes.'
+      },
+      storeUrl: {
+        type: String,
+        default: 'https://play.google.com/store/apps/details?id=com.finance.khatupay'
+      }
+    }
+  },
   clubapi: {
     enabled: { type: Boolean, default: true },
     baseUrl: { type: String, default: 'https://api.clubapi.in' },

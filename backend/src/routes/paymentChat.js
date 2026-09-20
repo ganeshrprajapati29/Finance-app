@@ -7,7 +7,7 @@ import PaymentChatMessage from '../models/PaymentChatMessage.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { ok, fail } from '../utils/response.js';
 import { emitToUser } from '../realtime.js';
-import { getRazorpay } from '../services/razorpay.js';
+import { createRazorpayOrder } from '../services/razorpay.js';
 
 const router = Router();
 
@@ -201,8 +201,7 @@ router.post('/threads/:id/payments/order', requireAuth, async (req, res, next) =
 
     let order;
     try {
-      const rz = getRazorpay();
-      order = await rz.orders.create({
+      order = await createRazorpayOrder({
         amount: Math.round(amount * 100),
         currency: 'INR',
         receipt: `KP-CHAT-${Date.now()}`,

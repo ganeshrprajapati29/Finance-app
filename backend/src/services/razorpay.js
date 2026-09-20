@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Razorpay from 'razorpay';
 
 let razorpayInstance = null;
@@ -106,4 +107,134 @@ export function toPaise(amount) {
   return Math.round(value * 100);
 }
 
-export { RazorpayConfigError };
+/**
+ * Razorpay reports refund amounts in paise. Keep the comparison in integer
+ * paise so partial refunds and decimal rupee amounts cannot be misclassified
+ * because of floating-point rounding.
+ */
+export function razorpayRefundState(paymentAmount, refundedPaise) {
+  const paymentPaise = toPaise(paymentAmount);
+  const totalRefundedPaise = Number(refundedPaise);
+  if (!Number.isSafeInteger(totalRefundedPaise) || totalRefundedPaise < 0) {
+    const error = new Error('Invalid refund amount.');
+    error.status = 400;
+    error.code = 'INVALID_REFUND_AMOUNT';
+    throw error;
+  }
+  return {
+    paymentPaise,
+    totalRefundedPaise,
+    fullyRefunded: totalRefundedPaise >= paymentPaise,
+  };
+}
+
+/**
+ * Razorpay rejected a request (bad credentials, account not activated, invalid
+ * parameters...). Always a 502 to the client: a gateway problem is not the
+ * customer's session expiring, and passing Razorpay's own 401 through made the
+ * app think its login had expired.
+ */
+class PaymentGatewayError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'PaymentGatewayError';
+    this.status = 502;
+    this.code = 'PAYMENT_GATEWAY_ERROR';
+    this.expose = true;
+    this.gateway = details;
+  }
+}
+
+/**
+ * True for errors thrown by the Razorpay Node SDK, which rejects with a plain
+ * object (not an Error): { statusCode, error: { code, description, ... } }.
+ */
+export function isRazorpaySdkError(err) {
+  return Boolean(
+    err &&
+      !(err instanceof Error) &&
+      typeof err === 'object' &&
+      Number.isInteger(Number(err.statusCode)) &&
+      err.error &&
+      typeof err.error === 'object'
+  );
+}
+
+/** Extracts the useful, non-secret parts of a Razorpay SDK error. */
+export function describeRazorpayError(err) {
+  const body = err?.error && typeof err.error === 'object' ? err.error : {};
+  const httpStatus = Number(err?.statusCode) || 0;
+  const description = String(body.description || err?.message || '').trim();
+  return {
+    httpStatus,
+    code: String(body.code || '').trim(),
+    description,
+    field: String(body.field || '').trim(),
+    reason: String(body.reason || '').trim(),
+    authFailed: httpStatus === 401 || /authentication/i.test(description),
+  };
+}
+
+/** Converts any Razorpay SDK failure into a PaymentGatewayError. */
+export function toPaymentGatewayError(err, action = 'create the payment') {
+  if (err instanceof RazorpayConfigError || err instanceof PaymentGatewayError) return err;
+  const info = describeRazorpayError(err);
+  console.error(
+    `[razorpay] could not ${action}: HTTP ${info.httpStatus || '-'} ${info.code || ''} ${info.description || ''}`.trim()
+  );
+  const reason = info.authFailed
+    ? 'gateway authentication failed'
+    : info.description || 'the payment gateway did not respond';
+  return new PaymentGatewayError(
+    `Payment could not be started (${reason}). Please try again later.`,
+    info
+  );
+}
+
+/**
+ * Creates a Razorpay order. On failure throws a PaymentGatewayError carrying
+ * Razorpay's reason instead of the SDK's opaque object.
+ */
+export async function createRazorpayOrder(params) {
+  const rz = getRazorpay();
+  try {
+    return await rz.orders.create(params);
+  } catch (err) {
+    throw toPaymentGatewayError(err, 'create the order');
+  }
+}
+
+/**
+ * Admin health check: are the configured keys accepted by Razorpay? Uses a
+ * read-only call and never returns the secret.
+ */
+export async function checkRazorpayConnection() {
+  const keyId = trimmed(process.env.RAZORPAY_KEY_ID);
+  const result = {
+    configured: missingRazorpayEnv().length === 0,
+    keyMode: keyId.startsWith('rzp_live_') ? 'LIVE' : keyId.startsWith('rzp_test_') ? 'TEST' : keyId ? 'UNKNOWN' : 'MISSING',
+    keyId: keyId ? `${keyId.slice(0, 9)}...${keyId.slice(-4)}` : '',
+    webhookSecretConfigured: Boolean(trimmed(process.env.RAZORPAY_WEBHOOK_SECRET)),
+    ok: false,
+    message: '',
+  };
+
+  if (!result.configured) {
+    result.message = `Missing: ${missingRazorpayEnv().join(', ')}`;
+    return result;
+  }
+
+  try {
+    await getRazorpay().orders.all({ count: 1 });
+    result.ok = true;
+    result.message = 'Razorpay accepted the key id and secret.';
+  } catch (err) {
+    const info = describeRazorpayError(err);
+    result.message = info.authFailed
+      ? 'Razorpay rejected the key id / secret (authentication failed). Check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the server.'
+      : `Razorpay error: ${info.description || err?.message || 'no response'}`;
+  }
+  return result;
+}
+
+export { RazorpayConfigError, PaymentGatewayError };

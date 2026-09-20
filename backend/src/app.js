@@ -1,5 +1,5 @@
+import 'dotenv/config';
 import express from 'express';
-import dotenv from 'dotenv';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -63,6 +63,14 @@ import adminRewards from './routes/adminRewards.js';
 import adminClubAPI from './routes/adminClubAPI.js';
 import creditReportRoutes from './routes/creditReports.js';
 import upiConsumerRoutes from './routes/upiConsumer.js';
+import merchantBusinessRoutes from './routes/merchantBusiness.js';
+import merchantQrRoutes from './routes/merchantQr.js';
+import merchantPaymentsRoutes from './routes/merchantPayments.js';
+import merchantSettlementsRoutes from './routes/merchantSettlements.js';
+import velxapayWebhookRoutes from './routes/velxapayWebhook.js';
+import adminMerchantBusinessesRoutes from './routes/adminMerchantBusinesses.js';
+import { startMerchantSettlementJob } from './jobs/merchantSettlementJob.js';
+import { startMerchantPaymentReconciliationJob } from './jobs/paymentReconciliationJob.js';
 
 // ClubAPI
 import rechargeRoutes from './routes/recharge.js';
@@ -73,11 +81,12 @@ import statusRoutes from './routes/status.js';
 import clubapiRoutes from './routes/clubapi/routes.js';
 import utilityRoutes from './routes/utility.js';
 import callbackRoutes from './routes/callback.js';
+import serviceRoutes from './routes/services.js';
+import adminServiceRoutes from './routes/adminServices.js';
+import { startServiceReconciler } from './services/rechargePaymentService.js';
 import { setRealtime } from './realtime.js';
 import { missingRazorpayEnv } from './services/razorpay.js';
 import { startAutoNotificationScheduler } from './services/autoNotificationService.js';
-
-dotenv.config();
 
 /* =======================
    ENV SANITY CHECK
@@ -156,10 +165,11 @@ app.use(
 // and every signature check would fail. `startsWith` (not ===) so an appended
 // query string cannot silently skip the capture.
 const RAZORPAY_WEBHOOK_PATH = '/api/payments/razorpay/webhook';
+const VELXAPAY_WEBHOOK_PATH = '/api/webhooks/velxapay';
 app.use(express.json({
   limit: "10mb",
   verify: (req, _res, buf) => {
-    if ((req.originalUrl || '').split('?')[0] === RAZORPAY_WEBHOOK_PATH) {
+    if ([RAZORPAY_WEBHOOK_PATH, VELXAPAY_WEBHOOK_PATH].includes((req.originalUrl || '').split('?')[0])) {
       req.rawBody = Buffer.from(buf);
     }
   },
@@ -277,6 +287,13 @@ app.use("/api/admin/offers", adminOffers);
 app.use("/api/admin/rewards", adminRewards);
 app.use("/api/admin/earnings", adminEarnings);
 app.use("/api/admin/clubapi", adminClubAPI);
+app.use('/api/merchant-business', merchantBusinessRoutes);
+app.use('/api/merchant-qr', merchantQrRoutes);
+app.use('/api/merchant-payments', merchantPaymentsRoutes);
+app.use('/api/merchant-settlements', merchantSettlementsRoutes);
+app.use('/api/webhooks/velxapay', velxapayWebhookRoutes);
+app.use('/api/admin/merchant-businesses', adminMerchantBusinessesRoutes);
+app.use("/api/admin/services", adminServiceRoutes);
 app.use("/api/admin/push", adminPush);
 app.use("/api/credit-report", creditReportRoutes);
 app.use("/api/upi-consumer", upiConsumerRoutes);
@@ -287,6 +304,8 @@ app.use("/api/dth", dthRoutes);
 app.use("/api/operators", operatorsRoutes);
 app.use("/api/bbps", bbpsRoutes);
 app.use("/api/status", statusRoutes);
+// Recharge & bill services (Mobile, DTH, Credit Card, Electricity, FASTag)
+app.use("/api/services", serviceRoutes);
 app.use("/api/clubapi", clubapiRoutes);
 app.use("/api/utility", utilityRoutes);
 app.use("/api/callback", callbackRoutes);
@@ -309,6 +328,10 @@ const PORT = Number(process.env.PORT) || 5005;
 
 server.listen(PORT, () => {
   startAutoNotificationScheduler();
+  // Resolves recharges / bill payments left pending by timeouts or missed callbacks.
+  startServiceReconciler();
+  startMerchantSettlementJob();
+  startMerchantPaymentReconciliationJob();
   console.log(`
 🚀 Backend Server Started
 🌐 Port: ${PORT}

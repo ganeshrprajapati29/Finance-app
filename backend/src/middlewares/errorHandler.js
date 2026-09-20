@@ -11,6 +11,10 @@
  *     that is wrong, not a raw schema dump.
  */
 
+import crypto from 'crypto';
+
+import { describeRazorpayError, isRazorpaySdkError } from '../services/razorpay.js';
+
 export function notFound(req, res) {
   res.status(404).json({
     success: false,
@@ -116,6 +120,11 @@ function friendlyMessage(err) {
 }
 
 function resolveStatus(err) {
+  // Razorpay's SDK rejects with { statusCode: 401, error: {...} } when it
+  // refuses our credentials. That 401 belongs to the gateway, not the
+  // customer's session - passing it through made the app refresh its login
+  // and then show a blank "Something went wrong".
+  if (isRazorpaySdkError(err)) return 502;
   if (isJoiError(err)) return 400;
   if (err?.code === 11000) return 409;
   if (err?.name === 'CastError') return 400;
@@ -156,6 +165,7 @@ function isSystemError(err) {
 const NODE_ERRNO = /^E[A-Z]+$/;
 
 function resolveCode(err, status) {
+  if (isRazorpaySdkError(err)) return 'PAYMENT_GATEWAY_ERROR';
   if (isJoiError(err)) return 'VALIDATION_ERROR';
   if (err?.code === 11000) return 'DUPLICATE_ENTRY';
 
@@ -176,9 +186,12 @@ export function errorHandler(err, req, res, next) {
   const status = resolveStatus(err);
   const code = resolveCode(err, status);
 
-  // Full detail server-side only.
+  // Full detail server-side only. 5xx errors get a short reference that is
+  // printed in the log and returned to the client, so a customer's screenshot
+  // leads straight to the matching log line.
+  const ref = status >= 500 ? `E${crypto.randomBytes(3).toString('hex').toUpperCase()}` : null;
   if (status >= 500) {
-    console.error(`[${req.method} ${req.originalUrl}]`, err);
+    console.error(`[${req.method} ${req.originalUrl}] ref=${ref}`, err);
   } else {
     console.warn(`[${req.method} ${req.originalUrl}] ${code}: ${err?.message}`);
   }
@@ -188,11 +201,20 @@ export function errorHandler(err, req, res, next) {
   if (res.headersSent) return next(err);
 
   let message;
-  if (isJoiError(err)) {
+  if (isRazorpaySdkError(err)) {
+    const info = describeRazorpayError(err);
+    message = info.authFailed
+      ? 'Payment could not be started (gateway authentication failed). Please try again later.'
+      : `Payment could not be started (${redact(info.description) || 'gateway error'}). Please try again later.`;
+  } else if (isJoiError(err)) {
     message = joiMessage(err);
   } else if (isSystemError(err)) {
     // Library-authored text - swap for something a user can act on.
     message = friendlyMessage(err);
+  } else if (err?.expose === true && err?.message) {
+    // Errors we raise on purpose and mark safe to show (e.g. "payments are
+    // temporarily unavailable", payment gateway rejections), including 5xx.
+    message = redact(err.message);
   } else if (status < 500 && err?.message) {
     // 4xx errors are raised deliberately by our own routes, so their message
     // is meant for the user - still redacted in case a downstream SDK message
@@ -204,6 +226,10 @@ export function errorHandler(err, req, res, next) {
   }
 
   const body = { success: false, message, data: null, code };
+  if (ref) {
+    body.message = `${message} (Ref: ${ref})`;
+    body.data = { ref };
+  }
 
   // Routes can attach safe context (e.g. the blocking loan on an eligibility
   // conflict) via err.data.

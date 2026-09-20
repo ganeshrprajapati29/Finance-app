@@ -6,7 +6,7 @@ import Payment from '../models/Payment.js';
 import User from '../models/User.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { ok, fail } from '../utils/response.js';
-import { getRazorpay } from '../services/razorpay.js';
+import { createRazorpayOrder } from '../services/razorpay.js';
 
 const router = Router();
 
@@ -115,8 +115,7 @@ router.post('/', requireAuth, async (req, res, next) => {
       await payment.validate();
       let razorpayOrder;
       try {
-        const rz = getRazorpay();
-        razorpayOrder = await rz.orders.create({
+        razorpayOrder = await createRazorpayOrder({
           amount: Math.round(pricing.totalAmount * 100),
           currency: 'INR',
           receipt: `KP-STICKER-${Date.now()}`,

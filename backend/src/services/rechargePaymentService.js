@@ -1,347 +1,647 @@
-import ClubAPITransaction from '../routes/clubapi/models/transaction.js';
+import mongoose from 'mongoose';
+
+import ClubAPITransaction from '../models/ClubAPITransaction.js';
 import Payment from '../models/Payment.js';
 import User from '../models/User.js';
 import Invoice from '../models/Invoice.js';
-import { generateURID, formatAmount, getTransactionType, validateResponse } from '../routes/clubapi/helper.js';
-import { callClubAPITransaction, payBbpsBill } from './clubapiUtility.js';
-import { getRazorpay } from './razorpay.js';
+import { generateURID } from '../routes/clubapi/helper.js';
 import { emitToUser } from '../realtime.js';
+import { getRazorpay, toPaise } from './razorpay.js';
+import {
+  decideTransactionOutcome,
+  normalizeStatusCheckResponse,
+  normalizeStatusWord,
+  normalizeTransactionResponse,
+  toLocalStatus,
+} from './clubapiResponse.js';
+import { sendBillPayment, sendRecharge, sendStatusCheck } from './clubapiClient.js';
 
+/**
+ * Runs a paid recharge / bill payment at ClubAPI and keeps the customer whole.
+ *
+ * Money-safety rules enforced here:
+ *  1. A payment is sent to ClubAPI at most once (atomic claim on the payment).
+ *  2. A timeout is PENDING, not FAILED - ClubAPI may still complete it, so the
+ *     customer is only refunded once a failure is confirmed.
+ *  3. A payment is refunded at most once (atomic claim on metadata.refund),
+ *     no matter how many callbacks, status checks or retries race.
+ *  4. An unauthenticated callback never triggers a refund on its own; the
+ *     outcome is verified with ClubAPI's status API first.
+ */
+
+const STATUS_CHECK_INTERVAL_MS = 20 * 1000;
+const NOT_FOUND_MIN_AGE_MS = 10 * 60 * 1000;
+const NOT_FOUND_MAX_AGE_MS = 60 * 60 * 1000;
+const PAYABLE_TYPES = ['mobile', 'dth', 'bill_payment'];
+
+/** Backwards-compatible status mapper for older callers. */
 export function clubStatusToLocal(data = {}) {
-  const raw = String(data.status || data.txnStatus || data.transactionStatus || data.resCode || '').toUpperCase();
-  const text = String(data.resText || data.message || data.statusMessage || '').toLowerCase();
-  if (raw === 'SUCCESS' || raw === 'COMPLETED' || /success|completed/.test(text)) return 'completed';
-  if (['FAILED', 'FAILURE', 'ERROR', 'CANCELLED', 'CANCELED'].includes(raw) || /fail|error|cancel|reject/.test(text)) return 'failed';
-  return 'processing';
+  return toLocalStatus(normalizeTransactionResponse(data).status);
 }
 
 function emitClubTransaction(userId, transaction) {
-  if (!userId) return;
+  if (!userId || !transaction) return;
   emitToUser(userId, 'clubapi:transaction_updated', {
     urid: transaction.urid,
     status: transaction.status,
     type: transaction.type,
     amount: transaction.amount,
-    transaction
+    transaction,
   });
 }
 
-function firstOrderId(data = {}) {
-  const nested = data.data && typeof data.data === 'object' ? data.data : {};
-  if (Array.isArray(data.data) && data.data[0]) return data.data[0].orderId || data.data[0].order_id || '';
-  return data.orderId || data.order_id || nested.orderId || nested.order_id || '';
-}
-
-function clubInvoiceNumber(prefix = 'KPBBPS') {
-  return `${prefix}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
-}
-
-function rechargeMetaFromPayment(payment) {
-  const meta = payment.metadata?.recharge || {};
-  return {
-    type: meta.type,
-    operatorId: meta.operatorId,
-    accountRef: meta.accountRef,
-    amount: meta.amount || payment.amount,
-    customerMobile: meta.customerMobile,
-    cbId: meta.cbId,
-    opvalue1: meta.opvalue1,
-    opvalue2: meta.opvalue2,
-    opvalue3: meta.opvalue3,
-    opvalue4: meta.opvalue4,
-    opvalue5: meta.opvalue5
-  };
-}
-
-function billMetaFromPayment(payment) {
-  const meta = payment.metadata?.clubapiBill || {};
-  return {
-    billId: meta.billId,
-    operatorId: meta.operatorId || meta.bbpsId,
-    bbpsId: meta.bbpsId || meta.operatorId,
-    accountRef: meta.accountRef || meta.mobile,
-    mobile: meta.mobile || meta.accountRef,
-    amount: meta.amount || payment.amount,
-    customerMobile: meta.customerMobile,
-    opvalue1: meta.opvalue1,
-    opvalue2: meta.opvalue2,
-    opvalue3: meta.opvalue3,
-    opvalue4: meta.opvalue4,
-    opvalue5: meta.opvalue5
-  };
-}
-
-export async function refundClubAPIPayment(payment, reason = 'ClubAPI transaction failed') {
-  if (!payment || payment.metadata?.refund?.status) return payment?.metadata?.refund || null;
-
-  const refund = {
-    status: 'PENDING',
-    reason,
-    amount: payment.amount,
-    attemptedAt: new Date()
-  };
-
+async function notify(userId, event, context) {
   try {
-    if ((payment.gateway?.provider || '').toLowerCase() === 'razorpay' && payment.gateway?.paymentId) {
-      const rz = getRazorpay();
-      const rzRefund = await rz.payments.refund(payment.gateway.paymentId, {
-        amount: Math.round(Number(payment.amount || 0) * 100),
-        notes: { reason, khatuPaymentId: payment.khatuPaymentId || String(payment._id) }
-      });
-      refund.status = 'RAZORPAY_REFUNDED';
-      refund.razorpayRefundId = rzRefund.id;
-      refund.response = rzRefund;
-      payment.status = 'REFUNDED';
-    } else {
-      throw new Error('Razorpay payment id is missing');
-    }
+    const { notifyUserSmart } = await import('./smartNotifications.js');
+    await notifyUserSmart(userId, event, context);
   } catch (error) {
-    await User.findByIdAndUpdate(payment.userId, { $inc: { walletBalance: Number(payment.amount || 0) } });
-    refund.status = 'WALLET_CREDITED';
-    refund.error = error.message;
-    refund.walletCreditedAt = new Date();
-    payment.status = 'REFUNDED';
+    console.error(`Notification ${event} failed:`, error.message);
+  }
+}
+
+/* ------------------------------------------------------------------ refunds */
+
+/**
+ * Refunds a service payment exactly once.
+ *
+ * Razorpay payments go back to the original method; wallet payments (and
+ * Razorpay refunds the gateway definitively rejects) are credited to the
+ * Khatu wallet. A Razorpay refund that fails for an unknown reason (network)
+ * is parked as REVIEW_REQUIRED instead of also crediting the wallet, which
+ * could otherwise refund the customer twice.
+ */
+export async function refundClubAPIPayment(paymentOrId, reason = 'Service could not be completed') {
+  const paymentId = paymentOrId?._id || paymentOrId;
+  if (!paymentId) return null;
+
+  const claimed = await Payment.findOneAndUpdate(
+    {
+      _id: paymentId,
+      status: 'CONFIRMED',
+      'metadata.refund.status': { $exists: false },
+    },
+    { $set: { 'metadata.refund': { status: 'PROCESSING', reason, claimedAt: new Date() } } },
+    { new: true }
+  );
+
+  if (!claimed) {
+    const current = await Payment.findById(paymentId).select('metadata.refund').lean();
+    return current?.metadata?.refund || null;
   }
 
-  payment.metadata = {
-    ...(payment.metadata?.toObject?.() || payment.metadata || {}),
-    refund
-  };
-  await payment.save();
+  const amount = Number(claimed.amount || 0);
+  const refund = { reason, amount, attemptedAt: new Date() };
+  let paymentStatus = 'REFUNDED';
+
+  const razorpayPaymentId = claimed.gateway?.paymentId;
+  const viaRazorpay = claimed.method === 'RAZORPAY' && razorpayPaymentId;
+
+  if (viaRazorpay) {
+    try {
+      const response = await getRazorpay().payments.refund(razorpayPaymentId, {
+        amount: toPaise(amount),
+        notes: { reason: String(reason).slice(0, 250), khatuPaymentId: claimed.khatuPaymentId || String(claimed._id) },
+      });
+      Object.assign(refund, { status: 'RAZORPAY_REFUNDED', razorpayRefundId: response?.id });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 0);
+      if (statusCode >= 400 && statusCode < 500) {
+        await User.findByIdAndUpdate(claimed.userId, { $inc: { walletBalance: amount } });
+        Object.assign(refund, {
+          status: 'WALLET_CREDITED',
+          walletCreditedAt: new Date(),
+          razorpayError: error?.error?.description || error.message,
+        });
+      } else {
+        paymentStatus = 'CONFIRMED';
+        Object.assign(refund, {
+          status: 'REVIEW_REQUIRED',
+          razorpayError: error?.error?.description || error.message || 'Razorpay refund did not respond',
+        });
+      }
+    }
+  } else {
+    await User.findByIdAndUpdate(claimed.userId, { $inc: { walletBalance: amount } });
+    Object.assign(refund, { status: 'WALLET_CREDITED', walletCreditedAt: new Date() });
+  }
+
+  await Payment.updateOne(
+    { _id: claimed._id },
+    { $set: { status: paymentStatus, 'metadata.refund': refund } }
+  );
+
+  emitToUser(claimed.userId, 'payment:status_updated', {
+    paymentId: claimed._id,
+    khatuPaymentId: claimed.khatuPaymentId,
+    status: paymentStatus,
+    type: claimed.type,
+    amount,
+    refund,
+  });
+
+  if (refund.status !== 'REVIEW_REQUIRED') {
+    await notify(claimed.userId, 'service_refunded', {
+      amount,
+      payment: claimed,
+      refundedToWallet: refund.status === 'WALLET_CREDITED',
+      data: {
+        paymentId: String(claimed._id),
+        khatuPaymentId: claimed.khatuPaymentId,
+        paymentType: claimed.type,
+      },
+    });
+  }
+
   return refund;
 }
 
 export const refundRechargePayment = refundClubAPIPayment;
 
 export async function refundUnprocessedServicePayment(payment, reason = 'Service could not be processed after payment') {
-  const refund = await refundClubAPIPayment(payment, reason);
-  emitToUser(payment.userId, 'payment:status_updated', {
-    paymentId: payment._id,
-    khatuPaymentId: payment.khatuPaymentId,
-    status: 'REFUNDED',
-    type: payment.type,
-    amount: payment.amount,
-    refund
-  });
-  return refund;
+  return refundClubAPIPayment(payment, reason);
 }
 
+/* --------------------------------------------------------------- lifecycle */
+
+async function createBbpsInvoice(transaction) {
+  try {
+    const amount = Number(transaction.amount || 0);
+    const label = transaction.providerName || transaction.provider;
+    await Invoice.create({
+      invoiceNumber: `KPBBPS-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-6)}`,
+      userId: transaction.userId,
+      amount,
+      taxableAmount: 0,
+      cgst: 0,
+      sgst: 0,
+      igst: 0,
+      status: 'PAID',
+      invoiceType: 'BBPS',
+      description: `BBPS bill payment - ${label}`,
+      notes: `Transaction ID: ${transaction.urid} | BBPS Order: ${transaction.orderId || '-'} | Account: ${transaction.accountRef}`,
+      items: [{ description: `BBPS bill payment - ${label}`, quantity: 1, rate: amount, total: amount }],
+    });
+  } catch (error) {
+    console.error('BBPS invoice creation failed:', error.message);
+  }
+}
+
+/**
+ * Moves a transaction to its final state once. Side effects (refund, invoice,
+ * socket event) only run for the call that actually performed the transition.
+ */
+async function transitionTransaction(transaction, decision, { allowReversal = false } = {}) {
+  const fromStatuses = allowReversal ? ['pending', 'processing', 'completed'] : ['pending', 'processing'];
+  const set = {
+    status: decision.localStatus,
+    ...(decision.orderId ? { orderId: decision.orderId } : {}),
+    ...(decision.operatorTxnId ? { operatorTxnId: decision.operatorTxnId } : {}),
+    ...(decision.message ? { statusText: decision.message } : {}),
+    ...(decision.localStatus === 'completed' ? { completedAt: new Date() } : {}),
+  };
+
+  // "Still pending" is not a transition: record the new details but never
+  // touch the status, so a late PENDING can't downgrade a completed txn.
+  if (decision.localStatus === 'processing') {
+    const { status: _ignored, ...details } = set;
+    if (!Object.keys(details).length) return ClubAPITransaction.findById(transaction._id);
+    return ClubAPITransaction.findByIdAndUpdate(transaction._id, { $set: details }, { new: true });
+  }
+
+  const updated = await ClubAPITransaction.findOneAndUpdate(
+    {
+      _id: transaction._id,
+      status: { $in: fromStatuses.filter((status) => status !== decision.localStatus) },
+    },
+    { $set: set },
+    { new: true }
+  );
+  if (!updated) return ClubAPITransaction.findById(transaction._id);
+
+  if (updated.paymentId) {
+    await Payment.updateOne(
+      { _id: updated.paymentId },
+      {
+        $set: {
+          [`metadata.${updated.type === 'bill_payment' ? 'clubapiBill' : 'recharge'}.clubapiStatus`]: updated.status,
+          [`metadata.${updated.type === 'bill_payment' ? 'clubapiBill' : 'recharge'}.orderId`]: updated.orderId || '',
+        },
+      }
+    );
+  }
+
+  if (updated.status === 'failed' && decision.refund !== false && updated.paymentId) {
+    const refund = await refundClubAPIPayment(
+      updated.paymentId,
+      decision.message ? `Operator failure: ${decision.message}` : 'Transaction failed at operator'
+    );
+    if (refund) {
+      updated.refund = refund;
+      await ClubAPITransaction.updateOne({ _id: updated._id }, { $set: { refund } });
+    }
+  }
+
+  if (updated.status === 'completed' && updated.type === 'bill_payment' && updated.userId) {
+    await createBbpsInvoice(updated);
+  }
+
+  // "Payment successful" is sent when the operator confirms, not when the
+  // gateway does - otherwise a recharge that later fails would first be
+  // announced as successful.
+  if (updated.status === 'completed' && updated.paymentId && updated.userId) {
+    const payment = await Payment.findById(updated.paymentId).lean();
+    if (payment) {
+      await notify(updated.userId, 'payment_confirmed', {
+        amount: payment.amount,
+        payment,
+        data: {
+          paymentId: String(payment._id),
+          khatuPaymentId: payment.khatuPaymentId,
+          paymentType: payment.type,
+          urid: updated.urid,
+        },
+      });
+    }
+  }
+
+  emitClubTransaction(updated.userId, updated);
+  return updated;
+}
+
+/* ---------------------------------------------------------------- execution */
+
+async function claimForProcessing(payment, transactionId, processedAtKey) {
+  return Payment.findOneAndUpdate(
+    { _id: payment._id, status: 'CONFIRMED', 'metadata.clubapiTransactionId': { $exists: false } },
+    {
+      $set: {
+        'metadata.clubapiTransactionId': transactionId,
+        [`metadata.${processedAtKey}`]: new Date(),
+      },
+    },
+    { new: true }
+  );
+}
+
+async function existingResult(payment) {
+  const fresh = await Payment.findById(payment._id).lean();
+  const transaction = fresh?.metadata?.clubapiTransactionId
+    ? await ClubAPITransaction.findById(fresh.metadata.clubapiTransactionId)
+    : null;
+  return { transaction, refund: fresh?.metadata?.refund || null, reused: true };
+}
+
+/**
+ * Sends a confirmed RECHARGE payment to ClubAPI. Safe to call repeatedly: the
+ * second and later calls return the first attempt's transaction.
+ */
 export async function processPaidRecharge(payment) {
   if (!payment) throw new Error('Payment not found');
   if (payment.type !== 'RECHARGE') throw new Error('Payment is not a recharge payment');
-  if (!['CONFIRMED', 'REFUNDED'].includes(payment.status)) throw new Error('Payment is not confirmed');
 
-  if (payment.metadata?.clubapiTransactionId) {
-    const existing = await ClubAPITransaction.findById(payment.metadata.clubapiTransactionId);
-    if (existing) return { transaction: existing, refund: payment.metadata?.refund || null, reused: true };
-  }
+  const transactionId = new mongoose.Types.ObjectId();
+  const claimed = await claimForProcessing(payment, transactionId, 'rechargeProcessedAt');
+  if (!claimed) return existingResult(payment);
 
-  const recharge = rechargeMetaFromPayment(payment);
-  const required = ['type', 'operatorId', 'accountRef', 'amount'];
-  for (const field of required) {
-    if (!recharge[field]) {
-      const refund = await refundUnprocessedServicePayment(payment, `Recharge ${field} is missing`);
-      return { transaction: null, refund, error: `Recharge ${field} is missing` };
-    }
-  }
-
+  const meta = claimed.metadata?.recharge || {};
+  const serviceKey = String(meta.type || '').toLowerCase();
+  const amount = Number(claimed.amount || 0);
   const urid = generateURID();
-  const amount = Number(formatAmount(recharge.amount));
-  const transactionType = getTransactionType(recharge.type);
+
+  const missing = ['operatorId', 'accountRef'].find((field) => !meta[field]);
   const transaction = await ClubAPITransaction.create({
+    _id: transactionId,
     urid,
-    type: transactionType,
+    type: serviceKey === 'dth' ? 'dth' : 'mobile',
+    serviceKey: serviceKey || 'mobile',
     status: 'processing',
     amount,
-    provider: recharge.operatorId,
-    accountRef: recharge.accountRef,
-    customerMobile: recharge.customerMobile,
-    userId: payment.userId,
-    paymentId: payment._id
+    provider: String(meta.operatorId || 'unknown'),
+    providerId: mongoose.isValidObjectId(meta.providerId) ? meta.providerId : undefined,
+    providerName: meta.operatorName,
+    accountRef: String(meta.accountRef || 'unknown'),
+    customerMobile: meta.customerMobile,
+    request: {
+      operatorId: meta.operatorId,
+      mobile: meta.accountRef,
+      amount: String(amount),
+      customerMobile: meta.customerMobile,
+    },
+    userId: claimed.userId,
+    paymentId: claimed._id,
+  });
+  await Payment.updateOne({ _id: claimed._id }, { $set: { 'metadata.recharge.urid': urid } });
+  emitClubTransaction(claimed.userId, transaction);
+
+  if (missing || !(amount > 0)) {
+    const updated = await transitionTransaction(transaction, {
+      localStatus: 'failed',
+      refund: true,
+      message: `Recharge ${missing || 'amount'} is missing`,
+    });
+    return { transaction: updated, refund: updated?.refund || null, error: updated?.statusText };
+  }
+
+  const outcome = await sendRecharge({
+    urid,
+    operatorId: meta.operatorId,
+    mobile: meta.accountRef,
+    amount,
+    customerMobile: meta.customerMobile,
   });
 
-  payment.metadata = {
-    ...(payment.metadata?.toObject?.() || payment.metadata || {}),
-    clubapiTransactionId: transaction._id,
-    rechargeProcessedAt: new Date(),
-    recharge: {
-      ...recharge,
-      urid
-    }
-  };
-  await payment.save();
-  emitClubTransaction(payment.userId, transaction);
+  await ClubAPITransaction.updateOne(
+    { _id: transaction._id },
+    { $set: { response: outcome.data ?? { delivery: outcome.delivery, error: outcome.error } } }
+  );
 
-  try {
-    const response = validateResponse(await callClubAPITransaction({
-      urid,
-      operatorId: recharge.operatorId,
-      mobile: recharge.accountRef,
-      amount: String(amount),
-      cbId: recharge.cbId,
-      customerMobile: recharge.customerMobile,
-      opvalue1: recharge.opvalue1,
-      opvalue2: recharge.opvalue2,
-      opvalue3: recharge.opvalue3,
-      opvalue4: recharge.opvalue4,
-      opvalue5: recharge.opvalue5
-    }));
-
-    transaction.status = clubStatusToLocal(response);
-    transaction.response = response;
-    await transaction.save();
-
-    payment.metadata = {
-      ...(payment.metadata?.toObject?.() || payment.metadata || {}),
-      recharge: {
-        ...(payment.metadata?.recharge || {}),
-        orderId: firstOrderId(response),
-        clubapiStatus: transaction.status,
-        response
-      }
-    };
-
-    let refund = null;
-    if (transaction.status === 'failed') {
-      refund = await refundClubAPIPayment(payment, 'Recharge failed at ClubAPI');
-      transaction.refund = refund;
-      await transaction.save();
-    } else {
-      await payment.save();
-    }
-
-    emitClubTransaction(payment.userId, transaction);
-    return { transaction, refund, response };
-  } catch (error) {
-    transaction.status = 'failed';
-    transaction.response = { message: error.message };
-    const refund = await refundClubAPIPayment(payment, error.message || 'Recharge request failed');
-    transaction.refund = refund;
-    await transaction.save();
-    emitClubTransaction(payment.userId, transaction);
-    return { transaction, refund, error: error.message };
-  }
+  const decision = decideTransactionOutcome(outcome);
+  const updated = await transitionTransaction(transaction, decision);
+  return { transaction: updated, refund: updated?.refund || null, response: outcome.data };
 }
 
+/**
+ * Sends a confirmed BBPS_BILL payment to ClubAPI. Safe to call repeatedly.
+ */
 export async function processPaidBbpsBill(payment) {
   if (!payment) throw new Error('Payment not found');
   if (payment.type !== 'BBPS_BILL') throw new Error('Payment is not a BBPS bill payment');
-  if (!['CONFIRMED', 'REFUNDED'].includes(payment.status)) throw new Error('Payment is not confirmed');
 
-  if (payment.metadata?.clubapiTransactionId) {
-    const existing = await ClubAPITransaction.findById(payment.metadata.clubapiTransactionId);
-    if (existing) return { transaction: existing, refund: payment.metadata?.refund || null, reused: true };
-  }
+  const transactionId = new mongoose.Types.ObjectId();
+  const claimed = await claimForProcessing(payment, transactionId, 'billProcessedAt');
+  if (!claimed) return existingResult(payment);
 
-  const bill = billMetaFromPayment(payment);
-  const required = ['amount', 'bbpsId', 'mobile', 'customerMobile'];
-  for (const field of required) {
-    if (!bill[field]) {
-      const refund = await refundUnprocessedServicePayment(payment, `Bill payment ${field} is missing`);
-      return { transaction: null, refund, error: `Bill payment ${field} is missing` };
-    }
-  }
-
+  const meta = claimed.metadata?.clubapiBill || {};
+  const bbpsId = meta.bbpsId || meta.operatorId;
+  const mobile = meta.mobile || meta.accountRef;
+  const amount = Number(claimed.amount || 0);
   const urid = generateURID();
-  const amount = Number(formatAmount(bill.amount));
+  const opvalues = Object.fromEntries(
+    ['opvalue1', 'opvalue2', 'opvalue3', 'opvalue4', 'opvalue5']
+      .filter((key) => meta[key])
+      .map((key) => [key, meta[key]])
+  );
+
   const transaction = await ClubAPITransaction.create({
+    _id: transactionId,
     urid,
     type: 'bill_payment',
+    serviceKey: meta.serviceKey,
     status: 'processing',
     amount,
-    provider: bill.bbpsId,
-    accountRef: bill.mobile,
-    customerMobile: bill.customerMobile,
-    billId: bill.billId,
-    userId: payment.userId,
-    paymentId: payment._id
+    provider: String(bbpsId || 'unknown'),
+    providerId: mongoose.isValidObjectId(meta.providerId) ? meta.providerId : undefined,
+    providerName: meta.billerName,
+    accountRef: String(mobile || 'unknown'),
+    customerMobile: meta.customerMobile,
+    billId: meta.fetchId || meta.billId,
+    request: { bbpsId, mobile, customerMobile: meta.customerMobile, amount: String(amount), ...opvalues },
+    userId: claimed.userId,
+    paymentId: claimed._id,
+  });
+  await Payment.updateOne({ _id: claimed._id }, { $set: { 'metadata.clubapiBill.urid': urid } });
+  emitClubTransaction(claimed.userId, transaction);
+
+  const missing = [
+    ['bbpsId', bbpsId],
+    ['account', mobile],
+    ['customerMobile', meta.customerMobile],
+  ].find(([, value]) => !value);
+
+  if (missing || !(amount > 0)) {
+    const updated = await transitionTransaction(transaction, {
+      localStatus: 'failed',
+      refund: true,
+      message: `Bill payment ${missing ? missing[0] : 'amount'} is missing`,
+    });
+    return { transaction: updated, refund: updated?.refund || null, error: updated?.statusText };
+  }
+
+  const outcome = await sendBillPayment({
+    urid,
+    bbpsId,
+    mobile,
+    customerMobile: meta.customerMobile,
+    amount,
+    opvalues,
   });
 
-  payment.metadata = {
-    ...(payment.metadata?.toObject?.() || payment.metadata || {}),
-    clubapiTransactionId: transaction._id,
-    billProcessedAt: new Date(),
-    clubapiBill: {
-      ...bill,
-      urid
-    }
-  };
-  await payment.save();
-  emitClubTransaction(payment.userId, transaction);
+  await ClubAPITransaction.updateOne(
+    { _id: transaction._id },
+    { $set: { response: outcome.data ?? { delivery: outcome.delivery, error: outcome.error } } }
+  );
 
-  try {
-    const response = validateResponse(await payBbpsBill({
-      urid,
-      bbpsId: bill.bbpsId,
-      mobile: bill.mobile,
-      customerMobile: bill.customerMobile,
-      amount: String(amount),
-      opvalue1: bill.opvalue1,
-      opvalue2: bill.opvalue2,
-      opvalue3: bill.opvalue3,
-      opvalue4: bill.opvalue4,
-      opvalue5: bill.opvalue5
-    }));
-
-    transaction.status = clubStatusToLocal(response);
-    transaction.response = response;
-    await transaction.save();
-
-    payment.metadata = {
-      ...(payment.metadata?.toObject?.() || payment.metadata || {}),
-      clubapiBill: {
-        ...(payment.metadata?.clubapiBill || {}),
-        orderId: firstOrderId(response),
-        clubapiStatus: transaction.status,
-        response
-      }
-    };
-
-    let refund = null;
-    if (transaction.status === 'failed') {
-      refund = await refundClubAPIPayment(payment, 'BBPS bill payment failed at ClubAPI');
-      transaction.refund = refund;
-      await transaction.save();
-    } else {
-      await payment.save();
-    }
-
-    if (transaction.status === 'completed' && payment.userId) {
-      await Invoice.create({
-        invoiceNumber: clubInvoiceNumber('KPBBPS'),
-        userId: payment.userId,
-        amount,
-        taxableAmount: 0,
-        cgst: 0,
-        sgst: 0,
-        igst: 0,
-        status: 'PAID',
-        invoiceType: 'BBPS',
-        description: `BBPS bill payment - ${bill.bbpsId}`,
-        notes: `Transaction ID: ${urid} | Bill ID: ${bill.billId || ''} | Account: ${bill.mobile}`,
-        items: [{ description: `BBPS bill payment - ${bill.bbpsId}`, quantity: 1, rate: amount, total: amount }]
-      });
-    }
-
-    emitClubTransaction(payment.userId, transaction);
-    return { transaction, refund, response };
-  } catch (error) {
-    transaction.status = 'failed';
-    transaction.response = { message: error.message };
-    const refund = await refundClubAPIPayment(payment, error.message || 'BBPS bill payment request failed');
-    transaction.refund = refund;
-    await transaction.save();
-    emitClubTransaction(payment.userId, transaction);
-    return { transaction, refund, error: error.message };
-  }
+  const decision = decideTransactionOutcome(outcome);
+  const updated = await transitionTransaction(transaction, decision);
+  return { transaction: updated, refund: updated?.refund || null, response: outcome.data };
 }
 
+/* ----------------------------------------------------------- status & sync */
+
+/**
+ * Asks ClubAPI for the real status of a pending transaction and applies it.
+ * Throttled per transaction because ClubAPI disables accounts that poll hard.
+ */
+export async function syncTransactionStatus(transactionOrId, { force = false, allowReversal = false } = {}) {
+  const transaction =
+    transactionOrId instanceof ClubAPITransaction
+      ? transactionOrId
+      : await ClubAPITransaction.findById(transactionOrId?._id || transactionOrId);
+  if (!transaction || !PAYABLE_TYPES.includes(transaction.type)) return transaction;
+
+  const open = ['pending', 'processing'].includes(transaction.status);
+  if (!open && !allowReversal) return transaction;
+
+  const lastCheck = transaction.lastStatusCheckAt ? new Date(transaction.lastStatusCheckAt).getTime() : 0;
+  if (!force && Date.now() - lastCheck < STATUS_CHECK_INTERVAL_MS) return transaction;
+
+  // Claim the check so concurrent polls do not all call ClubAPI.
+  const claimed = await ClubAPITransaction.findOneAndUpdate(
+    {
+      _id: transaction._id,
+      $or: [
+        { lastStatusCheckAt: { $exists: false } },
+        { lastStatusCheckAt: { $lt: new Date(Date.now() - (force ? 2000 : STATUS_CHECK_INTERVAL_MS)) } },
+      ],
+    },
+    { $set: { lastStatusCheckAt: new Date() }, $inc: { statusChecks: 1 } },
+    { new: true }
+  );
+  if (!claimed) return transaction;
+
+  const outcome = await sendStatusCheck({ urid: claimed.urid, orderId: claimed.orderId });
+  if (outcome.delivery !== 'received') return claimed;
+
+  const parsed = normalizeStatusCheckResponse(outcome.data);
+  const age = Date.now() - new Date(claimed.createdAt).getTime();
+
+  if (parsed.found) {
+    const decision = {
+      localStatus: toLocalStatus(parsed.status),
+      refund: true,
+      orderId: parsed.orderId,
+      operatorTxnId: parsed.operatorTxnId,
+      message: parsed.message,
+    };
+    if (decision.localStatus === claimed.status) {
+      return ClubAPITransaction.findByIdAndUpdate(
+        claimed._id,
+        {
+          $set: {
+            ...(parsed.orderId ? { orderId: parsed.orderId } : {}),
+            ...(parsed.operatorTxnId ? { operatorTxnId: parsed.operatorTxnId } : {}),
+          },
+        },
+        { new: true }
+      );
+    }
+    return transitionTransaction(claimed, decision, { allowReversal: allowReversal && decision.localStatus === 'failed' });
+  }
+
+  // ClubAPI: "No such order found" within an hour of the transaction means it
+  // was never created, so it can be failed (and refunded). Older lookups may
+  // just be archived and are left for manual review.
+  if (parsed.notFound && open && age >= NOT_FOUND_MIN_AGE_MS && age <= NOT_FOUND_MAX_AGE_MS) {
+    return transitionTransaction(claimed, {
+      localStatus: 'failed',
+      refund: true,
+      message: parsed.message || 'Order was not created at the operator',
+    });
+  }
+
+  if (parsed.notFound && open && age > NOT_FOUND_MAX_AGE_MS) {
+    await ClubAPITransaction.updateOne(
+      { _id: claimed._id },
+      { $set: { statusText: 'Needs manual review: order not found at ClubAPI' } }
+    );
+  }
+
+  return ClubAPITransaction.findById(claimed._id);
+}
+
+/**
+ * Applies a ClubAPI callback. The callback endpoint is public, so its claimed
+ * status is verified with the status API before anything is refunded.
+ */
+export async function applyClubapiCallback(payload = {}) {
+  const urid = String(payload.urid || payload.ourSystemId || payload.ourSystemOrderId || '').trim();
+  const orderId = String(payload.orderId || payload.order_id || payload.orderid || '').trim();
+  if (!urid && !orderId) return { matched: false };
+
+  const query = [];
+  if (urid) query.push({ urid });
+  if (orderId) query.push({ orderId }, { 'response.data.orderId': orderId });
+
+  const transaction = await ClubAPITransaction.findOne({ $or: query, type: { $in: PAYABLE_TYPES } });
+  if (!transaction) return { matched: false };
+
+  await ClubAPITransaction.updateOne(
+    { _id: transaction._id },
+    {
+      $set: {
+        ...(orderId && !transaction.orderId ? { orderId } : {}),
+        'response.lastCallback': payload,
+        'response.lastCallbackAt': new Date(),
+      },
+    }
+  );
+
+  const refreshed = await ClubAPITransaction.findById(transaction._id);
+  const verified = await syncTransactionStatus(refreshed, { force: true, allowReversal: true });
+
+  // If ClubAPI's status API could not be reached, a claimed SUCCESS is still
+  // applied (it moves no money); a claimed FAILURE waits for verification.
+  if (
+    verified &&
+    ['pending', 'processing'].includes(verified.status) &&
+    normalizeStatusWord(payload.status) === 'SUCCESS'
+  ) {
+    const completed = await transitionTransaction(verified, {
+      localStatus: 'completed',
+      orderId,
+      operatorTxnId: String(payload.transId || payload.operatorId_txn || '').trim(),
+      message: String(payload.resText || payload.message || '').trim(),
+    });
+    return { matched: true, status: completed?.status };
+  }
+
+  return { matched: true, status: verified?.status };
+}
+
+/** Kept for older imports; callbacks now verify through applyClubapiCallback. */
 export async function handleRechargeCallbackRefund(transaction) {
-  if (!transaction || transaction.status !== 'failed' || !transaction.paymentId) return null;
-  const payment = await Payment.findById(transaction.paymentId);
-  if (!payment || payment.metadata?.refund?.status) return payment?.metadata?.refund || null;
-  const refund = await refundClubAPIPayment(payment, 'ClubAPI transaction failed by callback');
-  transaction.refund = refund;
-  await transaction.save();
-  return refund;
+  if (!transaction?.paymentId || transaction.status !== 'failed') return null;
+  return refundClubAPIPayment(transaction.paymentId, 'ClubAPI transaction failed');
+}
+
+/* --------------------------------------------------------------- reconciler */
+
+let reconcilerTimer = null;
+
+/**
+ * Periodically resolves transactions left pending (timeouts, missed callbacks)
+ * so customers get their recharge confirmed - or their money back - even if
+ * they never reopen the app.
+ */
+export function startServiceReconciler({ intervalMs = 2 * 60 * 1000 } = {}) {
+  if (reconcilerTimer) return;
+
+  const run = async () => {
+    try {
+      const now = Date.now();
+      const due = await ClubAPITransaction.find({
+        type: { $in: PAYABLE_TYPES },
+        status: { $in: ['pending', 'processing'] },
+        createdAt: { $lt: new Date(now - 90 * 1000), $gt: new Date(now - 3 * 24 * 60 * 60 * 1000) },
+      })
+        .sort({ lastStatusCheckAt: 1 })
+        .limit(15);
+
+      for (const transaction of due) {
+        await syncTransactionStatus(transaction);
+      }
+    } catch (error) {
+      console.error('Service reconciler error:', error.message);
+    }
+  };
+
+  reconcilerTimer = setInterval(run, intervalMs);
+  reconcilerTimer.unref?.();
+}
+
+/* ------------------------------------------------------------- orchestration */
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs a confirmed service payment, waiting at most `waitMs` for the operator.
+ *
+ * The app's HTTP client gives up after 20s and ClubAPI can take longer, so the
+ * verify/wallet endpoints must not block on the operator: if it is slow the
+ * customer immediately gets a PENDING transaction (with its urid) to track,
+ * and the work finishes in the background.
+ */
+export async function runServicePayment(payment, { waitMs = 8000 } = {}) {
+  if (!payment || !['RECHARGE', 'BBPS_BILL'].includes(payment.type)) {
+    return { transaction: null, refund: null };
+  }
+
+  const work = (payment.type === 'RECHARGE' ? processPaidRecharge(payment) : processPaidBbpsBill(payment)).catch(
+    async (error) => {
+      console.error(`Service payment ${payment._id} failed to start:`, error.message);
+      // Only refund if nothing was ever handed to ClubAPI for this payment.
+      const started = await ClubAPITransaction.exists({ paymentId: payment._id });
+      const refund = started ? null : await refundClubAPIPayment(payment._id, 'Service could not be started');
+      return { transaction: null, refund, error: error.message };
+    }
+  );
+
+  const settled = waitMs > 0 ? await Promise.race([work, sleep(waitMs).then(() => null)]) : null;
+  if (settled) return settled;
+
+  const fresh = await Payment.findById(payment._id).select('metadata.clubapiTransactionId metadata.refund').lean();
+  const transaction = fresh?.metadata?.clubapiTransactionId
+    ? await ClubAPITransaction.findById(fresh.metadata.clubapiTransactionId)
+    : await ClubAPITransaction.findOne({ paymentId: payment._id });
+  return { transaction, refund: fresh?.metadata?.refund || null, pending: true };
 }

@@ -1,147 +1,184 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../providers/bill_providers.dart';
-import '../../services/bill_service.dart';
-import '../../routes/app_router.dart';
 
+import '../../clubapi/models/service_catalog.dart';
+import '../../clubapi/providers/clubapi_providers.dart';
+import '../../clubapi/ui/service_ui.dart';
+import '../../core/app_theme.dart';
+import '../../routes/app_router.dart';
+import '../widgets/kp_widgets.dart';
+import 'dashboard_page.dart' show KhatuBottomNav;
+
+/// Recharge & Bills hub.
+///
+/// Khatu Pay offers exactly five services here - Mobile and DTH recharge,
+/// and Credit Card, Electricity and FASTag bills - so this is a compact
+/// launcher plus the customer's recent recharges and bill payments with live
+/// status, rather than a long catalogue.
 class BillsPage extends ConsumerStatefulWidget {
   const BillsPage({super.key});
 
   @override
-  ConsumerState<BillsPage> createState() => _S();
+  ConsumerState<BillsPage> createState() => _BillsPageState();
 }
 
-class _S extends ConsumerState<BillsPage> {
-  final type = TextEditingController(text: 'MOBILE'),
-      prov = TextEditingController(),
-      acc = TextEditingController(),
-      amt = TextEditingController(text: '99');
-  DateTime due = DateTime.now().add(const Duration(days: 7));
-  bool isFetching = false;
-  Map<String, dynamic>? fetchedBill;
+class _BillsPageState extends ConsumerState<BillsPage> {
+  late Future<List<ServiceTransaction>> _recent;
+
+  @override
+  void initState() {
+    super.initState();
+    _recent = _loadRecent();
+  }
+
+  Future<List<ServiceTransaction>> _loadRecent() =>
+      ref.read(clubAPIServiceProvider).getServiceTransactions(limit: 5);
+
+  Future<void> _refresh() async {
+    final future = _loadRecent();
+    setState(() => _recent = future);
+    await future.catchError((_) => <ServiceTransaction>[]);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final bills = ref.watch(billsProvider);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Bills'),
-        leading: IconButton(
-          icon: const Icon(Icons.home),
-          onPressed: () => router.go('/'),
+    return KpAppShell(
+      title: 'Recharge & Bills',
+      showBack: false,
+      bottomBar: const KhatuBottomNav(currentIndex: 1),
+      actions: [
+        IconButton(
+          tooltip: 'History',
+          onPressed: () => router.go('/service-history'),
+          icon: const Icon(Icons.history_rounded),
         ),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          DropdownButtonFormField<String>(
-            value: type.text,
-            items: ['MOBILE', 'DTH', 'ELECTRICITY', 'WATER', 'GAS'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-            onChanged: (v) => setState(() => type.text = v!),
-            decoration: const InputDecoration(labelText: 'Bill Type'),
-          ),
-          TextField(
-              controller: prov,
-              decoration: const InputDecoration(hintText: 'Provider (e.g., Airtel, Tata Power)')),
-          TextField(
-              controller: acc,
-              decoration: const InputDecoration(hintText: 'Account Ref (Mobile No, Consumer No)')),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: isFetching ? null : () async {
-                    setState(() => isFetching = true);
-                    try {
-                      final billData = await BillService().fetchBill(type: type.text, provider: prov.text, accountRef: acc.text);
-                      setState(() => fetchedBill = billData);
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
-                    } finally {
-                      setState(() => isFetching = false);
-                    }
-                  },
-                  child: isFetching ? const CircularProgressIndicator() : const Text('Fetch Bill'),
+      ],
+      onRefresh: _refresh,
+      children: [
+        const _HubHeader(),
+        const KpSectionHeader(title: 'Recharge', icon: Icons.bolt_rounded),
+        const _ServiceRow(items: ServiceMeta.recharges),
+        const KpSectionHeader(title: 'Pay bills', icon: Icons.receipt_long_rounded),
+        const _ServiceRow(items: ServiceMeta.bills),
+        KpSectionHeader(
+          title: 'Recent',
+          actionLabel: 'View all',
+          onAction: () => router.go('/service-history'),
+        ),
+        FutureBuilder<List<ServiceTransaction>>(
+          future: _recent,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Padding(
+                padding: EdgeInsets.all(KhatuSpace.xl),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return KpErrorBanner(message: 'Recent payments could not be loaded.', onRetry: _refresh);
+            }
+            final rows = snapshot.data ?? const <ServiceTransaction>[];
+            if (rows.isEmpty) {
+              return const KpCard(
+                child: KpEmptyState(
+                  compact: true,
+                  icon: Icons.receipt_long_outlined,
+                  title: 'No recharges or bills yet',
+                  message: 'Your recharges and bill payments will show up here.',
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: fetchedBill == null ? null : () async {
-                    try {
-                      await BillService().add(
-                        type: type.text,
-                        provider: prov.text,
-                        accountRef: acc.text,
-                        amount: fetchedBill!['amount'],
-                        due: DateTime.parse(fetchedBill!['dueDate']),
-                      );
-                      ref.refresh(billsProvider);
-                      setState(() => fetchedBill = null);
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
-                    }
-                  },
-                  child: const Text('Add Bill'),
-                ),
-              ),
-            ],
-          ),
-          if (fetchedBill != null) ...[
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Customer: ${fetchedBill!['customerName']}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    Text('Amount: ₹${fetchedBill!['amount']}'),
-                    Text('Due Date: ${DateTime.parse(fetchedBill!['dueDate']).toLocal().toString().split(' ')[0]}'),
-                    Text('Bill Number: ${fetchedBill!['billNumber']}'),
-                    const SizedBox(height: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        try {
-                          final result = await BillService().payBill(billId: fetchedBill!['billNumber'], amount: fetchedBill!['amount']);
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bill paid successfully!')));
-                          setState(() => fetchedBill = null);
-                          ref.refresh(billsProvider);
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Payment failed: $e')));
-                        }
-                      },
-                      child: const Text('Pay Now'),
+              );
+            }
+            return KpTransactionGroup(
+              children: [
+                for (final txn in rows)
+                  KpTransactionTile(
+                    title: txn.providerName.isNotEmpty ? txn.providerName : ServiceMeta.of(txn.service).label,
+                    subtitle: [ServiceMeta.of(txn.service).label, if (txn.accountRef.isNotEmpty) txn.accountRef].join(' · '),
+                    amount: txn.amount,
+                    status: txn.isSuccess ? 'SUCCESS' : txn.isFailed ? (txn.refundLabel != null ? 'REFUNDED' : 'FAILED') : 'PENDING',
+                    timestamp: txn.createdAt,
+                    direction: KpTxnDirection.debit,
+                    icon: ServiceMeta.of(txn.service).icon,
+                    iconColor: ServiceMeta.of(txn.service).color,
+                    onTap: () => router.go(
+                      Uri(path: '/service-status', queryParameters: {'service': txn.service.isEmpty ? 'mobile' : txn.service, 'urid': txn.urid}).toString(),
+                      extra: ServiceStatusArgs(serviceKey: txn.service.isEmpty ? 'mobile' : txn.service, transaction: txn),
                     ),
-                  ],
+                  ),
+              ],
+            );
+          },
+        ),
+        KhatuSpace.gapXl,
+        const SecurePaymentNote(bbps: true),
+      ],
+    );
+  }
+}
+
+class _HubHeader extends StatelessWidget {
+  const _HubHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(KhatuSpace.lg),
+      decoration: BoxDecoration(
+        gradient: KhatuColors.brandGradient,
+        borderRadius: BorderRadius.circular(KhatuRadius.lg),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Recharge & pay bills instantly',
+                  style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w900),
                 ),
-              ),
+                const SizedBox(height: 6),
+                Text(
+                  'Pay with UPI, card or wallet. Failed payments are refunded automatically.',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 12.5, fontWeight: FontWeight.w700, height: 1.35),
+                ),
+              ],
             ),
-          ],
-          const SizedBox(height: 12),
-          const Text('My Bills', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          bills.when(
-            data: (list) => Column(
-                children: list
-                    .map((b) => ListTile(
-                          title: Text('${b.type} • ₹${b.amount} • ${b.status}'),
-                          subtitle: Text('${b.provider} • ${b.accountRef}'),
-                          trailing: ElevatedButton(
-                              onPressed: b.status == 'PENDING'
-                                  ? () async {
-                                      await BillService().markPaid(b.id);
-                                      ref.refresh(billsProvider);
-                                    }
-                                  : null,
-                              child: const Text('Mark Paid')),
-                        ))
-                    .toList()),
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => Text('Error: $e'),
-          )
+          ),
+          KhatuSpace.wMd,
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(KhatuRadius.md),
+            ),
+            child: const Icon(Icons.verified_user_rounded, color: Colors.white, size: 28),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _ServiceRow extends StatelessWidget {
+  const _ServiceRow({required this.items});
+
+  final List<ServiceMeta> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return KpServiceGrid(
+      columns: 3,
+      items: [
+        for (final meta in items)
+          KpServiceItem(
+            icon: meta.icon,
+            label: meta.label,
+            color: meta.color,
+            onTap: () => router.go(meta.route),
+          ),
+      ],
     );
   }
 }

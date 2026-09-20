@@ -1,173 +1,73 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:khatupay_app/providers/auth_providers.dart';
-import '../../../services/auth_service.dart';
-import '../../../services/user_service.dart';
+import '../../../core/auth_storage.dart';
+import '../../../core/fcm.dart';
+import '../../../providers/auth_providers.dart';
 import '../../../routes/app_router.dart';
+import '../../widgets/auth_shell.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
-
   @override
   ConsumerState<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends ConsumerState<LoginPage> {
-  final TextEditingController emailController = TextEditingController();
-  final TextEditingController passwordController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  final _identifier = TextEditingController();
+  final _password = TextEditingController();
+  bool _loading = false;
+  String? _message;
 
-  bool isLoading = false;
-  String? errorMessage;
+  @override
+  void initState() {
+    super.initState();
+    AuthStorage.getLastIdentifier().then((value) {
+      if (mounted && value != null) _identifier.text = value;
+    });
+  }
 
   @override
   void dispose() {
-    emailController.dispose();
-    passwordController.dispose();
+    _identifier.dispose();
+    _password.dispose();
     super.dispose();
   }
 
   Future<void> _login() async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
-
+    if (_loading || _formKey.currentState?.validate() != true) return;
+    setState(() { _loading = true; _message = null; });
     try {
-      final authService = ref.read(authServiceProvider);
-      final userService = ref.read(userServiceProvider);
-
-      // ✅ Login request
-      await authService.loginEmail(
-        emailController.text.trim(),
-        passwordController.text.trim(),
-      );
-
-      // ✅ Fetch current user profile
-      await userService.me();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('✅ Login successful!')),
-      );
-
-      // ✅ Redirect to home page
-      router.go('/');
-    } catch (err) {
-      setState(() {
-        errorMessage = err.toString();
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('❌ Login failed: $err')),
-        );
-      }
+      await ref.read(authServiceProvider).loginPassword(_identifier.text.trim(), _password.text);
+      FCM.registerCurrentDevice().catchError((_) {});
+      ref.invalidate(meProvider);
+      if (mounted) router.go('/');
+    } catch (error) {
+      if (mounted) setState(() => _message = friendlyAuthError(error, fallback: 'Unable to sign in right now. Please try again.'));
     } finally {
-      if (mounted) setState(() => isLoading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: Center(
-        child: SingleChildScrollView(
-          child: Container(
-            width: 360.w,
-            padding: EdgeInsets.all(24.w),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  'Khatu Pay',
-                  style: TextStyle(
-                    fontSize: 28.sp,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blueAccent,
-                  ),
-                ),
-                SizedBox(height: 24.h),
-                TextField(
-                  controller: emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: InputDecoration(
-                    labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined, color: Colors.blueAccent),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12.r),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.blueAccent),
-                      borderRadius: BorderRadius.circular(12.r),
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16.h),
-                TextField(
-                  controller: passwordController,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    labelText: 'Password',
-                    prefixIcon: Icon(Icons.lock_outline, color: Colors.blueAccent),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12.r),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.blueAccent),
-                      borderRadius: BorderRadius.circular(12.r),
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16.h),
-                if (errorMessage != null)
-                  Text(
-                    errorMessage!,
-                    style: TextStyle(color: Colors.red, fontSize: 14.sp),
-                  ),
-                SizedBox(height: 20.h),
-                ElevatedButton(
-                  onPressed: isLoading ? null : _login,
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: Size(double.infinity, 48.h),
-                    backgroundColor: Colors.blueAccent,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12.r),
-                    ),
-                  ),
-                  child: Text(
-                    isLoading ? 'Logging in...' : 'Login',
-                    style: TextStyle(fontSize: 16.sp),
-                  ),
-                ),
-                SizedBox(height: 10.h),
-                TextButton(
-                  onPressed: () => router.go('/register'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.green,
-                  ),
-                  child: Text(
-                    'Create account',
-                    style: TextStyle(fontSize: 14.sp),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => router.go('/forgot'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.green,
-                  ),
-                  child: Text(
-                    'Forgot password?',
-                    style: TextStyle(fontSize: 14.sp),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => AuthShell(
+    title: 'Welcome back',
+    subtitle: 'Sign in securely to continue',
+    icon: Icons.verified_user_outlined,
+    illustrationAsset: 'assets/auth/auth_secure_access.png',
+    footerText: 'New to KhatuPay? Create account',
+    onFooterTap: () => router.go('/register'),
+    child: Form(
+      key: _formKey,
+      child: Column(children: [
+        AuthTextField(controller: _identifier, label: 'Mobile number or email', icon: Icons.person_outline_rounded, keyboardType: TextInputType.emailAddress, textInputAction: TextInputAction.next, validator: (v) => v.isEmpty ? 'Enter your registered mobile number or email' : null),
+        const SizedBox(height: 14),
+        AuthTextField(controller: _password, label: 'Password', icon: Icons.lock_outline_rounded, obscure: true, textInputAction: TextInputAction.done, validator: (v) => v.isEmpty ? 'Enter your password' : null),
+        Align(alignment: Alignment.centerRight, child: TextButton(onPressed: _loading ? null : () => router.push('/forgot'), child: const Text('Forgot password?', style: TextStyle(fontWeight: FontWeight.w700)))),
+        if (_message != null) ...[AuthMessage(message: _message!), const SizedBox(height: 14)],
+        AuthPrimaryButton(label: 'Login securely', loading: _loading, icon: Icons.lock_open_rounded, onPressed: _login),
+      ]),
+    ),
+  );
 }
+

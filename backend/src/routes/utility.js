@@ -21,10 +21,6 @@ import {
   verifyOutletOtp,
   getOutletStatus,
   fetchBbpsBill,
-  payBbpsBill,
-  payout,
-  callClubAPITransaction,
-  callClubAPIUtility,
   generateClubUrid
 } from '../services/clubapiUtility.js';
 
@@ -47,25 +43,6 @@ function normalizeBankValidation(data = {}, accountNumber, ifscCode) {
     isValid: Boolean(accountName) || /success|valid|verified/i.test(`${data.status || ''} ${resText}`),
     accountName,
     beneficiaryName: accountName,
-    resText,
-    clubapi: data
-  };
-}
-
-function normalizePayoutResponse(data = {}, payload = {}) {
-  const nested = data.data && typeof data.data === 'object' ? data.data : {};
-  const status = String(data.status || nested.status || '').toUpperCase();
-  const resText = data.resText || data.message || nested.resText || nested.message || '';
-  return {
-    urid: data.urid || nested.urid || payload.urid,
-    orderId: data.orderId || data.order_id || nested.orderId || nested.order_id || '',
-    status: status || (resText ? 'PENDING' : ''),
-    isSuccess: /success|completed/i.test(`${status} ${resText}`),
-    amount: payload.amount,
-    outletMobile: payload.outletMobile,
-    beneficiaryName: payload.beneficiaryName,
-    bankAccountNumber: payload.bankAccountNumber,
-    bankIfscCode: String(payload.bankIfscCode || '').toUpperCase(),
     resText,
     clubapi: data
   };
@@ -307,58 +284,53 @@ router.post('/bbps/fetch-bill', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/bbps/pay-bill', requireAuth, async (req, res, next) => {
-  try {
-    const payload = await Joi.object({
-      mobile: Joi.string().required(),
-      bbpsId: Joi.string().required(),
-      customerMobile: Joi.string().pattern(/^\d{10}$/).required(),
-      amount: Joi.alternatives().try(Joi.number().positive(), Joi.string().required()).required(),
-      opvalue1: Joi.string().allow('', null),
-      opvalue2: Joi.string().allow('', null),
-      opvalue3: Joi.string().allow('', null),
-      opvalue4: Joi.string().allow('', null),
-      opvalue5: Joi.string().allow('', null),
-      urid: Joi.string().max(20).default(() => generateClubUrid('KPY'))
-    }).validateAsync(req.body);
+// Disabled: BBPS bill payment used to call ClubAPI directly, spending the company's
+// ClubAPI balance without any customer payment. Recharges and bill payments
+// now go through /api/payments (Razorpay or wallet) and /api/services.
+router.post('/bbps/pay-bill', requireAuth, (req, res) =>
+  fail(
+    res,
+    'PAYMENT_REQUIRED',
+    'This action is not available directly. Please pay from the Recharge & Bills section.',
+    403
+  )
+);
 
-    ok(res, await payBbpsBill(payload));
-  } catch (e) { next(e); }
-});
+// Disabled: bank payout used to call ClubAPI directly, spending the company's
+// ClubAPI balance without any customer payment. Recharges and bill payments
+// now go through /api/payments (Razorpay or wallet) and /api/services.
+router.post('/payout', requireAuth, (req, res) =>
+  fail(
+    res,
+    'PAYMENT_REQUIRED',
+    'This action is not available directly. Please pay from the Recharge & Bills section.',
+    403
+  )
+);
 
-router.post('/payout', requireAuth, async (req, res, next) => {
-  try {
-    const payload = await Joi.object({
-      mobile: Joi.string().allow('', null),
-      amount: Joi.alternatives().try(Joi.number().positive(), Joi.string().required()).required(),
-      outletMobile: Joi.string().pattern(/^\d{10}$/).required(),
-      bankAccountNumber: Joi.string().trim().min(6).max(30).required(),
-      bankIfscCode: Joi.string().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/i).required(),
-      beneficiaryName: Joi.string().trim().min(2).max(120).required(),
-      urid: Joi.string().max(20).default(() => generateClubUrid('KPO'))
-    }).validateAsync(req.body);
+// Disabled: raw ClubAPI transaction pass-through used to call ClubAPI directly, spending the company's
+// ClubAPI balance without any customer payment. Recharges and bill payments
+// now go through /api/payments (Razorpay or wallet) and /api/services.
+router.post('/clubapi/transaction', requireAuth, (req, res) =>
+  fail(
+    res,
+    'PAYMENT_REQUIRED',
+    'This action is not available directly. Please pay from the Recharge & Bills section.',
+    403
+  )
+);
 
-    payload.mobile = payload.mobile || payload.bankAccountNumber;
-    const result = await payout(payload);
-    ok(res, normalizePayoutResponse(result, payload));
-  } catch (e) { next(e); }
-});
-
-router.post('/clubapi/transaction', requireAuth, async (req, res, next) => {
-  try {
-    const payload = await Joi.object().unknown(true).validateAsync(req.body);
-    delete payload.token;
-    ok(res, await callClubAPITransaction(payload));
-  } catch (e) { next(e); }
-});
-
-router.post('/clubapi/utility', requireAuth, async (req, res, next) => {
-  try {
-    const payload = await Joi.object().unknown(true).validateAsync(req.body);
-    delete payload.token;
-    ok(res, await callClubAPIUtility(payload));
-  } catch (e) { next(e); }
-});
+// Disabled: raw ClubAPI utility pass-through used to call ClubAPI directly, spending the company's
+// ClubAPI balance without any customer payment. Recharges and bill payments
+// now go through /api/payments (Razorpay or wallet) and /api/services.
+router.post('/clubapi/utility', requireAuth, (req, res) =>
+  fail(
+    res,
+    'PAYMENT_REQUIRED',
+    'This action is not available directly. Please pay from the Recharge & Bills section.',
+    403
+  )
+);
 
 // Recharge Amount Validation
 router.post('/validate-recharge-amount', requireAuth, async (req, res, next) => {

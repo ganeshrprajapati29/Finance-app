@@ -1,241 +1,84 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
+import '../../../routes/app_router.dart';
 import '../../../services/auth_service.dart';
+import '../../widgets/auth_shell.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
   const ForgotPasswordPage({super.key});
-
   @override
   State<ForgotPasswordPage> createState() => _ForgotPasswordPageState();
 }
-
 class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
-  final emailController = TextEditingController();
-  final otpController = TextEditingController();
-  final passwordController = TextEditingController();
-  String message = '';
-  bool isLoading = false;
-  bool otpSent = false;
-
+  final _email = TextEditingController(), _otp = TextEditingController(), _password = TextEditingController(), _confirm = TextEditingController();
+  int _stage = 1, _seconds = 0;
+  bool _loading = false;
+  String? _message;
+  Timer? _timer;
+  bool get _strong => _password.text.length >= 8 && RegExp('[A-Za-z]').hasMatch(_password.text) && RegExp('[0-9]').hasMatch(_password.text);
   @override
-  void dispose() {
-    emailController.dispose();
-    otpController.dispose();
-    passwordController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _sendOTP() async {
-    if (emailController.text.isEmpty) {
-      setState(() => message = 'Please enter your email');
-      return;
-    }
-
-    setState(() {
-      isLoading = true;
-      message = '';
+  void initState() { super.initState(); _password.addListener(() => setState(() {})); }
+  void _countdown() {
+    _timer?.cancel(); _seconds = 30;
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      if (_seconds <= 1) { timer.cancel(); setState(() => _seconds = 0); } else { setState(() => _seconds--); }
     });
-
-    try {
-      await AuthService().forgot(emailController.text.trim());
-      setState(() {
-        otpSent = true;
-        message = 'OTP sent to your email';
-      });
-    } catch (e) {
-      setState(() => message = 'Failed to send OTP: $e');
-    } finally {
-      setState(() => isLoading = false);
-    }
   }
-
-  Future<void> _resetPassword() async {
-    if (emailController.text.isEmpty || otpController.text.isEmpty || passwordController.text.isEmpty) {
-      setState(() => message = 'Please fill all fields');
-      return;
-    }
-
-    setState(() {
-      isLoading = true;
-      message = '';
-    });
-
+  @override
+  void dispose() { _timer?.cancel(); _email.dispose(); _otp.dispose(); _password.dispose(); _confirm.dispose(); super.dispose(); }
+  Future<void> _send() async {
+    if (_loading || !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_email.text.trim())) { setState(() => _message = 'Enter a valid registered email address.'); return; }
+    setState(() { _loading = true; _message = null; });
     try {
-      await AuthService().reset(
-        emailController.text.trim(),
-        otpController.text.trim(),
-        passwordController.text.trim(),
-      );
-      setState(() => message = 'Password updated successfully!');
-      // Navigate back to login after successful reset
-      Future.delayed(const Duration(seconds: 2), () {
-        Navigator.of(context).pop();
-      });
-    } catch (e) {
-      setState(() => message = 'Failed to reset password: $e');
-    } finally {
-      setState(() => isLoading = false);
-    }
+      await AuthService().forgotPassword(_email.text.trim().toLowerCase());
+      if (mounted) { _countdown(); setState(() { _stage = 2; _message = 'If an account exists for this email, a verification code has been sent.'; }); }
+    } catch (error) {
+      if (mounted) setState(() => _message = friendlyAuthError(error, fallback: 'Unable to send a code right now. Please try again.'));
+    } finally { if (mounted) setState(() => _loading = false); }
   }
-
+  void _continueOtp() {
+    if (_otp.text.length != 6) { setState(() => _message = 'Enter the complete 6-digit verification code.'); return; }
+    setState(() { _stage = 3; _message = null; });
+  }
+  Future<void> _reset() async {
+    if (_loading) return;
+    if (!_strong) { setState(() => _message = 'Use at least 8 characters with a letter and number.'); return; }
+    if (_confirm.text != _password.text) { setState(() => _message = 'Passwords do not match.'); return; }
+    setState(() { _loading = true; _message = null; });
+    try {
+      await AuthService().resetPassword(_email.text.trim().toLowerCase(), _otp.text, _password.text);
+      if (mounted) setState(() => _stage = 4);
+    } catch (error) {
+      if (mounted) { setState(() { _stage = 2; _message = friendlyAuthError(error, fallback: 'Unable to update the password. Check the code and try again.'); }); }
+    } finally { if (mounted) setState(() => _loading = false); }
+  }
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: Text(
-          'Reset Password',
-          style: TextStyle(color: Colors.black, fontSize: 18.sp),
-        ),
-        iconTheme: const IconThemeData(color: Colors.black),
-      ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16.w),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Forgot Password',
-              style: TextStyle(
-                fontSize: 24.sp,
-                fontWeight: FontWeight.bold,
-                color: Colors.blueAccent,
-              ),
-            ),
-            SizedBox(height: 8.h),
-            Text(
-              'Enter your email to receive an OTP and reset your password',
-              style: TextStyle(
-                fontSize: 14.sp,
-                color: Colors.grey,
-              ),
-            ),
-            SizedBox(height: 24.h),
-            TextField(
-              controller: emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: InputDecoration(
-                labelText: 'Email Address',
-                prefixIcon: Icon(Icons.email, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-              ),
-            ),
-            SizedBox(height: 16.h),
-            if (otpSent) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: otpController,
-                      keyboardType: TextInputType.number,
-                      maxLength: 6,
-                      decoration: InputDecoration(
-                        labelText: 'OTP Code',
-                        prefixIcon: Icon(Icons.lock_clock, color: Colors.blueAccent),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12.r),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderSide: BorderSide(color: Colors.blueAccent),
-                          borderRadius: BorderRadius.circular(12.r),
-                        ),
-                        counterText: '',
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: 12.w),
-                  TextButton(
-                    onPressed: isLoading ? null : _sendOTP,
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.green,
-                      padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
-                    ),
-                    child: Text(
-                      'Resend',
-                      style: TextStyle(fontSize: 14.sp),
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: 16.h),
-              TextField(
-                controller: passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: 'New Password',
-                  prefixIcon: Icon(Icons.lock, color: Colors.blueAccent),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12.r),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.blueAccent),
-                    borderRadius: BorderRadius.circular(12.r),
-                  ),
-                ),
-              ),
-              SizedBox(height: 24.h),
-              ElevatedButton(
-                onPressed: isLoading ? null : _resetPassword,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: Size(double.infinity, 48.h),
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12.r),
-                  ),
-                ),
-                child: Text(
-                  isLoading ? 'Resetting...' : 'Reset Password',
-                  style: TextStyle(fontSize: 16.sp),
-                ),
-              ),
-            ] else ...[
-              SizedBox(height: 24.h),
-              ElevatedButton(
-                onPressed: isLoading ? null : _sendOTP,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: Size(double.infinity, 48.h),
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12.r),
-                  ),
-                ),
-                child: Text(
-                  isLoading ? 'Sending...' : 'Send OTP',
-                  style: TextStyle(fontSize: 16.sp),
-                ),
-              ),
-            ],
-            SizedBox(height: 16.h),
-            if (message.isNotEmpty)
-              Container(
-                padding: EdgeInsets.all(12.w),
-                decoration: BoxDecoration(
-                  color: message.contains('successfully') ? Colors.green.shade50 : Colors.red.shade50,
-                  borderRadius: BorderRadius.circular(8.r),
-                  border: Border.all(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                  ),
-                ),
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                    fontSize: 14.sp,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+    if (_stage == 4) {
+      return AuthShell(title: 'Password updated', subtitle: 'Your password has been updated securely.', icon: Icons.check_circle_rounded, illustrationAsset: 'assets/auth/account_verified.png', compactIllustration: true, footerText: '', child: AuthPrimaryButton(label: 'Back to login', icon: Icons.login_rounded, onPressed: () => router.go('/login')));
+    }
+    final title = _stage == 1 ? 'Reset your password' : _stage == 2 ? 'Verify your email' : 'Create a new password';
+    final subtitle = _stage == 1 ? 'We will send a secure verification code to your registered email.' : _stage == 2 ? 'Enter the 6-digit code sent to your email.' : 'Choose a strong password you have not used before.';
+    return AuthShell(
+      title: title, subtitle: subtitle, icon: Icons.lock_outline_rounded, illustrationAsset: 'assets/auth/password_recovery.png', compactIllustration: true, showBack: true,
+      footerText: 'Back to login', onFooterTap: () => router.go('/login'),
+      child: Column(children: [
+        if (_stage == 1) AuthTextField(controller: _email, label: 'Registered email', icon: Icons.email_outlined, keyboardType: TextInputType.emailAddress, validator: (_) => null),
+        if (_stage == 2) ...[
+          AuthOtpInput(controller: _otp),
+          TextButton.icon(onPressed: _seconds == 0 && !_loading ? _send : null, icon: const Icon(Icons.refresh_rounded), label: Text(_seconds == 0 ? 'Resend code' : 'Resend code in ${_seconds}s')),
+        ],
+        if (_stage == 3) ...[
+          AuthTextField(controller: _password, label: 'New password', icon: Icons.lock_outline_rounded, obscure: true),
+          const SizedBox(height: 8), Align(alignment: Alignment.centerLeft, child: PasswordRequirements(password: _password.text)),
+          const SizedBox(height: 12), AuthTextField(controller: _confirm, label: 'Confirm new password', icon: Icons.verified_user_outlined, obscure: true),
+        ],
+        if (_message != null) ...[const SizedBox(height: 12), AuthMessage(message: _message!, success: _message!.startsWith('If an account'))],
+        const SizedBox(height: 16),
+        AuthPrimaryButton(label: _stage == 1 ? 'Send verification code' : _stage == 2 ? 'Verify code' : 'Update password', loading: _loading, onPressed: _stage == 1 ? _send : _stage == 2 ? _continueOtp : _reset),
+      ]),
     );
   }
 }
+

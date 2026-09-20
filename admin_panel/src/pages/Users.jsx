@@ -89,6 +89,7 @@ const Users = () => {
   const [loanLimitAmount, setLoanLimitAmount] = useState(0)
   const [processing, setProcessing] = useState(false)
   const [actionUser, setActionUser] = useState(null)
+  const [blockReason, setBlockReason] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
   const [addUserForm, setAddUserForm] = useState(emptyAddUserForm)
   const [detailUser, setDetailUser] = useState(null)
@@ -192,8 +193,12 @@ const Users = () => {
       setProcessing(true)
       const currentStatus = normalize(actionUser.status || 'active')
       const nextStatus = currentStatus === 'active' ? 'blocked' : 'active'
-      await api.put(`/admin/users/${actionUser._id}/status`, { status: nextStatus })
+      await api.put(`/admin/users/${actionUser._id}/status`, {
+        status: nextStatus,
+        reason: nextStatus === 'blocked' ? blockReason.trim() : '',
+      })
       setActionUser(null)
+      setBlockReason('')
       await fetchUsers()
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to update user status')
@@ -410,7 +415,7 @@ const Users = () => {
                           <Button
                             variant={isActive ? 'outline-danger' : 'outline-success'}
                             size="sm"
-                            onClick={() => setActionUser(user)}
+                            onClick={() => { setActionUser(user); setBlockReason('') }}
                             title={isActive ? 'Block user' : 'Unblock user'}
                           >
                             {isActive ? <Ban size={15} /> : <CheckCircle2 size={15} />}
@@ -581,6 +586,12 @@ const Users = () => {
                 <DetailItem label="Wallet balance" value={formatCurrency(detailUser.walletBalance || 0)} highlight />
                 <DetailItem label="Joined" value={formatDate(detailUser.createdAt)} />
                 <DetailItem label="Limit updated" value={formatDate(detailUser.loanLimit?.setAt)} />
+                {normalize(detailUser.status) === 'blocked' && (
+                  <>
+                    <DetailItem label="Blocked on" value={formatDate(detailUser.accessControl?.blockedAt)} />
+                    <DetailItem label="Block reason" value={detailUser.accessControl?.blockReason || 'Account access restricted'} />
+                  </>
+                )}
               </div>
 
               <div className="detail-actions">
@@ -638,22 +649,42 @@ const Users = () => {
         </Modal.Footer>
       </Modal>
 
-      <Modal show={Boolean(actionUser)} onHide={() => setActionUser(null)} centered>
+      <Modal show={Boolean(actionUser)} onHide={() => { setActionUser(null); setBlockReason('') }} centered>
         <Modal.Header closeButton>
           <Modal.Title>{normalize(actionUser?.status || 'active') === 'active' ? 'Block user' : 'Unblock user'}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          <p className="mb-0">
+          <p>
             Are you sure you want to {normalize(actionUser?.status || 'active') === 'active' ? 'block' : 'unblock'}{' '}
             <strong>{actionUser?.name || 'this user'}</strong>?
           </p>
+          {normalize(actionUser?.status || 'active') === 'active' && (
+            <>
+              <div className="alert alert-warning py-2">
+                The user will be signed out from every device immediately and cannot use protected app services.
+              </div>
+              <Form.Group>
+                <Form.Label>Reason for blocking</Form.Label>
+                <Form.Control
+                  as="textarea"
+                  rows={3}
+                  maxLength={300}
+                  value={blockReason}
+                  onChange={(event) => setBlockReason(event.target.value)}
+                  placeholder="Enter a clear reason for support and audit records"
+                  required
+                />
+                <Form.Text>{blockReason.length}/300</Form.Text>
+              </Form.Group>
+            </>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="light" onClick={() => setActionUser(null)}>Cancel</Button>
           <Button
             variant={normalize(actionUser?.status || 'active') === 'active' ? 'danger' : 'success'}
             onClick={updateStatus}
-            disabled={processing}
+            disabled={processing || (normalize(actionUser?.status || 'active') === 'active' && blockReason.trim().length < 3)}
           >
             {processing ? 'Updating...' : 'Confirm'}
           </Button>

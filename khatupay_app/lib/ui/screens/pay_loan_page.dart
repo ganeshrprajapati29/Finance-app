@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
+
+import '../../core/app_theme.dart';
+import '../../routes/app_router.dart';
 import '../../services/payment_service.dart';
 import '../../services/user_service.dart';
-import '../../routes/app_router.dart';
+import '../widgets/app_back_button.dart';
 
 class PayLoanPage extends ConsumerStatefulWidget {
   const PayLoanPage({super.key});
@@ -18,8 +20,14 @@ class _PayLoanPageState extends ConsumerState<PayLoanPage> {
   bool searchingLoan = false;
   String msg = '';
 
+  @override
+  void dispose() {
+    mobileController.dispose();
+    super.dispose();
+  }
+
   Future<void> _searchLoan() async {
-    if (mobileController.text.isEmpty) {
+    if (mobileController.text.trim().isEmpty) {
       setState(() => msg = 'Please enter mobile number');
       return;
     }
@@ -31,17 +39,16 @@ class _PayLoanPageState extends ConsumerState<PayLoanPage> {
     });
 
     try {
-      final userService = UserService();
-      final loans = await userService.searchLoansByMobile(mobileController.text);
-      setState(() => foundLoans = loans);
-      if (loans.isEmpty) {
-        setState(() => msg = 'No loans found for this mobile number');
-      }
+      final loans = await UserService().searchLoansByMobile(mobileController.text.trim());
+      if (!mounted) return;
+      setState(() {
+        foundLoans = loans;
+        msg = loans.isEmpty ? 'No loans found for this mobile number' : '';
+      });
     } catch (e) {
-      print('Search error: $e');
-      setState(() => msg = 'No loans found for this mobile number');
+      if (mounted) setState(() => msg = 'No loans found for this mobile number');
     } finally {
-      setState(() => searchingLoan = false);
+      if (mounted) setState(() => searchingLoan = false);
     }
   }
 
@@ -50,189 +57,173 @@ class _PayLoanPageState extends ConsumerState<PayLoanPage> {
 
     try {
       final ps = PaymentService();
+      final amount = _num(loan['outstandingAmount']).toDouble();
       final data = await ps.createRazorpayOrder(
-        loan['outstandingAmount'],
-        loanId: loan['_id'],
+        amount,
+        loanId: loan['_id']?.toString(),
         isFullPayment: true,
       );
-      final order = data['order'];
-
-      ps.newCheckout(
-        amount: loan['outstandingAmount'],
-        orderId: order['id'],
-        onSuccess: (oid, pid, sig) async {
-          await ps.verifyRazorpay(oid, pid, sig);
-          if (mounted) {
-            setState(() {
-              msg = 'Full loan payment successful!';
-              foundLoans = [];
-              mobileController.clear();
-            });
-          }
-        },
-        onFail: (m) {
-          if (mounted) setState(() => msg = 'Payment failed: $m');
-        },
-      );
+      await ps.openGatewayCheckout(data);
+      if (mounted) {
+        setState(() {
+          msg =
+              'Payment started. Loan status will update after gateway confirmation.';
+          foundLoans = [];
+          mobileController.clear();
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => msg = 'Error: $e');
     }
   }
 
+  static num _num(dynamic value) {
+    if (value is num) return value;
+    return num.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: KhatuColors.bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: Text(
-          'Pay Full Loan',
-          style: TextStyle(color: Colors.black, fontSize: 18.sp),
-        ),
-        iconTheme: const IconThemeData(color: Colors.black),
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: Colors.blueAccent, size: 24.sp),
-          onPressed: () => router.go('/'),
-        ),
+        title: const Text('Pay Full Loan'),
+        leading: const AppBackButton(),
       ),
-      body: Padding(
-        padding: EdgeInsets.all(16.w),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+        children: [
+          const _HeaderCard(),
+          const SizedBox(height: 16),
+          TextField(
+            controller: mobileController,
+            decoration: const InputDecoration(
+              labelText: 'Mobile Number',
+              hintText: 'Search borrower by registered mobile',
+              prefixIcon: Icon(Icons.phone_outlined),
+            ),
+            keyboardType: TextInputType.phone,
+          ),
+          const SizedBox(height: 14),
+          ElevatedButton.icon(
+            onPressed: searchingLoan ? null : _searchLoan,
+            icon: searchingLoan
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.search),
+            label: Text(searchingLoan ? 'Searching...' : 'Search Loans'),
+          ),
+          if (msg.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _MessageBanner(message: msg),
+          ],
+          const SizedBox(height: 12),
+          ...foundLoans.map(
+            (loan) => _LoanCard(
+              loan: loan,
+              onPay: () => _payFullLoan(loan),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeaderCard extends StatelessWidget {
+  const _HeaderCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(colors: [KhatuColors.ink, KhatuColors.deepTeal, KhatuColors.teal]),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: const Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: Colors.white,
+            child: Icon(Icons.account_balance, color: KhatuColors.teal),
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Pay Full Loan for Others', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 18)),
+                SizedBox(height: 4),
+                Text(
+                  'Search a loan by mobile number and clear the full outstanding amount.',
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoanCard extends StatelessWidget {
+  final Map<String, dynamic> loan;
+  final VoidCallback onPay;
+
+  const _LoanCard({required this.loan, required this.onPay});
+
+  @override
+  Widget build(BuildContext context) {
+    final amount = _PayLoanPageState._num(loan['outstandingAmount']);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Pay Full Loan for Others',
-              style: TextStyle(
-                fontSize: 24.sp,
-                fontWeight: FontWeight.bold,
-                color: Colors.blueAccent,
-              ),
+              'Loan ID: ${loan['_id'] ?? '-'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w900, color: KhatuColors.text),
             ),
-            SizedBox(height: 16.h),
+            const SizedBox(height: 8),
             Text(
-              'Enter the loan details to search and pay the full outstanding amount.',
-              style: TextStyle(
-                fontSize: 16.sp,
-                color: Colors.grey,
-              ),
+              'Outstanding Amount: Rs. ${amount.toStringAsFixed(0)}',
+              style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.green),
             ),
-            SizedBox(height: 32.h),
-            TextField(
-              controller: mobileController,
-              decoration: InputDecoration(
-                labelText: 'Mobile Number',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(8.r),
-                ),
-                contentPadding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
-              ),
-              keyboardType: TextInputType.phone,
-              style: TextStyle(fontSize: 16.sp),
+            const SizedBox(height: 14),
+            ElevatedButton.icon(
+              onPressed: onPay,
+              icon: const Icon(Icons.payments_outlined),
+              label: const Text('Pay Full Loan'),
             ),
-            SizedBox(height: 16.h),
-            if (searchingLoan)
-              Center(
-                child: CircularProgressIndicator(
-                  color: Colors.blueAccent,
-                ),
-              )
-            else
-              ElevatedButton(
-                onPressed: _searchLoan,
-                child: Text(
-                  'Search Loans',
-                  style: TextStyle(fontSize: 16.sp),
-                ),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: Size(double.infinity, 48.h),
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8.r),
-                  ),
-                ),
-              ),
-            if (foundLoans.isNotEmpty)
-              Expanded(
-                child: ListView.builder(
-                  itemCount: foundLoans.length,
-                  itemBuilder: (context, index) {
-                    final loan = foundLoans[index];
-                    return Card(
-                      margin: EdgeInsets.only(top: 16.h),
-                      elevation: 2,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12.r),
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.all(16.w),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Loan ID: ${loan['_id']}',
-                              style: TextStyle(
-                                fontSize: 16.sp,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.black,
-                              ),
-                            ),
-                            SizedBox(height: 8.h),
-                            Text(
-                              'Outstanding Amount: ₹${loan['outstandingAmount']}',
-                              style: TextStyle(
-                                fontSize: 16.sp,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.green.shade700,
-                              ),
-                            ),
-                            SizedBox(height: 16.h),
-                            ElevatedButton.icon(
-                              onPressed: () => _payFullLoan(loan),
-                              icon: Icon(
-                                Icons.payment,
-                                size: 20.sp,
-                              ),
-                              label: Text(
-                                'Pay Full Loan',
-                                style: TextStyle(fontSize: 16.sp),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                minimumSize: Size(double.infinity, 48.h),
-                                backgroundColor: Colors.green,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8.r),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            if (msg.isNotEmpty)
-              Padding(
-                padding: EdgeInsets.only(top: 16.h),
-                child: Text(
-                  msg,
-                  style: TextStyle(
-                    color: msg.contains('successful') ? Colors.green : Colors.red,
-                    fontWeight: FontWeight.w500,
-                    fontSize: 14.sp,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _MessageBanner extends StatelessWidget {
+  final String message;
+
+  const _MessageBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final success = message.toLowerCase().contains('successful');
+    final color = success ? Colors.green : Colors.red;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.22)),
+      ),
+      child: Text(message, textAlign: TextAlign.center, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
     );
   }
 }

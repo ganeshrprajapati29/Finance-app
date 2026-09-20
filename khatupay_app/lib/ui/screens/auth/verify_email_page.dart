@@ -1,176 +1,78 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
-import '../../../services/auth_service.dart';
+import '../../../core/auth_storage.dart';
 import '../../../routes/app_router.dart';
+import '../../../services/auth_service.dart';
+import '../../widgets/auth_shell.dart';
 
 class VerifyEmailPage extends StatefulWidget {
-  const VerifyEmailPage({super.key});
-
+  final String? email;
+  const VerifyEmailPage({super.key, this.email});
   @override
   State<VerifyEmailPage> createState() => _VerifyEmailPageState();
 }
-
 class _VerifyEmailPageState extends State<VerifyEmailPage> {
-  final emailController = TextEditingController();
-  final otpController = TextEditingController();
-  String message = '';
-  bool isLoading = false;
-
+  final _otp = TextEditingController();
+  bool _loading = false, _verified = false;
+  int _seconds = 30;
+  Timer? _timer;
+  String? _message;
+  String get _email => (widget.email ?? '').trim().toLowerCase();
+  String get _masked {
+    final parts = _email.split('@');
+    if (parts.length != 2 || parts.first.isEmpty) return _email;
+    final name = parts.first;
+    final hiddenLength = (name.length - 1).clamp(2, 8).toInt();
+    return '${name.substring(0, 1)}${List.filled(hiddenLength, '*').join()}@${parts.last}';
+  }
   @override
-  void dispose() {
-    emailController.dispose();
-    otpController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _verifyEmail() async {
-    setState(() {
-      isLoading = true;
-      message = '';
+  void initState() { super.initState(); _startTimer(); }
+  void _startTimer() {
+    _timer?.cancel(); _seconds = 30;
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      if (_seconds <= 1) { timer.cancel(); setState(() => _seconds = 0); } else { setState(() => _seconds--); }
     });
-
-    try {
-      await AuthService().verifyEmail(emailController.text.trim(), otpController.text.trim());
-      setState(() => message = 'Email verified successfully!');
-      // Navigate to login after successful verification
-      Future.delayed(const Duration(seconds: 2), () {
-        router.go('/login');
-      });
-    } catch (e) {
-      setState(() => message = 'Verification failed: $e');
-    } finally {
-      setState(() => isLoading = false);
-    }
   }
-
+  @override
+  void dispose() { _timer?.cancel(); _otp.dispose(); super.dispose(); }
+  Future<void> _verify() async {
+    if (_loading || _otp.text.length != 6) { setState(() => _message = 'Enter the complete 6-digit verification code.'); return; }
+    setState(() { _loading = true; _message = null; });
+    try {
+      await AuthService().verifyEmail(_email, _otp.text);
+      await AuthStorage.saveLastIdentifier(_email);
+      if (mounted) setState(() => _verified = true);
+    } catch (error) {
+      if (mounted) setState(() => _message = friendlyAuthError(error, fallback: 'We could not verify this code. Please try again.'));
+    } finally { if (mounted) setState(() => _loading = false); }
+  }
+  Future<void> _resend() async {
+    if (_loading || _seconds > 0) return;
+    setState(() { _loading = true; _message = null; });
+    try {
+      await AuthService().resendVerification(_email);
+      if (mounted) { _otp.clear(); _startTimer(); setState(() => _message = 'A new verification code has been sent.'); }
+    } catch (error) {
+      if (mounted) setState(() => _message = friendlyAuthError(error, fallback: 'Unable to resend the code right now.'));
+    } finally { if (mounted) setState(() => _loading = false); }
+  }
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: Text(
-          'Verify Email',
-          style: TextStyle(color: Colors.black, fontSize: 18.sp),
-        ),
-        iconTheme: const IconThemeData(color: Colors.black),
-      ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16.w),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Email Verification',
-              style: TextStyle(
-                fontSize: 24.sp,
-                fontWeight: FontWeight.bold,
-                color: Colors.blueAccent,
-              ),
-            ),
-            SizedBox(height: 8.h),
-            Text(
-              'Enter the OTP sent to your email to verify your account',
-              style: TextStyle(
-                fontSize: 14.sp,
-                color: Colors.grey,
-              ),
-            ),
-            SizedBox(height: 24.h),
-            TextField(
-              controller: emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: InputDecoration(
-                labelText: 'Email Address',
-                prefixIcon: Icon(Icons.email, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-              ),
-            ),
-            SizedBox(height: 16.h),
-            TextField(
-              controller: otpController,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              decoration: InputDecoration(
-                labelText: 'OTP Code',
-                prefixIcon: Icon(Icons.lock_clock, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                counterText: '',
-              ),
-            ),
-            SizedBox(height: 24.h),
-            ElevatedButton(
-              onPressed: isLoading ? null : _verifyEmail,
-              style: ElevatedButton.styleFrom(
-                minimumSize: Size(double.infinity, 48.h),
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-              ),
-              child: Text(
-                isLoading ? 'Verifying...' : 'Verify Email',
-                style: TextStyle(fontSize: 16.sp),
-              ),
-            ),
-            SizedBox(height: 16.h),
-            if (message.isNotEmpty)
-              Container(
-                padding: EdgeInsets.all(12.w),
-                decoration: BoxDecoration(
-                  color: message.contains('successfully') ? Colors.green.shade50 : Colors.red.shade50,
-                  borderRadius: BorderRadius.circular(8.r),
-                  border: Border.all(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                  ),
-                ),
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                    fontSize: 14.sp,
-                  ),
-                ),
-              ),
-            SizedBox(height: 16.h),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  "Didn't receive OTP?",
-                  style: TextStyle(fontSize: 14.sp),
-                ),
-                TextButton(
-                  onPressed: () {
-                    // TODO: Implement resend OTP functionality
-                    setState(() => message = 'OTP resent to your email');
-                  },
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.green,
-                  ),
-                  child: Text(
-                    'Resend',
-                    style: TextStyle(fontSize: 14.sp),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+    if (_verified) {
+      return AuthShell(title: 'Account verified', subtitle: 'Your KhatuPay account is ready.', icon: Icons.check_circle_rounded, illustrationAsset: 'assets/auth/account_verified.png', compactIllustration: true, footerText: '', child: AuthPrimaryButton(label: 'Continue to login', icon: Icons.login_rounded, onPressed: () => router.go('/login')));
+    }
+    return AuthShell(
+      title: 'Verify your email', subtitle: 'Step 2 of 2 · We sent a secure code to $_masked', icon: Icons.email_outlined,
+      illustrationAsset: 'assets/auth/email_verification.png', compactIllustration: true, showBack: true,
+      footerText: 'Change email', onFooterTap: () => router.pop(),
+      child: Column(children: [
+        AuthOtpInput(controller: _otp),
+        if (_message != null) ...[AuthMessage(message: _message!, success: _message!.contains('sent')), const SizedBox(height: 12)],
+        AuthPrimaryButton(label: 'Verify account', loading: _loading, icon: Icons.verified_user_outlined, onPressed: _verify),
+        const SizedBox(height: 8),
+        TextButton.icon(onPressed: _seconds == 0 && !_loading ? _resend : null, icon: const Icon(Icons.refresh_rounded), label: Text(_seconds == 0 ? 'Resend code' : 'Resend code in ${_seconds}s')),
+      ]),
     );
   }
 }

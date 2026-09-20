@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
 
 // JWT Token verification function
 export function verifyToken(token, type = 'access') {
@@ -18,7 +19,7 @@ export function verifyToken(token, type = 'access') {
 }
 
 // Main authentication middleware
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   
@@ -31,7 +32,22 @@ export function requireAuth(req, res, next) {
   }
   
   try {
-    req.user = verifyToken(token, 'access');
+    const payload = verifyToken(token, 'access');
+    const user = await User.findById(payload.uid).select('status sessionVersion roles').lean();
+    if (!user) {
+      return res.status(401).json({ success: false, code: 'USER_NOT_FOUND', message: 'Account not found' });
+    }
+    if (user.status === 'blocked') {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_BLOCKED',
+        message: 'Your account is temporarily blocked. Please contact Khatu Pay support.',
+      });
+    }
+    if ((payload.sv || 0) !== (user.sessionVersion || 0)) {
+      return res.status(401).json({ success: false, code: 'SESSION_REVOKED', message: 'Your session has ended. Please sign in again.' });
+    }
+    req.user = { ...payload, roles: user.roles || payload.roles || [] };
     next();
   } catch (error) {
     return res.status(401).json({ 
@@ -62,7 +78,7 @@ export function optionalAuth(req, res, next) {
 // Admin role check middleware
 export function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
-    if (req.user && req.user.role === 'admin') {
+    if (req.user && (req.user.role === 'admin' || req.user.roles?.includes('admin'))) {
       next();
     } else {
       return res.status(403).json({
@@ -77,7 +93,7 @@ export function requireAdmin(req, res, next) {
 // Employee role check middleware
 export function requireEmployee(req, res, next) {
   requireAuth(req, res, () => {
-    if (req.user && (req.user.role === 'employee' || req.user.role === 'admin')) {
+    if (req.user && (req.user.role === 'employee' || req.user.role === 'admin' || req.user.roles?.some(role => ['employee', 'admin'].includes(role)))) {
       next();
     } else {
       return res.status(403).json({

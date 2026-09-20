@@ -26,6 +26,7 @@ import Pricing from './pages/Pricing.jsx'
 import UserAuth from './pages/UserAuth.jsx'
 import UserPortal from './pages/UserPortal.jsx'
 import PaymentReturn from './pages/PaymentReturn.jsx'
+import MerchantPay from './pages/MerchantPay.jsx'
 
 // Auth Pages
 import Login from './pages/Login.jsx'
@@ -88,6 +89,7 @@ import ClubAPIBills from './pages/ClubAPIBills.jsx'
 import ClubAPISettings from './pages/ClubAPISettings.jsx'
 import ClubAPITools from './pages/ClubAPITools.jsx'
 import ClubAPIFundRequests from './pages/ClubAPIFundRequests.jsx'
+import ServiceCatalog from './pages/ServiceCatalog.jsx'
 
 // Employee
 import EmployeeDashboard from './pages/EmployeeDashboard.jsx'
@@ -137,6 +139,7 @@ export function AppContent() {
         <Route path="/payment-timeout" element={<PaymentReturn />} />
         <Route path="/refund-success" element={<PaymentReturn />} />
         <Route path="/payment-history" element={<Navigate to="/user/portal" replace />} />
+        <Route path="/pay/merchant/:merchantId" element={<MerchantPay />} />
       </Route>
 
       {/* Login Routes */}
@@ -208,6 +211,7 @@ export function AppContent() {
         <Route path="/clubapi/bills" element={<ClubAPIBills />} />
         <Route path="/clubapi/tools" element={<ClubAPITools />} />
         <Route path="/clubapi/settings" element={<ClubAPISettings />} />
+        <Route path="/clubapi/services" element={<ServiceCatalog />} />
 
         <Route path="/audit" element={<Audit />} />
       </Route>

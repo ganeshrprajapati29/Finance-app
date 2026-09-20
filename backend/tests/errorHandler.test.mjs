@@ -244,3 +244,58 @@ test('timing-safe comparison rejects a length mismatch instead of throwing', () 
   assert.equal(compare('deadbeef', 'deadbeef'), true);
   assert.equal(compare('deadbeef', 'deadbeee'), false);
 });
+
+/* ------------------------------------------------ payment gateway failures */
+
+test('a Razorpay SDK rejection becomes a 502 gateway error, never a 401', async () => {
+  // Exactly what the razorpay Node SDK rejects with for bad credentials.
+  const sdkError = { statusCode: 401, error: { code: 'BAD_REQUEST_ERROR', description: 'Authentication failed' } };
+
+  const res = mockRes();
+  await quiet(() => errorHandler(sdkError, req, res, () => {}));
+
+  assert.equal(res._status, 502, 'a gateway 401 must not look like an expired login');
+  assert.equal(res._body.code, 'PAYMENT_GATEWAY_ERROR');
+  assert.match(res._body.message, /gateway authentication failed/);
+  assert.doesNotMatch(res._body.message, /^Something went wrong/);
+});
+
+test('a Razorpay validation rejection surfaces its reason', async () => {
+  const sdkError = { statusCode: 400, error: { code: 'BAD_REQUEST_ERROR', description: 'The amount must be at least INR 1.00' } };
+
+  const res = mockRes();
+  await quiet(() => errorHandler(sdkError, req, res, () => {}));
+
+  assert.equal(res._status, 502);
+  assert.match(res._body.message, /amount must be at least INR 1\.00/);
+});
+
+test('exposed 5xx messages are shown instead of the generic text', async () => {
+  const err = new Error('Payments are temporarily unavailable. Please try again later.');
+  err.status = 503;
+  err.code = 'PAYMENT_GATEWAY_UNCONFIGURED';
+  err.expose = true;
+
+  const res = mockRes();
+  await quiet(() => errorHandler(err, req, res, () => {}));
+
+  assert.equal(res._status, 503);
+  assert.match(res._body.message, /^Payments are temporarily unavailable/);
+});
+
+test('unexpected 5xx errors carry a reference for the server log', async () => {
+  const res = mockRes();
+  let logged = '';
+  const { error } = console;
+  console.error = (...args) => { logged += args.map(String).join(' '); };
+  try {
+    errorHandler(new Error('boom'), req, res, () => {});
+  } finally {
+    console.error = error;
+  }
+
+  assert.equal(res._status, 500);
+  assert.match(res._body.data.ref, /^E[0-9A-F]{6}$/);
+  assert.ok(res._body.message.endsWith(`(Ref: ${res._body.data.ref})`), res._body.message);
+  assert.ok(logged.includes(`ref=${res._body.data.ref}`), 'the same ref is written to the log');
+});

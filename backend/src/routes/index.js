@@ -5,10 +5,30 @@ import Payment from '../models/Payment.js';
 import { ok } from '../utils/response.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { requireRole } from '../middlewares/role.js';
+import Settings from '../models/Settings.js';
 
 const router = Router();
 
 router.get('/health', (req,res)=> ok(res, { status:'ok', time:new Date().toISOString() }));
+
+router.get('/app-version/android', async (req, res, next) => {
+  try {
+    const settings = await Settings.findOne().select('appUpdate.android').lean();
+    const policy = settings?.appUpdate?.android || {};
+    ok(res, {
+      platform: 'android',
+      latestVersion: policy.latestVersion || '1.0.1',
+      latestBuild: Number(policy.latestBuild || 32),
+      minimumSupportedBuild: Number(policy.minimumSupportedBuild || 32),
+      forceUpdate: policy.forceUpdate === true,
+      message: policy.message || 'A new Khatu Pay update is available. Update now to continue.',
+      storeUrl: policy.storeUrl || 'https://play.google.com/store/apps/details?id=com.finance.khatupay',
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
 router.get('/public/overview', async (req, res, next) => {
   try {

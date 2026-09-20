@@ -23,12 +23,16 @@ class UserService {
   }
 
   /// 🔹 Update profile info
-  Future<void> updateMe({String? name, String? mobile}) async {
+  Future<void> updateMe({String? name, String? mobile, String? upiId}) async {
     try {
       final token = await AuthStorage.getAccessToken();
+      final data = <String, dynamic>{};
+      if (name != null) data['name'] = name;
+      if (mobile != null) data['mobile'] = mobile;
+      if (upiId != null) data['upiId'] = upiId;
       await _dio.put(
         '/users/me',
-        data: {'name': name, 'mobile': mobile},
+        data: data,
         options: Options(headers: {'Authorization': 'Bearer $token'}),
       );
     } on DioException catch (e) {
@@ -37,10 +41,16 @@ class UserService {
   }
 
   /// 🔹 Upload KYC documents
-  Future<void> uploadKyc(List<String> filePaths) async {
+  Future<void> uploadKyc({
+    required List<String> filePaths,
+    required String documentType,
+    required String documentNumber,
+  }) async {
     try {
       final token = await AuthStorage.getAccessToken();
       final form = FormData();
+      form.fields.add(MapEntry('documentType', documentType));
+      form.fields.add(MapEntry('documentNumber', documentNumber));
 
       for (final path in filePaths) {
         form.files.add(MapEntry(
@@ -61,6 +71,60 @@ class UserService {
       );
     } on DioException catch (e) {
       throw e.response?.data['message'] ?? 'KYC upload failed';
+    }
+  }
+
+  Future<Map<String, dynamic>> sendAadhaarOtp({
+    required String aadhaarNumber,
+    String? aadhaarMobile,
+  }) async {
+    try {
+      final response = await _dio.post('/kyc/me/aadhaar/send-otp', data: {
+        'aadhaarNumber': aadhaarNumber,
+        if (aadhaarMobile != null && aadhaarMobile.isNotEmpty) 'aadhaarMobile': aadhaarMobile,
+      });
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Aadhaar OTP send failed';
+    }
+  }
+
+  Future<Map<String, dynamic>> verifyAadhaarOtp({
+    required String aadhaarNumber,
+    required String otp,
+    String? aadhaarMobile,
+    String? otpSessionId,
+    String? urid,
+  }) async {
+    try {
+      final response = await _dio.post('/kyc/me/aadhaar/verify-otp', data: {
+        'aadhaarNumber': aadhaarNumber,
+        'otp': otp,
+        if (aadhaarMobile != null && aadhaarMobile.isNotEmpty) 'aadhaarMobile': aadhaarMobile,
+        if (otpSessionId != null && otpSessionId.isNotEmpty) 'otpSessionId': otpSessionId,
+        if (urid != null && urid.isNotEmpty) 'urid': urid,
+      });
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Aadhaar OTP verification failed';
+    }
+  }
+
+  Future<Map<String, dynamic>> verifyPan(String pan) async {
+    try {
+      final response = await _dio.post('/kyc/me/pan/verify', data: {'pan': pan});
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'PAN verification failed';
+    }
+  }
+
+  Future<Map<String, dynamic>> validateUpi(String upiId) async {
+    try {
+      final response = await _dio.post('/utility/validate-upi', data: {'upiId': upiId});
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'UPI validation failed';
     }
   }
 
@@ -116,6 +180,55 @@ class UserService {
       return [];
     } on DioException catch (e) {
       throw e.response?.data['message'] ?? 'Failed to search loans';
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// 🔹 Fetch this user's app settings (e.g. push notification preference)
+  Future<Map<String, dynamic>> getSettings() async {
+    try {
+      final token = await AuthStorage.getAccessToken();
+      final res = await _dio.get(
+        '/users/me/settings',
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+      return Map<String, dynamic>.from(res.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Failed to fetch settings';
+    }
+  }
+
+  /// 🔹 Update this user's app settings
+  Future<void> updateSettings({bool? notificationsEnabled}) async {
+    try {
+      final token = await AuthStorage.getAccessToken();
+      final data = <String, dynamic>{};
+      if (notificationsEnabled != null) data['notificationsEnabled'] = notificationsEnabled;
+      await _dio.put(
+        '/users/me/settings',
+        data: data,
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Failed to update settings';
+    }
+  }
+
+  Future<Map<String, dynamic>> resolveUpiByMobile(String mobile) async {
+    try {
+      final response = await _dio.post('/users/resolve-upi', data: {
+        'mobile': mobile,
+      });
+      if (response.data == null ||
+          response.data['data'] == null ||
+          response.data['ok'] == false ||
+          response.data['success'] == false) {
+        throw 'Receiver not found';
+      }
+      return Map<String, dynamic>.from(response.data['data']);
+    } on DioException catch (e) {
+      throw e.response?.data['message'] ?? 'Unable to find receiver';
     } catch (e) {
       rethrow;
     }

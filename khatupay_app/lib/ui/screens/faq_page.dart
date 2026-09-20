@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/faq_providers.dart';
-import '../../routes/app_router.dart';
+import '../widgets/app_back_button.dart';
 
 class FAQPage extends ConsumerWidget {
   const FAQPage({super.key});
@@ -12,10 +12,7 @@ class FAQPage extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('FAQs'),
-        leading: IconButton(
-          icon: const Icon(Icons.home),
-          onPressed: () => router.go('/'),
-        ),
+        leading: const AppBackButton(),
       ),
       body: RefreshIndicator(
         onRefresh: () async => ref.invalidate(faqsProvider),

@@ -8,22 +8,30 @@ import Bill from '../models/Bill.js';
 import User from '../models/User.js';
 import QRStickerOrder from '../models/QRStickerOrder.js';
 import PaymentChatMessage from '../models/PaymentChatMessage.js';
+import ClubAPITransaction from '../models/ClubAPITransaction.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { requireRole } from '../middlewares/role.js';
 import { ok, fail } from '../utils/response.js';
 import { applyPaymentToSchedule, isScheduleFullyPaid } from '../utils/loanSettlement.js';
 import {
-  getRazorpay,
+  createRazorpayOrder,
   razorpayKeyId,
   razorpayKeySecret,
   requireWebhookSecret,
+  razorpayRefundState,
   toPaise,
 } from '../services/razorpay.js';
 import fraudCheck from '../middlewares/fraudCheck.js';
 import { emitToUser } from '../realtime.js';
 import { ensurePaymentInvoice } from '../services/paymentInvoiceService.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
-import { processPaidBbpsBill, processPaidRecharge, refundUnprocessedServicePayment } from '../services/rechargePaymentService.js';
+import { runServicePayment } from '../services/rechargePaymentService.js';
+import { ServiceError } from '../services/serviceCatalogService.js';
+import {
+  publicServiceTransaction,
+  resolveLegacyServicePayment,
+  resolveServicePayment,
+} from '../services/servicePaymentService.js';
 
 const router = express.Router();
 
@@ -54,6 +62,36 @@ const clubapiBillSchema = Joi.object({
   opvalue5: Joi.string().allow('', null)
 });
 
+/**
+ * Recharge / bill payment request from the app. Only identifiers and the
+ * amount come from the client; operator ids, biller ids, account values and
+ * amount limits are resolved on the server (servicePaymentService.js).
+ */
+const serviceSchema = Joi.object({
+  key: Joi.string().valid('mobile', 'dth', 'credit_card', 'electricity', 'fastag').required(),
+  providerId: Joi.string().trim().required(),
+  amount: Joi.number().positive().max(100000).required(),
+  accountNumber: Joi.string().trim().max(64).allow('', null),
+  fetchId: Joi.string().trim().max(40).allow('', null),
+  customerMobile: Joi.string().trim().allow('', null),
+  fields: Joi.object().pattern(/^(mobile|opvalue[1-5])$/, Joi.string().allow('').max(64)).allow(null),
+});
+
+/**
+ * Resolves a service payment (new `service` payload or the legacy
+ * `recharge` / `clubapiBill` shapes) into a server-verified amount, payment
+ * type and metadata. Returns null when the request is not a service payment.
+ */
+async function resolveServiceRequest({ userId, service, recharge, clubapiBill, amount }) {
+  if (service) return resolveServicePayment({ userId, service });
+  if (recharge || clubapiBill) return resolveLegacyServicePayment({ userId, recharge, clubapiBill, amount });
+  return null;
+}
+
+function sendServiceError(res, error) {
+  return fail(res, error.code, error.message, error.status, error.data);
+}
+
 function serviceLabel(type) {
   return type === 'RECHARGE' ? 'recharge' : 'bill payment';
 }
@@ -83,7 +121,7 @@ function signatureMatches(expected, received) {
  * Callers that lose the race still get the confirmed payment back (with
  * `wasConfirmed: true`) so they can respond with success rather than an error.
  */
-async function completeConfirmedPayment(p, gatewayPaymentId = '') {
+async function completeConfirmedPayment(p, gatewayPaymentId = '', { serviceWaitMs = 8000 } = {}) {
   const resolvedPaymentId = gatewayPaymentId || p.gateway?.paymentId || '';
 
   const claimed = await Payment.findOneAndUpdate(
@@ -108,7 +146,14 @@ async function completeConfirmedPayment(p, gatewayPaymentId = '') {
       current.gateway = { ...(current.gateway || {}), paymentId: resolvedPaymentId };
       await current.save();
     }
-    return { payment: current || p, clubapi: null, wasConfirmed: true };
+    // The winner (usually the webhook) may have started the recharge / bill in
+    // the background. runServicePayment is idempotent, so this just returns
+    // that transaction for the app to track - or starts it if it never began.
+    const clubapi =
+      current && current.status === 'CONFIRMED' && ['RECHARGE', 'BBPS_BILL'].includes(current.type)
+        ? await runServicePayment(current, { waitMs: serviceWaitMs })
+        : null;
+    return { payment: current || p, clubapi, wasConfirmed: true };
   }
 
   p = claimed;
@@ -118,19 +163,11 @@ async function completeConfirmedPayment(p, gatewayPaymentId = '') {
     await User.findByIdAndUpdate(p.userId, { $inc: { walletBalance: p.amount } });
   }
 
+  // Recharges and bill payments go to ClubAPI. runServicePayment never blocks
+  // longer than serviceWaitMs and handles its own refunds and notifications.
   let clubapiResult = null;
   if (['RECHARGE', 'BBPS_BILL'].includes(p.type)) {
-    try {
-      clubapiResult = p.type === 'RECHARGE'
-        ? await processPaidRecharge(p)
-        : await processPaidBbpsBill(p);
-    } catch (error) {
-      const refund = await refundUnprocessedServicePayment(
-        p,
-        error.message || `${serviceLabel(p.type)} could not be processed`
-      );
-      clubapiResult = { transaction: null, refund, error: error.message };
-    }
+    clubapiResult = await runServicePayment(p, { waitMs: serviceWaitMs });
   }
 
   if (p.metadata?.stickerOrderId) {
@@ -181,18 +218,9 @@ async function completeConfirmedPayment(p, gatewayPaymentId = '') {
   await ensurePaymentInvoice(p);
 
   // Reached only on the winning claim, so each notification fires once.
-  if (clubapiResult?.refund) {
-    await notifyUserSmart(p.userId, 'service_refunded', {
-      amount: p.amount,
-      payment: p,
-      refundedToWallet: clubapiResult.refund?.status === 'WALLET_CREDITED',
-      data: {
-        paymentId: String(p._id),
-        khatuPaymentId: p.khatuPaymentId,
-        paymentType: p.type,
-      },
-    });
-  } else {
+  // Recharges and bill payments notify from the service layer when the
+  // operator confirms (or refund), not when the gateway does.
+  if (!['RECHARGE', 'BBPS_BILL'].includes(p.type)) {
     await notifyUserSmart(p.userId, 'payment_confirmed', {
       amount: p.amount,
       payment: p,
@@ -230,6 +258,8 @@ function paymentStatusPayload(payment) {
     gateway: payment.gateway,
     serviceStatus: payment.metadata?.recharge?.clubapiStatus || payment.metadata?.clubapiBill?.clubapiStatus || null,
     clubapiTransactionId: payment.metadata?.clubapiTransactionId || null,
+    // Recharge / bill reference the app tracks via /api/services/transactions/:urid
+    serviceUrid: payment.metadata?.recharge?.urid || payment.metadata?.clubapiBill?.urid || null,
     refund: payment.metadata?.refund || null
   };
 }
@@ -237,7 +267,7 @@ function paymentStatusPayload(payment) {
 // 1) Create Razorpay Order (loan repayment / bill payment / P2P payment / generic)
 router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) => {
   try {
-    const { amount, currency = 'INR', loanId = null, billId = null, installmentNo = null, isFullPayment = false, walletTopup = false, recharge = null, clubapiBill = null, notes = {}, payeeUserId = null, payeeVPA = null, payeeName = null, payeeMobile = null, payeeNote = null } =
+    const { amount, currency = 'INR', loanId = null, billId = null, installmentNo = null, isFullPayment = false, walletTopup = false, recharge = null, clubapiBill = null, service = null, notes = {}, payeeUserId = null, payeeVPA = null, payeeName = null, payeeMobile = null, payeeNote = null } =
       await Joi.object({
         amount: Joi.number().min(1).max(100000).required(),
         currency: Joi.string().default('INR'),
@@ -248,6 +278,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
         walletTopup: Joi.boolean().default(false),
         recharge: rechargeSchema.allow(null).default(null),
         clubapiBill: clubapiBillSchema.allow(null).default(null),
+        service: serviceSchema.allow(null).default(null),
         notes: Joi.object().default({}),
         payeeUserId: Joi.string().allow(null, '').default(null),
         payeeVPA: Joi.string().allow(null, '').default(null),
@@ -287,11 +318,33 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
       }
     }
 
-    // Throws a clean 503 (never a 500 with gateway internals) when the
-    // Razorpay credentials are not configured on this deployment.
-    const rz = getRazorpay();
+    // Recharges and bill payments: amount, operator and biller are all
+    // re-derived server-side. The client amount must match what was resolved.
+    let serviceResolution = null;
+    try {
+      serviceResolution = await resolveServiceRequest({
+        userId: req.user.uid,
+        service,
+        recharge,
+        clubapiBill,
+        amount,
+      });
+    } catch (error) {
+      if (error instanceof ServiceError) return sendServiceError(res, error);
+      throw error;
+    }
+    if (serviceResolution) {
+      if (Math.abs(Number(amount) - serviceResolution.amount) > 0.009) {
+        return fail(res, 'AMOUNT_MISMATCH', 'The amount changed. Please review and try again.', 400);
+      }
+      payableAmount = serviceResolution.amount;
+    }
+
+    // Throws a clean 503 when Razorpay is not configured, and a 502 carrying
+    // Razorpay's own reason when it rejects the order (bad keys, account not
+    // activated...) - never an opaque "Something went wrong".
     const receipt = `KP-${Date.now()}`;
-    const order = await rz.orders.create({
+    const order = await createRazorpayOrder({
       // Rupees -> integer paise. Math.round avoids float drift turning
       // 1234.56 into 123455 paise.
       amount: toPaise(payableAmount),
@@ -300,7 +353,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
       notes
     });
 
-    const type = recharge ? 'RECHARGE' : (clubapiBill ? 'BBPS_BILL' : (walletTopup ? 'WALLET_TOPUP' : (isFullPayment ? 'FULL_REPAYMENT' : (loanId ? 'REPAYMENT' : (billId ? 'BILL' : (payeeVPA ? 'P2P' : 'OTHER'))))));
+    const type = serviceResolution ? serviceResolution.paymentType : (walletTopup ? 'WALLET_TOPUP' : (isFullPayment ? 'FULL_REPAYMENT' : (loanId ? 'REPAYMENT' : (billId ? 'BILL' : (payeeVPA ? 'P2P' : 'OTHER')))));
     const payment = await Payment.create({
       userId: req.user.uid,
       loanId,
@@ -314,18 +367,9 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
       gateway: { provider: 'razorpay', orderId: order.id },
       payeeUserId: payeeUserId || undefined,
       payeeDetails: payeeVPA ? { vpa: payeeVPA, name: payeeName, mobile: payeeMobile, note: payeeNote } : undefined,
-      metadata: recharge ? {
-        notes: notes?.purpose || 'recharge_payment',
-        recharge: { ...recharge, amount }
-      } : (clubapiBill ? {
-        notes: notes?.purpose || 'bbps_bill_payment',
-        clubapiBill: {
-          ...clubapiBill,
-          bbpsId: clubapiBill.bbpsId || clubapiBill.operatorId,
-          mobile: clubapiBill.mobile || clubapiBill.accountRef,
-          amount
-        }
-      } : { notes: notes?.purpose || notes?.note || '' })
+      metadata: serviceResolution
+        ? serviceResolution.metadata
+        : { notes: notes?.purpose || notes?.note || '' }
     });
 
     ok(
@@ -336,6 +380,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
         khatuPaymentId: payment.khatuPaymentId,
         amount: payableAmount,
         currency,
+        service: serviceResolution?.summary || null,
         // Public key only. The secret never leaves the server.
         key_id: razorpayKeyId(),
       },
@@ -369,7 +414,14 @@ router.post('/razorpay/verify', requireAuth, async (req, res, next) => {
       return fail(res, 'BAD_SIGNATURE', 'This payment could not be verified.', 400);
     }
 
-    const p = await Payment.findOne({ 'gateway.orderId': razorpay_order_id });
+    // The callback belongs to the signed-in customer who created the order.
+    // The Razorpay signature proves the gateway response; this ownership
+    // condition additionally prevents one account from confirming another
+    // account's payment if callback values are ever exposed or replayed.
+    const p = await Payment.findOne({
+      userId: req.user.uid,
+      'gateway.orderId': razorpay_order_id,
+    });
     if (!p) return fail(res, 'PAYMENT_NOT_FOUND', 'Payment not found', 404);
 
     const { payment, clubapi: clubapiResult, wasConfirmed } =
@@ -387,6 +439,14 @@ router.post('/razorpay/verify', requireAuth, async (req, res, next) => {
         status: payment.status,
         recharge: clubapiResult,
         clubapi: clubapiResult,
+        // The recharge / bill transaction to track (null for other payments).
+        service:
+          publicServiceTransaction(
+            clubapiResult?.transaction ||
+              (['RECHARGE', 'BBPS_BILL'].includes(payment.type)
+                ? await ClubAPITransaction.findOne({ paymentId: payment._id })
+                : null)
+          ) || null,
       },
       'Payment verified',
       { code: 'PAYMENT_VERIFIED' }
@@ -450,90 +510,79 @@ router.post('/wallet/pay', requireAuth, async (req, res, next) => {
 // Pay a mobile/DTH recharge or a BBPS bill straight from wallet balance (no Razorpay hop)
 router.post('/wallet/service', requireAuth, fraudCheck, async (req, res, next) => {
   try {
-    const { amount, recharge, clubapiBill } = await Joi.object({
+    const { amount, recharge, clubapiBill, service } = await Joi.object({
       amount: Joi.number().min(1).max(100000).required(),
       recharge: rechargeSchema.allow(null).default(null),
-      clubapiBill: clubapiBillSchema.allow(null).default(null)
+      clubapiBill: clubapiBillSchema.allow(null).default(null),
+      service: serviceSchema.allow(null).default(null)
     }).validateAsync(req.body);
 
-    if (!recharge && !clubapiBill) {
+    let resolution;
+    try {
+      resolution = await resolveServiceRequest({
+        userId: req.user.uid,
+        service,
+        recharge,
+        clubapiBill,
+        amount,
+      });
+    } catch (error) {
+      if (error instanceof ServiceError) return sendServiceError(res, error);
+      throw error;
+    }
+    if (!resolution) {
       return fail(res, 'SERVICE_DETAILS_REQUIRED', 'Recharge or bill details are required.', 400);
     }
-
-    const user = await User.findById(req.user.uid);
-    if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
-    if ((user.walletBalance || 0) < amount) {
-      return fail(res, 'INSUFFICIENT_WALLET', 'Wallet balance is not enough. Please add money or pay with Razorpay instead.', 400);
+    if (Math.abs(Number(amount) - resolution.amount) > 0.009) {
+      return fail(res, 'AMOUNT_MISMATCH', 'The amount changed. Please review and try again.', 400);
     }
 
-    user.walletBalance = (user.walletBalance || 0) - amount;
-    await user.save();
+    const payable = resolution.amount;
 
-    const type = recharge ? 'RECHARGE' : 'BBPS_BILL';
-    const payment = await Payment.create({
-      userId: req.user.uid,
-      type,
-      amount,
-      method: 'WALLET',
-      reference: `WALLET-${Date.now()}`,
-      status: 'CONFIRMED',
-      metadata: recharge ? {
-        notes: 'recharge_payment',
-        recharge: { ...recharge, amount }
-      } : {
-        notes: 'bbps_bill_payment',
-        clubapiBill: {
-          ...clubapiBill,
-          bbpsId: clubapiBill.bbpsId || clubapiBill.operatorId,
-          mobile: clubapiBill.mobile || clubapiBill.accountRef,
-          amount
-        }
-      }
-    });
+    // Atomic debit: the balance check and the deduction are one operation, so
+    // two taps (or two devices) can never spend the same rupee twice.
+    const debited = await User.findOneAndUpdate(
+      { _id: req.user.uid, walletBalance: { $gte: payable } },
+      { $inc: { walletBalance: -payable } },
+      { new: true, projection: { walletBalance: 1 } }
+    );
+    if (!debited) {
+      return fail(
+        res,
+        'INSUFFICIENT_WALLET',
+        'Wallet balance is not enough. Please add money or pay with UPI / card instead.',
+        400
+      );
+    }
 
-    let clubapiResult;
+    let payment;
     try {
-      clubapiResult = type === 'RECHARGE'
-        ? await processPaidRecharge(payment)
-        : await processPaidBbpsBill(payment);
+      payment = await Payment.create({
+        userId: req.user.uid,
+        type: resolution.paymentType,
+        amount: payable,
+        method: 'WALLET',
+        reference: `WALLET-${Date.now()}`,
+        status: 'CONFIRMED',
+        metadata: { ...resolution.metadata, paymentDate: new Date() }
+      });
     } catch (error) {
-      // processPaidRecharge/processPaidBbpsBill refund internally on ClubAPI failure;
-      // this only guards the rare case where they throw before that (e.g. bad metadata).
-      await User.findByIdAndUpdate(req.user.uid, { $inc: { walletBalance: amount } });
+      // Nothing was sent anywhere yet - give the money straight back.
+      await User.findByIdAndUpdate(req.user.uid, { $inc: { walletBalance: payable } });
       throw error;
     }
 
+    const result = await runServicePayment(payment, { waitMs: 8000 });
     await ensurePaymentInvoice(payment);
+
     const refreshedUser = await User.findById(req.user.uid).select('walletBalance');
-
-    await notifyUserSmart(req.user.uid, 'payment_confirmed', {
-      amount,
-      payment,
-      data: {
-        paymentId: String(payment._id),
-        khatuPaymentId: payment.khatuPaymentId,
-        paymentType: payment.type,
-      },
-    });
-
-    if (clubapiResult?.transaction?.status === 'failed') {
-      await notifyUserSmart(req.user.uid, 'service_refunded', {
-        amount,
-        payment,
-        refundedToWallet: true,
-        data: {
-          paymentId: String(payment._id),
-          khatuPaymentId: payment.khatuPaymentId,
-          paymentType: payment.type,
-        },
-      });
-    }
 
     ok(res, {
       payment,
-      walletBalance: refreshedUser?.walletBalance ?? user.walletBalance,
-      clubapi: clubapiResult
-    }, `Wallet ${serviceLabel(type)} request processed`);
+      walletBalance: refreshedUser?.walletBalance ?? debited.walletBalance,
+      clubapi: result,
+      service: publicServiceTransaction(result?.transaction) || null
+    }, `Wallet ${serviceLabel(resolution.paymentType)} request processed`);
   } catch (e) { next(e); }
 });
 
@@ -599,7 +648,9 @@ router.post(
 
         const p = await Payment.findOne({ 'gateway.orderId': orderId });
         if (p) {
-          await completeConfirmedPayment(p, paymentId);
+          // Razorpay expects a fast webhook response; service work continues
+          // in the background and is idempotent with the verify call.
+          await completeConfirmedPayment(p, paymentId, { serviceWaitMs: 0 });
         }
       }
 
@@ -655,19 +706,58 @@ router.post(
       if (event.event === 'refund.processed') {
         const entity = event.payload?.refund?.entity || {};
         const paymentId = entity.payment_id;
+        const refundId = String(entity.id || '').trim();
+        const refundAmountPaise = Number(entity.amount || 0);
         const p = await Payment.findOne({ 'gateway.paymentId': paymentId });
-        if (p) {
-          p.status = 'REFUNDED';
-          p.metadata = {
-            ...(p.metadata?.toObject?.() || p.metadata || {}),
-            razorpayRefund: {
-              id: entity.id || '',
-              amount: Number(entity.amount || 0) / 100,
-              status: entity.status || 'processed',
-              processedAt: new Date(),
+        if (p && refundId && Number.isSafeInteger(refundAmountPaise) && refundAmountPaise > 0) {
+          // Claim this Razorpay refund ID once. Razorpay retries webhooks, so
+          // without the filter the same partial refund would be counted more
+          // than once and could incorrectly mark the whole payment refunded.
+          // $inc also keeps two different refund webhooks safe if they arrive
+          // concurrently; neither can overwrite the other's amount.
+          const claimed = await Payment.findOneAndUpdate(
+            {
+              _id: p._id,
+              'metadata.razorpayRefund.refundIds': { $ne: refundId },
             },
-          };
-          await p.save();
+            {
+              $set: {
+                'metadata.razorpayRefund.lastRefundId': refundId,
+                'metadata.razorpayRefund.lastRefundAmountPaise': refundAmountPaise,
+                'metadata.razorpayRefund.lastProcessedAt': new Date(),
+              },
+              $inc: {
+                'metadata.razorpayRefund.totalAmountPaise': refundAmountPaise,
+              },
+              $addToSet: {
+                'metadata.razorpayRefund.refundIds': refundId,
+              },
+            },
+            { new: true }
+          );
+
+          if (claimed) {
+            const totalRefundedPaise = Number(
+              claimed.metadata?.razorpayRefund?.totalAmountPaise || 0
+            );
+            const refundState = razorpayRefundState(claimed.amount, totalRefundedPaise);
+            const refundUpdate = {
+              'metadata.razorpayRefund.status': refundState.fullyRefunded
+                ? 'FULL'
+                : 'PARTIAL',
+              'metadata.razorpayRefund.totalAmount': totalRefundedPaise / 100,
+            };
+            if (refundState.fullyRefunded) refundUpdate.status = 'REFUNDED';
+            await Payment.updateOne(
+              { _id: claimed._id },
+              {
+                // A partial webhook never writes the payment status. This
+                // prevents a slower partial handler from reverting a FULL
+                // refund that another concurrent webhook just completed.
+                $set: refundUpdate,
+              }
+            );
+          }
         }
       }
 

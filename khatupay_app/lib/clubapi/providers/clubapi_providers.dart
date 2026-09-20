@@ -50,7 +50,8 @@ class BillFetchNotifier extends StateNotifier<AsyncValue<ClubAPIBill?>> {
 // Transaction history provider
 final transactionHistoryProvider = FutureProvider<List<ClubAPITransaction>>((ref) async {
   final service = ref.read(clubAPIServiceProvider);
-  return service.getTransactionHistory();
+  // Only real payments - bill fetches are lookups, not transactions.
+  return service.getTransactionHistory(type: 'mobile,dth,bill_payment');
 });
 
 // Recharge state

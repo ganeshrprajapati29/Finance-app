@@ -61,28 +61,35 @@ router.get('/summary', async (req, res, next) => {
  */
 router.get('/', async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, unreadOnly = false } = req.query;
+    const { page = 1, limit = 20, unreadOnly = false, category } = req.query;
+
+    const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const safeLimit = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 20));
 
     const query = { userId: req.user.uid };
     if (unreadOnly === 'true') {
       query.isRead = false;
     }
+    if (category && category !== 'all') {
+      query.$or = [{ category: String(category).toLowerCase() }, { type: String(category).toLowerCase() }];
+    }
 
     const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .populate('userId', 'name email');
+      .limit(safeLimit)
+      .skip((safePage - 1) * safeLimit)
+      .lean();
 
     const total = await Notification.countDocuments(query);
 
     ok(res, {
       notifications,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: safePage,
+        limit: safeLimit,
         total,
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(total / safeLimit),
+        hasMore: safePage * safeLimit < total,
       },
     });
   } catch (e) {
@@ -99,7 +106,7 @@ router.put('/:id/read', async (req, res, next) => {
   try {
     const notification = await Notification.findOneAndUpdate(
       { _id: req.params.id, userId: req.user.uid },
-      { isRead: true, updatedAt: new Date() },
+      { isRead: true, readAt: new Date(), updatedAt: new Date() },
       { new: true }
     );
 
@@ -122,12 +129,26 @@ router.put('/read-all', async (req, res, next) => {
   try {
     const result = await Notification.updateMany(
       { userId: req.user.uid, isRead: false },
-      { isRead: true, updatedAt: new Date() }
+      { isRead: true, readAt: new Date(), updatedAt: new Date() }
     );
 
     ok(res, { updatedCount: result.modifiedCount }, 'All notifications marked as read');
   } catch (e) {
     console.error('Mark all read error:', e.message);
+    next(e);
+  }
+});
+
+router.put('/:id/unread', async (req, res, next) => {
+  try {
+    const notification = await Notification.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.uid },
+      { $set: { isRead: false, updatedAt: new Date() }, $unset: { readAt: 1 } },
+      { new: true }
+    );
+    if (!notification) return fail(res, 'NOT_FOUND', 'Notification not found', 404);
+    ok(res, notification, 'Notification marked as unread');
+  } catch (e) {
     next(e);
   }
 });

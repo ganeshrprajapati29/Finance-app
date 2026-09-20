@@ -16,7 +16,7 @@ import CreditReport from '../models/CreditReport.js';
 import { ok, fail } from '../utils/response.js';
 import { sendFCMToToken } from '../services/fcm.js';  // ✅ New import
 import { quickSort } from '../utils/dsa.js';
-import { getRazorpay } from '../services/razorpay.js';
+import { createRazorpayOrder } from '../services/razorpay.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
 
@@ -203,7 +203,7 @@ router.get('/marquee', async (req, res, next) => {
 
 router.put('/settings', requireAuth, requireRole(['admin']), async (req, res, next) => {
   try {
-    const { appName, appVersion, supportEmail, maintenanceMode, maxLoanAmount, minLoanAmount, interestRate, loanDuration, fcmEnabled, emailEnabled, smsEnabled } = await Joi.object({
+    const { appName, appVersion, supportEmail, maintenanceMode, maxLoanAmount, minLoanAmount, interestRate, loanDuration, fcmEnabled, emailEnabled, smsEnabled, appUpdate } = await Joi.object({
       appName: Joi.string().optional(),
       appVersion: Joi.string().optional(),
       supportEmail: Joi.string().email().optional(),
@@ -215,6 +215,16 @@ router.put('/settings', requireAuth, requireRole(['admin']), async (req, res, ne
       fcmEnabled: Joi.boolean().optional(),
       emailEnabled: Joi.boolean().optional(),
       smsEnabled: Joi.boolean().optional(),
+      appUpdate: Joi.object({
+        android: Joi.object({
+          latestVersion: Joi.string().trim().max(30).required(),
+          latestBuild: Joi.number().integer().min(1).required(),
+          minimumSupportedBuild: Joi.number().integer().min(1).required(),
+          forceUpdate: Joi.boolean().required(),
+          message: Joi.string().trim().min(10).max(500).required(),
+          storeUrl: Joi.string().uri({ scheme: ['https'] }).required(),
+        }).required(),
+      }).optional(),
     }).unknown(true).validateAsync(req.body);
 
     // Save to database
@@ -234,6 +244,17 @@ router.put('/settings', requireAuth, requireRole(['admin']), async (req, res, ne
     settings.fcmEnabled = fcmEnabled;
     settings.emailEnabled = emailEnabled;
     settings.smsEnabled = smsEnabled;
+    if (appUpdate?.android) {
+      if (appUpdate.android.minimumSupportedBuild > appUpdate.android.latestBuild) {
+        return fail(
+          res,
+          'INVALID_VERSION_POLICY',
+          'Minimum supported build cannot be greater than the latest build.',
+          400
+        );
+      }
+      settings.appUpdate = { android: appUpdate.android };
+    }
 
     await settings.save();
 
@@ -253,7 +274,8 @@ router.put('/settings', requireAuth, requireRole(['admin']), async (req, res, ne
         loanDuration,
         fcmEnabled,
         emailEnabled,
-        smsEnabled
+        smsEnabled,
+        appUpdate
       },
     });
 
@@ -560,19 +582,39 @@ router.put('/users/:id/roles', async (req, res, next) => {
 
 router.put('/users/:id/status', async (req, res, next) => {
   try {
-    const { status } = await Joi.object({
+    const { status, reason } = await Joi.object({
       status: Joi.string().valid('active', 'blocked').required(),
+      reason: Joi.string().trim().max(300).allow('').default(''),
     }).validateAsync(req.body);
 
-    const u = await User.findByIdAndUpdate(req.params.id, { status }, { new: true });
-    if (!u) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (String(req.params.id) === String(req.user.uid) && status === 'blocked') {
+      return fail(res, 'SELF_BLOCK_NOT_ALLOWED', 'You cannot block your own account', 400);
+    }
+
+    const target = await User.findById(req.params.id);
+    if (!target) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (target.roles?.includes('admin') && status === 'blocked') {
+      return fail(res, 'ADMIN_BLOCK_NOT_ALLOWED', 'Admin accounts cannot be blocked from customer controls', 400);
+    }
+
+    target.status = status;
+    target.sessionVersion = (target.sessionVersion || 0) + 1;
+    target.fcmTokens = [];
+    target.accessControl = {
+      ...(target.accessControl?.toObject?.() || target.accessControl || {}),
+      ...(status === 'blocked'
+        ? { blockedAt: new Date(), blockedBy: req.user.uid, blockReason: reason || 'Blocked by account administrator' }
+        : { unblockedAt: new Date(), unblockedBy: req.user.uid, blockReason: '' }),
+    };
+    await target.save();
+    const u = target;
 
     await AuditLog.create({
       actorId: req.user.uid,
       action: 'SET_STATUS',
       entityType: 'User',
       entityId: u._id.toString(),
-      meta: { status },
+      meta: { status, reason, sessionRevoked: true },
     });
 
     await notifyUserSmart(u._id, 'admin_user_action', {
@@ -895,9 +937,8 @@ router.post('/payments/razorpay/order', async (req, res, next) => {
       return fail(res, 'MISSING_REFERENCE', 'Either loanId or billId must be provided', 400);
     }
 
-    const rz = getRazorpay();
     const receipt = `KP-ADMIN-${Date.now()}`;
-    const order = await rz.orders.create({
+    const order = await createRazorpayOrder({
       amount: Math.round(amount * 100),
       currency,
       receipt,

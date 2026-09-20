@@ -100,7 +100,7 @@ const Loans = () => {
   const [selectedLoan, setSelectedLoan] = useState(null)
   const [decisionLoan, setDecisionLoan] = useState(null)
   const [decisionType, setDecisionType] = useState('')
-  const [decisionForm, setDecisionForm] = useState({ amountApproved: '', rateAPR: '', tenureMonths: '' })
+  const [decisionForm, setDecisionForm] = useState({ amountApproved: '', rateAPR: '', tenureMonths: '', processingFee: '0', taxAmount: '0', lenderName: '', rejectionReason: '' })
   const [processing, setProcessing] = useState(false)
 
   const fetchLoans = async () => {
@@ -186,6 +186,10 @@ const Loans = () => {
       amountApproved: loan.decision?.amountApproved || loan.application?.amountRequested || '',
       rateAPR: loan.decision?.rateAPR || 12,
       tenureMonths: loan.decision?.tenureMonths || loan.application?.tenureMonths || 12,
+      processingFee: loan.decision?.processingFee || 0,
+      taxAmount: loan.decision?.taxAmount || 0,
+      lenderName: loan.decision?.lenderName || '',
+      rejectionReason: '',
     })
   }
 
@@ -199,9 +203,18 @@ const Loans = () => {
           amountApproved: Number(decisionForm.amountApproved || 0),
           rateAPR: Number(decisionForm.rateAPR || 0),
           tenureMonths: Number(decisionForm.tenureMonths || 0),
+          processingFee: Number(decisionForm.processingFee || 0),
+          taxAmount: Number(decisionForm.taxAmount || 0),
+          lenderName: decisionForm.lenderName.trim(),
         })
       } else {
-        await api.post(`/admin/loans/${decisionLoan._id}/decision`, { decision: 'REJECTED' })
+        if (!decisionForm.rejectionReason.trim()) {
+          alert('Enter a customer-friendly rejection reason.')
+          return
+        }
+        await api.post(`/admin/loans/${decisionLoan._id}/decision`, {
+          decision: 'REJECTED', rejectionReason: decisionForm.rejectionReason.trim()
+        })
       }
       setDecisionLoan(null)
       await fetchLoans()
@@ -213,9 +226,11 @@ const Loans = () => {
   }
 
   const disburseLoan = async (loan) => {
+    const txnId = window.prompt('Enter confirmed bank transfer UTR/reference')?.trim()
+    if (!txnId) return
     try {
       setProcessing(true)
-      await api.post(`/admin/loans/${loan._id}/disburse`, { txnId: `KP-DISB-${Date.now()}` })
+      await api.post(`/admin/loans/${loan._id}/disburse`, { txnId })
       await fetchLoans()
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to disburse loan')
@@ -498,12 +513,27 @@ const Loans = () => {
                     <Form.Label>Tenure months</Form.Label>
                     <Form.Control type="number" min="1" value={decisionForm.tenureMonths} onChange={(event) => setDecisionForm((form) => ({ ...form, tenureMonths: event.target.value }))} />
                   </Form.Group>
+                  <Form.Group>
+                    <Form.Label>Processing fee</Form.Label>
+                    <Form.Control type="number" min="0" value={decisionForm.processingFee} onChange={(event) => setDecisionForm((form) => ({ ...form, processingFee: event.target.value }))} />
+                  </Form.Group>
+                  <Form.Group>
+                    <Form.Label>Tax amount</Form.Label>
+                    <Form.Control type="number" min="0" value={decisionForm.taxAmount} onChange={(event) => setDecisionForm((form) => ({ ...form, taxAmount: event.target.value }))} />
+                  </Form.Group>
+                  <Form.Group>
+                    <Form.Label>Lender name</Form.Label>
+                    <Form.Control value={decisionForm.lenderName} onChange={(event) => setDecisionForm((form) => ({ ...form, lenderName: event.target.value }))} placeholder="Regulated lending partner" />
+                  </Form.Group>
                 </>
               ) : (
-                <div className="reject-warning">
-                  <AlertTriangle size={18} />
-                  This loan application will be rejected and the borrower will be notified.
-                </div>
+                <>
+                  <div className="reject-warning"><AlertTriangle size={18} />The borrower will see the reason below.</div>
+                  <Form.Group className="mt-3">
+                    <Form.Label>Customer-friendly reason</Form.Label>
+                    <Form.Control as="textarea" rows={3} value={decisionForm.rejectionReason} onChange={(event) => setDecisionForm((form) => ({ ...form, rejectionReason: event.target.value }))} />
+                  </Form.Group>
+                </>
               )}
             </div>
           )}

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
-import '../../services/loan_service.dart';
+
+import '../../core/app_theme.dart';
 import '../../routes/app_router.dart';
+import '../../services/loan_service.dart';
+import '../widgets/app_back_button.dart';
 
 class LoanApplyPage extends StatefulWidget {
   const LoanApplyPage({super.key});
@@ -26,19 +28,20 @@ class _LoanApplyPageState extends State<LoanApplyPage> {
   }
 
   Future<void> _applyLoan() async {
-    if (amountController.text.isEmpty || tenureController.text.isEmpty || purposeController.text.isEmpty) {
+    if (amountController.text.trim().isEmpty ||
+        tenureController.text.trim().isEmpty ||
+        purposeController.text.trim().isEmpty) {
       setState(() => message = 'Please fill all fields');
       return;
     }
 
-    final amount = num.tryParse(amountController.text);
-    final tenure = int.tryParse(tenureController.text);
+    final amount = num.tryParse(amountController.text.trim());
+    final tenure = int.tryParse(tenureController.text.trim());
 
     if (amount == null || amount <= 0) {
       setState(() => message = 'Please enter a valid amount');
       return;
     }
-
     if (tenure == null || tenure <= 0) {
       setState(() => message = 'Please enter a valid tenure');
       return;
@@ -51,165 +54,146 @@ class _LoanApplyPageState extends State<LoanApplyPage> {
 
     try {
       final id = await LoanService().apply(amount, tenure, purpose: purposeController.text.trim());
-      setState(() => message = 'Loan application submitted successfully! Loan ID: $id');
-      // Navigate to loans page after successful application
+      if (!mounted) return;
+      setState(() => message = 'Loan application submitted successfully. Loan ID: $id');
       Future.delayed(const Duration(seconds: 2), () {
-        router.go('/loans');
+        if (mounted) router.go('/loans');
       });
     } catch (e) {
-      setState(() => message = 'Failed to apply for loan: $e');
+      if (mounted) setState(() => message = 'Failed to apply for loan: $e');
     } finally {
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: KhatuColors.bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: Text(
-          'Apply for Loan',
-          style: TextStyle(color: Colors.black, fontSize: 18.sp),
-        ),
-        iconTheme: const IconThemeData(color: Colors.black),
+        title: const Text('Apply for Loan'),
+        leading: const AppBackButton(),
       ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16.w),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+        children: [
+          const _HeaderCard(),
+          const SizedBox(height: 16),
+          TextField(
+            controller: amountController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Loan Amount',
+              hintText: 'Enter amount, e.g. 50000',
+              prefixIcon: Icon(Icons.currency_rupee),
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: tenureController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Tenure',
+              hintText: 'Enter tenure in months',
+              prefixIcon: Icon(Icons.calendar_today),
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: purposeController,
+            decoration: const InputDecoration(
+              labelText: 'Purpose',
+              hintText: 'Personal, Business, Education',
+              prefixIcon: Icon(Icons.description_outlined),
+            ),
+          ),
+          const SizedBox(height: 22),
+          ElevatedButton.icon(
+            onPressed: isLoading ? null : _applyLoan,
+            icon: isLoading
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.verified),
+            label: Text(isLoading ? 'Submitting...' : 'Apply for Loan'),
+          ),
+          if (message.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _MessageBanner(message: message),
+          ],
+          const SizedBox(height: 16),
+          const _TermsCard(),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeaderCard extends StatelessWidget {
+  const _HeaderCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(colors: [KhatuColors.ink, KhatuColors.deepTeal, KhatuColors.teal]),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: const Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: Colors.white,
+            child: Icon(Icons.trending_up, color: KhatuColors.teal),
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Quick Loan Application', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 18)),
+                SizedBox(height: 4),
+                Text(
+                  'Submit amount, tenure and purpose for quick review.',
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TermsCard extends StatelessWidget {
+  const _TermsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    const terms = [
+      'Interest rates starting from 12% per annum',
+      'Processing fee: 2% of loan amount',
+      'Minimum tenure: 3 months',
+      'Maximum tenure: 60 months',
+      'Quick approval within 24 hours',
+    ];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Loan Application',
-              style: TextStyle(
-                fontSize: 24.sp,
-                fontWeight: FontWeight.bold,
-                color: Colors.blueAccent,
-              ),
-            ),
-            SizedBox(height: 8.h),
-            Text(
-              'Apply for a loan with flexible terms and quick approval',
-              style: TextStyle(
-                fontSize: 14.sp,
-                color: Colors.grey,
-              ),
-            ),
-            SizedBox(height: 24.h),
-            TextField(
-              controller: amountController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: 'Loan Amount (₹)',
-                prefixIcon: Icon(Icons.currency_rupee, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                hintText: 'Enter amount (e.g., 50000)',
-              ),
-            ),
-            SizedBox(height: 16.h),
-            TextField(
-              controller: tenureController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: 'Tenure (Months)',
-                prefixIcon: Icon(Icons.calendar_today, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                hintText: 'Enter tenure in months',
-              ),
-            ),
-            SizedBox(height: 16.h),
-            TextField(
-              controller: purposeController,
-              decoration: InputDecoration(
-                labelText: 'Purpose',
-                prefixIcon: Icon(Icons.description, color: Colors.blueAccent),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                hintText: 'e.g., Personal, Business, Education',
-              ),
-            ),
-            SizedBox(height: 24.h),
-            ElevatedButton(
-              onPressed: isLoading ? null : _applyLoan,
-              style: ElevatedButton.styleFrom(
-                minimumSize: Size(double.infinity, 48.h),
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-              ),
-              child: Text(
-                isLoading ? 'Submitting...' : 'Apply for Loan',
-                style: TextStyle(fontSize: 16.sp),
-              ),
-            ),
-            SizedBox(height: 16.h),
-            if (message.isNotEmpty)
-              Container(
-                padding: EdgeInsets.all(12.w),
-                decoration: BoxDecoration(
-                  color: message.contains('successfully') ? Colors.green.shade50 : Colors.red.shade50,
-                  borderRadius: BorderRadius.circular(8.r),
-                  border: Border.all(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                  ),
-                ),
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: message.contains('successfully') ? Colors.green : Colors.red,
-                    fontSize: 14.sp,
-                  ),
-                ),
-              ),
-            SizedBox(height: 16.h),
-            Card(
-              color: Colors.blue.shade50,
-              elevation: 2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12.r),
-              ),
-              child: Padding(
-                padding: EdgeInsets.all(16.w),
-                child: Column(
+            const Text('Loan Terms & Conditions', style: TextStyle(fontWeight: FontWeight.w900, color: KhatuColors.text)),
+            const SizedBox(height: 10),
+            ...terms.map(
+              (term) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Loan Terms & Conditions',
-                      style: TextStyle(
-                        fontSize: 16.sp,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blueAccent,
-                      ),
-                    ),
-                    SizedBox(height: 8.h),
-                    Text(
-                      '• Interest rates starting from 12% per annum\n• Processing fee: 2% of loan amount\n• Minimum tenure: 3 months\n• Maximum tenure: 60 months\n• Quick approval within 24 hours',
-                      style: TextStyle(
-                        fontSize: 12.sp,
-                        color: Colors.black87,
-                        height: 1.5,
-                      ),
-                    ),
+                    const Icon(Icons.check_circle, size: 17, color: KhatuColors.teal),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(term, style: const TextStyle(color: KhatuColors.muted, fontWeight: FontWeight.w700))),
                   ],
                 ),
               ),
@@ -217,6 +201,28 @@ class _LoanApplyPageState extends State<LoanApplyPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _MessageBanner extends StatelessWidget {
+  final String message;
+
+  const _MessageBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final success = message.toLowerCase().contains('successfully');
+    final color = success ? Colors.green : Colors.red;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.22)),
+      ),
+      child: Text(message, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
     );
   }
 }

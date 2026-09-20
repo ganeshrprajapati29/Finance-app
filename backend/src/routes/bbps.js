@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { requireAuth } from '../middlewares/auth.js';
-import { ok } from '../utils/response.js';
-import { fetchBbpsBill, payBbpsBill, generateClubUrid } from '../services/clubapiUtility.js';
+import { ok, fail } from '../utils/response.js';
+import { fetchBbpsBill, generateClubUrid } from '../services/clubapiUtility.js';
 
 const router = Router();
 
@@ -30,15 +30,10 @@ router.post(['/fetchbill', '/bbps/fetchbill', '/fetch-bill'], requireAuth, async
   } catch (e) { next(e); }
 });
 
-router.post(['/pay', '/bbps/pay', '/pay-bill'], requireAuth, async (req, res, next) => {
-  try {
-    const payload = await bbpsSchema.fork(['amount'], (schema) => schema.required()).validateAsync({
-      ...req.body,
-      bbpsId: req.body.bbpsId || req.body.operatorId,
-      urid: req.body.urid || generateClubUrid('KPY')
-    });
-    ok(res, await payBbpsBill(payload), 'BBPS payment initiated successfully');
-  } catch (e) { next(e); }
-});
+// Disabled: paid real bills from the company's ClubAPI balance with no customer
+// payment. Bill payments now go through /api/payments with a fetched bill.
+router.post(['/pay', '/bbps/pay', '/pay-bill'], requireAuth, (req, res) =>
+  fail(res, 'PAYMENT_REQUIRED', 'Please pay bills from the Recharge & Bills section.', 403)
+);
 
 export default router;

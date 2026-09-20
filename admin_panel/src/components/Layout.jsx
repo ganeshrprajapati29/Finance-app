@@ -33,6 +33,7 @@ import {
   Users2,
   Wallet,
   X,
+  Layers,
 } from 'lucide-react'
 import api from '../api/axios.js'
 import NotificationBell from './NotificationBell.jsx'
@@ -118,6 +119,7 @@ const navSections = [
     icon: CreditCard,
     items: [
       { label: 'Club API Dashboard', to: '/clubapi/dashboard', icon: BarChart3 },
+      { label: 'Recharge & Bill Services', to: '/clubapi/services', icon: Layers },
       { label: 'Club API Transactions', to: '/clubapi/transactions', icon: FileText },
       { label: 'Fund Requests', to: '/clubapi/fund-requests', icon: Wallet },
       { label: 'Club API Bills', to: '/clubapi/bills', icon: CreditCard },

@@ -3,6 +3,7 @@ import Invoice from '../../models/Invoice.js';
 import { generateURID, validateResponse, formatAmount, getTransactionType } from './helper.js';
 import { invoiceNumber } from '../../services/paymentInvoiceService.js';
 import { emitToUser } from '../../realtime.js';
+import { syncTransactionStatus } from '../../services/rechargePaymentService.js';
 import {
   callClubAPITransaction,
   fetchBbpsBill,
@@ -332,52 +333,24 @@ class ClubAPIController {
     }
   }
 
-  // Get transaction status
+  // Get transaction status (the caller's own transactions only)
   static async getTransactionStatus(req, res, next) {
     try {
       const { urid } = req.params;
+      const userId = req.user?.uid || req.user?.id;
 
       if (!urid) {
-        return res.status(400).json({
-          success: false,
-          message: 'URID is required'
-        });
+        return res.status(400).json({ success: false, message: 'URID is required', data: null });
       }
 
-      // Find transaction in database
-      const transaction = await ClubAPITransaction.findOne({ urid });
-
+      const transaction = await ClubAPITransaction.findOne({ urid, userId });
       if (!transaction) {
-        return res.status(404).json({
-          success: false,
-          message: 'Transaction not found'
-        });
+        return res.status(404).json({ success: false, message: 'Transaction not found', data: null });
       }
 
-      // If still processing, check with ClubAPI
-      if (transaction.status === 'processing') {
-        try {
-          const validatedResponse = validateResponse(await callClubAPITransaction({
-            urid
-          }));
-
-          // Update transaction status
-          transaction.status = clubStatusToLocal(validatedResponse);
-          transaction.response = validatedResponse;
-          await transaction.save();
-          emitClubTransaction(transaction.userId, transaction);
-
-        } catch (apiError) {
-          // If API call fails, return current status
-          console.log('API status check failed:', apiError.message);
-        }
-      }
-
-      res.json({
-        success: true,
-        data: transaction
-      });
-
+      // Uses ClubAPI's transactionStatus API with urid + orderId, throttled.
+      const refreshed = await syncTransactionStatus(transaction);
+      res.json({ success: true, message: 'OK', data: refreshed || transaction });
     } catch (error) {
       next(error);
     }

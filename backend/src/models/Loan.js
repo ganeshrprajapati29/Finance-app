@@ -102,15 +102,48 @@ const transactionSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 }, { _id: false });
 
+const consentSchema = new mongoose.Schema({
+  accepted: { type: Boolean, default: false },
+  acceptedAt: Date,
+  version: String,
+  ipAddress: String,
+  userAgent: String
+}, { _id: false });
+
+const statusHistorySchema = new mongoose.Schema({
+  status: { type: String, required: true },
+  title: String,
+  message: String,
+  reason: String,
+  actorType: { type: String, enum: ['USER', 'ADMIN', 'SYSTEM'], default: 'SYSTEM' },
+  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now }
+}, { _id: false });
+
 const loanSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref:'User', required: true },
   loanAccountNumber: { type: String, unique: true },
   application: applicationSchema,
-  status: { type: String, enum: ['PENDING','APPROVED','REJECTED','DISBURSED','CLOSED'], default: 'PENDING' },
+  status: { type: String, enum: ['PENDING','UNDER_REVIEW','DOCUMENTS_REQUIRED','APPROVED','REJECTED','DISBURSEMENT_PROCESSING','DISBURSED','OVERDUE','CLOSED'], default: 'PENDING' },
   decision: {
-    amountApproved: Number, rateAPR: Number, tenureMonths: Number, decidedAt: Date, decidedBy: { type: mongoose.Schema.Types.ObjectId, ref:'User' }
+    amountApproved: Number, rateAPR: Number, tenureMonths: Number,
+    processingFee: Number, taxAmount: Number, netDisbursalAmount: Number,
+    totalRepaymentAmount: Number, rejectionReason: String,
+    lenderName: String, offerExpiresAt: Date, kfsUrl: String, agreementUrl: String,
+    decidedAt: Date, decidedBy: { type: mongoose.Schema.Types.ObjectId, ref:'User' }
   },
   disbursementDate: Date,
+  disbursement: {
+    status: { type: String, enum: ['NOT_STARTED', 'PROCESSING', 'COMPLETED', 'FAILED'], default: 'NOT_STARTED' },
+    amount: Number, netAmount: Number, reference: String, failureReason: String,
+    initiatedAt: Date, completedAt: Date
+  },
+  consents: {
+    creditReport: consentSchema,
+    terms: consentSchema,
+    privacy: consentSchema
+  },
+  statusHistory: [statusHistorySchema],
   transactions: [transactionSchema],
   schedule: [scheduleSchema],
   penalties: [penaltySchema],
