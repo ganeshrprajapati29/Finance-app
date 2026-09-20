@@ -7,6 +7,11 @@ function setTokens(t){ localStorage.setItem('kp_tokens', JSON.stringify(t)) }
 function getEmployeeTokens(){ try{ const raw=localStorage.getItem('kp_employee_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 function setEmployeeTokens(t){ localStorage.setItem('kp_employee_tokens', JSON.stringify(t)) }
 function getUserTokens(){ try{ const raw=localStorage.getItem('kp_user_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
+function endAdminSession(message='Your session has expired. Please sign in again.'){
+  localStorage.removeItem('kp_tokens')
+  sessionStorage.setItem('kp_auth_message', message)
+  if(typeof window!=='undefined' && window.location.pathname!=='/login') window.location.assign('/login')
+}
 api.interceptors.request.use((config)=>{
   const t=getTokens();
   const et=getEmployeeTokens();
@@ -36,10 +41,15 @@ api.interceptors.response.use(
             .then(r=>{ const accessToken = r.data?.data?.accessToken; if(accessToken){ const updated={...tk, accessToken}; setTokens(updated); return accessToken } throw error })
             .finally(()=> refreshing=null)
         }
-        const newAccess = await refreshing
-        original._retry = true
-        original.headers.Authorization = `Bearer ${newAccess}`
-        return api(original)
+        try {
+          const newAccess = await refreshing
+          original._retry = true
+          original.headers.Authorization = `Bearer ${newAccess}`
+          return api(original)
+        } catch (refreshError) {
+          endAdminSession()
+          throw refreshError
+        }
       } else if (etk?.refreshToken){
         if (!employeeRefreshing){
           employeeRefreshing = axios.post(`${api.defaults.baseURL}/employee/auth/refresh`, { refreshToken: etk.refreshToken })
@@ -51,7 +61,11 @@ api.interceptors.response.use(
         original.headers.Authorization = `Bearer ${newAccess}`
         return api(original)
       }
+      endAdminSession()
       throw error
+    }
+    if(error.response?.status===403 && error.response?.data?.code==='ACCOUNT_BLOCKED'){
+      endAdminSession('This account is blocked. Please contact Khatu Pay support.')
     }
     throw error
   }

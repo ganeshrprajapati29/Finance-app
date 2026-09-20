@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Card, Form, Container } from 'react-bootstrap'
 import api from '../api/axios'
 
@@ -8,6 +8,14 @@ export default function Login(){
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [showPolicy, setShowPolicy] = useState(false)
+
+  useEffect(() => {
+    const message = sessionStorage.getItem('kp_auth_message')
+    if (message) {
+      setErr(message)
+      sessionStorage.removeItem('kp_auth_message')
+    }
+  }, [])
 
   const onSubmit = async (e)=>{
     e.preventDefault()
