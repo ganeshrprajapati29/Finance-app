@@ -25,6 +25,11 @@ function setTokens(t){ localStorage.setItem('kp_tokens', JSON.stringify(t)) }
 function getEmployeeTokens(){ try{ const raw=localStorage.getItem('kp_employee_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 function setEmployeeTokens(t){ localStorage.setItem('kp_employee_tokens', JSON.stringify(t)) }
 function getUserTokens(){ try{ const raw=localStorage.getItem('kp_user_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
+function isPortalRoute(basePath){
+  if(typeof window==='undefined') return false
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  return path === basePath || path.startsWith(`${basePath}/`)
+}
 function endAdminSession(message='Your session has expired. Please sign in again.'){
   localStorage.removeItem('kp_tokens')
   sessionStorage.setItem('kp_auth_message', message)
@@ -34,8 +39,8 @@ api.interceptors.request.use((config)=>{
   const t=getTokens();
   const et=getEmployeeTokens();
   const ut=getUserTokens();
-  const isEmployeeRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/employee');
-  const isUserRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/user');
+  const isEmployeeRoute = isPortalRoute('/employee');
+  const isUserRoute = isPortalRoute('/user');
   if(isEmployeeRoute && et?.accessToken) config.headers.Authorization = `Bearer ${et.accessToken}`;
   else if(isUserRoute && ut?.accessToken) config.headers.Authorization = `Bearer ${ut.accessToken}`;
   else if(t?.accessToken) config.headers.Authorization = `Bearer ${t.accessToken}`;
@@ -52,7 +57,7 @@ api.interceptors.response.use(
     if (error.response && error.response.status===401 && !original._retry){
       const tk = getTokens()
       const etk = getEmployeeTokens()
-      const isEmployeeRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/employee');
+      const isEmployeeRoute = isPortalRoute('/employee');
       if (!isEmployeeRoute && tk?.refreshToken){
         if (!refreshing){
           refreshing = axios.post(`${api.defaults.baseURL}/auth/refresh`, { refreshToken: tk.refreshToken })
