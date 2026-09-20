@@ -2,7 +2,25 @@ import axios from 'axios'
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'https://khatupay.com/api',
 })
-function getTokens(){ try{ const raw=localStorage.getItem('kp_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
+export function getTokens(){
+  try {
+    const raw = localStorage.getItem('kp_tokens')
+    if (!raw) return null
+
+    let stored
+    try { stored = JSON.parse(raw) } catch { stored = raw }
+
+    if (typeof stored === 'string') return { accessToken: stored }
+    if (!stored || typeof stored !== 'object') return null
+
+    const source = stored.data && typeof stored.data === 'object' ? stored.data : stored
+    const accessToken = source.accessToken || source.token || source.access_token
+    const refreshToken = source.refreshToken || source.refresh_token
+    return accessToken ? { ...source, accessToken, refreshToken } : null
+  } catch {
+    return null
+  }
+}
 function setTokens(t){ localStorage.setItem('kp_tokens', JSON.stringify(t)) }
 function getEmployeeTokens(){ try{ const raw=localStorage.getItem('kp_employee_tokens'); return raw? JSON.parse(raw): null } catch{return null} }
 function setEmployeeTokens(t){ localStorage.setItem('kp_employee_tokens', JSON.stringify(t)) }
