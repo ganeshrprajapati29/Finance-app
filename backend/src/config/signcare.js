@@ -1,3 +1,5 @@
+import 'dotenv/config';
+
 const signcareConfig = {
   baseURL: process.env.SIGNCARE_BASE_URL || 'https://ext.signcare.io',
   apiKey: process.env.SIGNCARE_API_KEY || '',
