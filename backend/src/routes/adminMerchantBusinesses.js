@@ -3,13 +3,48 @@ import { requireAdmin } from '../middlewares/adminAuth.js';
 import MerchantBusiness from '../models/MerchantBusiness.js';
 import MerchantKyc from '../models/MerchantKyc.js';
 import MerchantBankAccount from '../models/MerchantBankAccount.js';
+import MerchantQR from '../models/MerchantQR.js';
+import MerchantPayment from '../models/MerchantPayment.js';
+import MerchantSettlement from '../models/MerchantSettlement.js';
 import { fail, ok } from '../utils/response.js';
 
 const router = Router();
 router.get('/', requireAdmin, async (_req, res, next) => {
   try {
     const businesses = await MerchantBusiness.find().populate('userId', 'name email mobile').sort({ createdAt: -1 });
-    const rows = await Promise.all(businesses.map(async (business) => ({ business, kyc: await MerchantKyc.findOne({ businessId: business._id }), bank: await MerchantBankAccount.findOne({ businessId: business._id }).select('-accountNumber') })));
+    const rows = await Promise.all(businesses.map(async (business) => {
+      const [kyc, bank, qr, payments, settlements] = await Promise.all([
+        MerchantKyc.findOne({ businessId: business._id }),
+        MerchantBankAccount.findOne({ businessId: business._id }).select('-accountNumber'),
+        MerchantQR.findOne({ businessId: business._id }),
+        MerchantPayment.aggregate([
+          { $match: { businessId: business._id } },
+          { $group: {
+            _id: null,
+            total: { $sum: 1 },
+            successful: { $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] } },
+            collectedAmount: { $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$amount', 0] } },
+          } },
+        ]),
+        MerchantSettlement.aggregate([
+          { $match: { businessId: business._id } },
+          { $group: {
+            _id: null,
+            total: { $sum: 1 },
+            settledAmount: { $sum: { $cond: [{ $eq: ['$status', 'SETTLED'] }, '$amount', 0] } },
+            pendingAmount: { $sum: { $cond: [{ $in: ['$status', ['REQUESTED', 'PROCESSING']] }, '$amount', 0] } },
+          } },
+        ]),
+      ]);
+      return {
+        business,
+        kyc,
+        bank,
+        qr,
+        payments: payments[0] || { total: 0, successful: 0, collectedAmount: 0 },
+        settlements: settlements[0] || { total: 0, settledAmount: 0, pendingAmount: 0 },
+      };
+    }));
     ok(res, rows);
   } catch (error) { next(error); }
 });

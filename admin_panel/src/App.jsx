@@ -81,6 +81,7 @@ import LoanEarnings from './pages/LoanEarnings.jsx'
 import QREarnings from './pages/QREarnings.jsx'
 import AdsEarnings from './pages/AdsEarnings.jsx'
 import BillEarnings from './pages/BillEarnings.jsx'
+import BusinessQR from './pages/BusinessQR.jsx'
 
 // Club API Pages
 import ClubAPIDashboard from './pages/ClubAPIDashboard.jsx'
@@ -194,6 +195,7 @@ export function AppContent() {
         <Route path="/virtual-cards" element={<VirtualCards />} />
         <Route path="/payouts" element={<Payouts />} />
         <Route path="/qr" element={<QR />} />
+        <Route path="/business-qr" element={<BusinessQR />} />
         <Route path="/qr-sticker-orders" element={<QRStickerOrders />} />
         <Route path="/invoices" element={<Invoices />} />
 

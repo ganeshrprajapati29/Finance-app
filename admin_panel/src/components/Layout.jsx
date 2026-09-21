@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   BarChart3,
+  Building2,
   Calculator,
   Calendar,
   ChevronDown,
@@ -81,6 +82,7 @@ const navSections = [
       { label: 'Virtual Cards', to: '/virtual-cards', icon: CreditCard },
       { label: 'Payouts', to: '/payouts', icon: DollarSign },
       { label: 'QR Codes', to: '/qr', icon: QrCode },
+      { label: 'Business QR', to: '/business-qr', icon: Building2 },
       { label: 'QR Sticker Orders', to: '/qr-sticker-orders', icon: StickyNote },
       { label: 'Invoices', to: '/invoices', icon: FileText },
       { label: 'Overdue Users', to: '/overdue-users', icon: AlertTriangle },
