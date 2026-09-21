@@ -1,10 +1,16 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_theme.dart';
 import '../../core/friendly_error.dart';
 import '../../models/user.dart';
 import '../../providers/auth_providers.dart';
+import '../../services/loan_service.dart';
 import '../../services/user_service.dart';
 import '../widgets/app_back_button.dart';
 import '../widgets/offer_banner_carousel.dart';
@@ -18,29 +24,58 @@ class KycPage extends ConsumerStatefulWidget {
 
 class _KycPageState extends ConsumerState<KycPage> {
   final _documentNumberController = TextEditingController();
-  final _aadhaarNumberController = TextEditingController();
-  final _aadhaarMobileController = TextEditingController();
-  final _aadhaarOtpController = TextEditingController();
   final _panController = TextEditingController();
-  String _documentType = 'AADHAAR';
+  String _documentType = 'BANK_STATEMENT';
   bool _uploading = false;
   bool _sendingAadhaarOtp = false;
   bool _verifyingAadhaarOtp = false;
   bool _verifyingPan = false;
+  bool _capturingSelfie = false;
+  bool _livenessVerified = false;
+  bool _faceMatchVerified = false;
   String? _aadhaarOtpSessionId;
   String? _message;
   String? _aadhaarMessage;
   String? _panMessage;
+  String? _selfieMessage;
+  String _selfiePath = '';
+  final _imagePicker = ImagePicker();
   List<PlatformFile> _files = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSignCareStatus();
+  }
 
   @override
   void dispose() {
     _documentNumberController.dispose();
-    _aadhaarNumberController.dispose();
-    _aadhaarMobileController.dispose();
-    _aadhaarOtpController.dispose();
     _panController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSignCareStatus() async {
+    try {
+      final result = await LoanService().verificationStatus();
+      final stages = result['stages'] is Map
+          ? Map<String, dynamic>.from(result['stages'])
+          : const <String, dynamic>{};
+      if (!mounted) return;
+      setState(() {
+        _livenessVerified = stages['liveness']?['status'] == 'VERIFIED';
+        _faceMatchVerified = stages['faceMatch']?['status'] == 'VERIFIED';
+        if (_livenessVerified && _faceMatchVerified) {
+          _selfieMessage = 'Live selfie and Aadhaar face match verified.';
+        }
+      });
+    } catch (_) {
+      // The profile cards still load from the user record; retry is available.
+    }
+  }
+
+  Future<void> _acceptVerificationConsent() async {
+    await LoanService().acceptVerificationConsent();
   }
 
   Future<void> _pickFiles() async {
@@ -90,48 +125,45 @@ class _KycPageState extends ConsumerState<KycPage> {
   }
 
   Future<void> _sendAadhaarOtp() async {
-    final aadhaar = _aadhaarNumberController.text.trim();
-    final mobile = _aadhaarMobileController.text.trim();
-    if (!RegExp(r'^\d{12}$').hasMatch(aadhaar)) {
-      setState(() => _aadhaarMessage = 'Enter valid 12 digit Aadhaar number');
-      return;
-    }
-    if (mobile.isNotEmpty && !RegExp(r'^\d{10}$').hasMatch(mobile)) {
-      setState(
-          () => _aadhaarMessage = 'Enter valid 10 digit Aadhaar linked mobile');
-      return;
-    }
     setState(() {
       _sendingAadhaarOtp = true;
       _aadhaarMessage = null;
     });
     try {
-      final result = await UserService().sendAadhaarOtp(
-        aadhaarNumber: aadhaar,
-        aadhaarMobile: mobile.isEmpty ? null : mobile,
-      );
+      await _acceptVerificationConsent();
+      final result = await LoanService().startAadhaarOvse();
+      final txnId =
+          (result['txnId'] ?? result['providerReference'] ?? '').toString();
+      final requestUrl = (result['requestUrl'] ?? '').toString();
+      if (txnId.isEmpty) {
+        throw Exception('Verification session was not created.');
+      }
+      if (requestUrl.isEmpty) {
+        throw Exception('Aadhaar verification link was not returned.');
+      }
+      if (!mounted) return;
       setState(() {
-        _aadhaarOtpSessionId = (result['otpSessionId'] ??
-                result['sessionId'] ??
-                result['aadhaarData']?['otpSessionId'] ??
-                result['data']?['otpSessionId'] ??
-                '')
-            .toString();
-        _aadhaarMessage = 'OTP sent to Aadhaar linked mobile.';
+        _aadhaarOtpSessionId = txnId;
+        _aadhaarMessage =
+            'Complete face-auth verification in the official Aadhaar app, then return here.';
       });
+      final opened = await launchUrl(Uri.parse(requestUrl),
+          mode: LaunchMode.externalApplication);
+      if (!opened) {
+        throw Exception('Could not open the Aadhaar verification app.');
+      }
     } catch (e) {
-      setState(() => _aadhaarMessage =
-          friendlyErrorMessage(e, fallback: 'Could not send Aadhaar OTP.'));
+      setState(() => _aadhaarMessage = friendlyErrorMessage(e,
+          fallback: 'Could not start Aadhaar verification.'));
     } finally {
       if (mounted) setState(() => _sendingAadhaarOtp = false);
     }
   }
 
   Future<void> _verifyAadhaarOtp() async {
-    final aadhaar = _aadhaarNumberController.text.trim();
-    final otp = _aadhaarOtpController.text.trim();
-    if (!RegExp(r'^\d{12}$').hasMatch(aadhaar) || otp.length < 4) {
-      setState(() => _aadhaarMessage = 'Enter Aadhaar number and OTP');
+    final txnId = (_aadhaarOtpSessionId ?? '').trim();
+    if (txnId.isEmpty) {
+      setState(() => _aadhaarMessage = 'Start Aadhaar verification first.');
       return;
     }
     setState(() {
@@ -139,23 +171,19 @@ class _KycPageState extends ConsumerState<KycPage> {
       _aadhaarMessage = null;
     });
     try {
-      final result = await UserService().verifyAadhaarOtp(
-        aadhaarNumber: aadhaar,
-        aadhaarMobile: _aadhaarMobileController.text.trim().isEmpty
-            ? null
-            : _aadhaarMobileController.text.trim(),
-        otp: otp,
-        otpSessionId: _aadhaarOtpSessionId,
-      );
-      final data = result['aadhaarData'] is Map
-          ? Map<String, dynamic>.from(result['aadhaarData'])
+      final result = await LoanService().aadhaarOvseResult(txnId);
+      final verified = result['status'] == 'VERIFIED';
+      final data = result['summary'] is Map
+          ? Map<String, dynamic>.from(result['summary'])
           : const <String, dynamic>{};
-      final name = (data['fullName'] ?? '').toString();
-      ref.invalidate(meProvider);
+      final name = (data['name'] ?? '').toString();
+      if (verified) ref.invalidate(meProvider);
       setState(() {
-        _aadhaarMessage = name.isEmpty
-            ? 'Aadhaar eKYC verified successfully.'
-            : 'Aadhaar eKYC verified for $name.';
+        _aadhaarMessage = verified
+            ? (name.isEmpty
+                ? 'Aadhaar verified successfully.'
+                : 'Aadhaar verified for $name.')
+            : 'Verification is still pending. Complete it in the Aadhaar app and check again.';
       });
     } catch (e) {
       setState(() => _aadhaarMessage =
@@ -176,9 +204,16 @@ class _KycPageState extends ConsumerState<KycPage> {
       _panMessage = null;
     });
     try {
-      final result = await UserService().verifyPan(pan);
-      final panData = result['panData'] is Map
-          ? Map<String, dynamic>.from(result['panData'])
+      final user = await ref.read(meProvider.future);
+      if (user.name.trim().length < 2) {
+        throw Exception(
+            'Please add your full name in Profile before PAN verification.');
+      }
+      await _acceptVerificationConsent();
+      final result = await LoanService()
+          .verifyPanWithSignCare(pan: pan, name: user.name.trim());
+      final panData = result['summary'] is Map
+          ? Map<String, dynamic>.from(result['summary'])
           : const <String, dynamic>{};
       final name = (panData['name'] ?? '').toString();
       ref.invalidate(meProvider);
@@ -192,6 +227,48 @@ class _KycPageState extends ConsumerState<KycPage> {
           friendlyErrorMessage(e, fallback: 'PAN could not be verified.'));
     } finally {
       if (mounted) setState(() => _verifyingPan = false);
+    }
+  }
+
+  Future<void> _captureAndVerifySelfie() async {
+    setState(() {
+      _capturingSelfie = true;
+      _selfieMessage = null;
+    });
+    try {
+      final picked = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.front,
+        imageQuality: 82,
+        maxWidth: 1400,
+      );
+      if (picked == null) return;
+      await _acceptVerificationConsent();
+      final encoded = base64Encode(await File(picked.path).readAsBytes());
+      final liveness = await LoanService().verifyLiveness(encoded);
+      if (liveness['status'] != 'VERIFIED') {
+        throw Exception('Live face verification needs another clear photo.');
+      }
+      final faceMatch =
+          await LoanService().verifyFaceMatch(selfieBase64: encoded);
+      if (faceMatch['status'] != 'VERIFIED') {
+        throw Exception('Selfie did not match the verified Aadhaar photo.');
+      }
+      if (!mounted) return;
+      setState(() {
+        _selfiePath = picked.path;
+        _livenessVerified = true;
+        _faceMatchVerified = true;
+        _selfieMessage = 'Live selfie and Aadhaar face match verified.';
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _selfieMessage = friendlyErrorMessage(e,
+            fallback:
+                'Selfie verification failed. Use good lighting and try again.'));
+      }
+    } finally {
+      if (mounted) setState(() => _capturingSelfie = false);
     }
   }
 
@@ -230,9 +307,6 @@ class _KycPageState extends ConsumerState<KycPage> {
               const SizedBox(height: 14),
               _AadhaarEkycCard(
                 user: user,
-                aadhaarNumberController: _aadhaarNumberController,
-                aadhaarMobileController: _aadhaarMobileController,
-                otpController: _aadhaarOtpController,
                 sending: _sendingAadhaarOtp,
                 verifying: _verifyingAadhaarOtp,
                 message: _aadhaarMessage,
@@ -248,13 +322,21 @@ class _KycPageState extends ConsumerState<KycPage> {
                 onVerify: _verifyPan,
               ),
               const SizedBox(height: 14),
+              _SelfieVerificationCard(
+                verified: _livenessVerified && _faceMatchVerified,
+                capturing: _capturingSelfie,
+                imagePath: _selfiePath,
+                message: _selfieMessage,
+                onCapture: _captureAndVerifySelfie,
+              ),
+              const SizedBox(height: 14),
               _UploadCard(
                 documentType: _documentType,
                 documentNumberController: _documentNumberController,
                 files: _files,
                 uploading: _uploading,
                 onTypeChanged: (value) =>
-                    setState(() => _documentType = value ?? 'AADHAAR'),
+                    setState(() => _documentType = value ?? 'BANK_STATEMENT'),
                 onPick: _pickFiles,
                 onSubmit: _submit,
               ),
@@ -459,7 +541,7 @@ class _UploadCard extends StatelessWidget {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
             const SizedBox(height: 6),
             const Text(
-                'Upload clear front/back/selfie files. KhatuPay will approve or reject after verification.',
+                'Upload supporting documents only when required. PAN, Aadhaar and selfie are verified securely above.',
                 style: TextStyle(
                     color: KhatuColors.muted, fontWeight: FontWeight.w700)),
             const SizedBox(height: 14),
@@ -468,8 +550,6 @@ class _UploadCard extends StatelessWidget {
               decoration: const InputDecoration(
                   labelText: 'Document Type', border: OutlineInputBorder()),
               items: const [
-                DropdownMenuItem(value: 'AADHAAR', child: Text('Aadhaar Card')),
-                DropdownMenuItem(value: 'PAN', child: Text('PAN Card')),
                 DropdownMenuItem(value: 'VOTER_ID', child: Text('Voter ID')),
                 DropdownMenuItem(
                     value: 'DRIVING_LICENSE', child: Text('Driving License')),
@@ -521,9 +601,6 @@ class _UploadCard extends StatelessWidget {
 
 class _AadhaarEkycCard extends StatelessWidget {
   final KPUser user;
-  final TextEditingController aadhaarNumberController;
-  final TextEditingController aadhaarMobileController;
-  final TextEditingController otpController;
   final bool sending;
   final bool verifying;
   final String? message;
@@ -532,9 +609,6 @@ class _AadhaarEkycCard extends StatelessWidget {
 
   const _AadhaarEkycCard({
     required this.user,
-    required this.aadhaarNumberController,
-    required this.aadhaarMobileController,
-    required this.otpController,
     required this.sending,
     required this.verifying,
     required this.message,
@@ -549,7 +623,11 @@ class _AadhaarEkycCard extends StatelessWidget {
     final aadhaarData = kyc['aadhaarData'] is Map
         ? Map<String, dynamic>.from(kyc['aadhaarData'])
         : const <String, dynamic>{};
-    final name = (aadhaarData['fullName'] ?? '').toString();
+    final name = (aadhaarData['fullName'] ??
+            aadhaarData['name'] ??
+            aadhaarData['residentName'] ??
+            '')
+        .toString();
     final masked = (aadhaarData['maskedAadhaar'] ?? '').toString();
     final address = _aadhaarAddress(aadhaarData);
     final color = verified ? Colors.green : KhatuColors.saffron;
@@ -571,7 +649,7 @@ class _AadhaarEkycCard extends StatelessWidget {
                           TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
                 ),
                 Chip(
-                  label: Text(verified ? 'VERIFIED' : 'OTP',
+                  label: Text(verified ? 'VERIFIED' : 'OVSE',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w900,
@@ -600,50 +678,25 @@ class _AadhaarEkycCard extends StatelessWidget {
                 ),
             ] else ...[
               const Text(
-                'Verify Aadhaar with OTP for faster profile KYC and loan approval.',
+                'Verify securely in the official Aadhaar app. Khatu Pay does not ask for or store your Aadhaar number.',
                 style: TextStyle(
                     color: KhatuColors.muted, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: aadhaarNumberController,
-                keyboardType: TextInputType.number,
-                maxLength: 12,
-                decoration: const InputDecoration(
-                    labelText: 'Aadhaar number',
-                    counterText: '',
-                    border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: aadhaarMobileController,
-                keyboardType: TextInputType.phone,
-                maxLength: 10,
-                decoration: const InputDecoration(
-                    labelText: 'Aadhaar linked mobile',
-                    counterText: '',
-                    border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: otpController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                          labelText: 'OTP', border: OutlineInputBorder()),
+                    child: OutlinedButton.icon(
+                      onPressed: sending ? null : onSendOtp,
+                      icon: sending
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.open_in_new_rounded),
+                      label:
+                          Text(sending ? 'Starting...' : 'Start verification'),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton(
-                    onPressed: sending ? null : onSendOtp,
-                    child: sending
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Send OTP'),
                   ),
                 ],
               ),
@@ -659,7 +712,7 @@ class _AadhaarEkycCard extends StatelessWidget {
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.verified_outlined),
-                  label: const Text('Verify Aadhaar OTP'),
+                  label: const Text('Check verification status'),
                 ),
               ),
             ],
@@ -707,6 +760,95 @@ class _AadhaarEkycCard extends StatelessWidget {
       first([address['pc'], address['pincode'], data['pincode']]),
     ].where((part) => part.isNotEmpty).toList();
     return first([data['fullAddress'], parts.join(', ')]);
+  }
+}
+
+class _SelfieVerificationCard extends StatelessWidget {
+  final bool verified;
+  final bool capturing;
+  final String imagePath;
+  final String? message;
+  final VoidCallback onCapture;
+
+  const _SelfieVerificationCard({
+    required this.verified,
+    required this.capturing,
+    required this.imagePath,
+    required this.message,
+    required this.onCapture,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = verified ? Colors.green : KhatuColors.saffron;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(verified ? Icons.verified_user : Icons.camera_front_outlined,
+                  color: color),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text('Live Selfie & Face Match',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+              ),
+              Chip(
+                label: Text(verified ? 'VERIFIED' : 'REQUIRED',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 11)),
+                backgroundColor: color,
+              ),
+            ]),
+            const SizedBox(height: 8),
+            const Text(
+              'Capture a live front-camera photo. It will be checked for liveness and matched with your verified Aadhaar photo.',
+              style: TextStyle(
+                  color: KhatuColors.muted, fontWeight: FontWeight.w700),
+            ),
+            if (imagePath.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(File(imagePath),
+                    height: 120, width: 120, fit: BoxFit.cover),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: capturing ? null : onCapture,
+                icon: capturing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.camera_alt_outlined),
+                label: Text(capturing
+                    ? 'Verifying...'
+                    : verified
+                        ? 'Capture & Reverify'
+                        : 'Capture Live Selfie'),
+              ),
+            ),
+            if (message != null && message!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(message!,
+                  style: TextStyle(
+                      color: verified ? Colors.green : Colors.red.shade700,
+                      fontWeight: FontWeight.w800)),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 
