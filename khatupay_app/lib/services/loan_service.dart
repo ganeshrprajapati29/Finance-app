@@ -9,6 +9,64 @@ import '../models/loan_application.dart';
 class LoanService {
   final _dio = ApiClient.client;
 
+  Future<Map<String, dynamic>> verificationStatus() async {
+    final r = await _dio.get('/loan-verification/me');
+    return _dataOf(r.data);
+  }
+
+  Future<void> acceptVerificationConsent() async {
+    await _dio.post('/loan-verification/consent', data: {
+      'accepted': true,
+      'version': '2026-09',
+    });
+  }
+
+  Future<Map<String, dynamic>> verifyPanWithSignCare({
+    required String pan,
+    required String name,
+    String dob = '',
+  }) async {
+    final r = await _dio.post('/loan-verification/pan', data: {
+      'pan': pan,
+      'name': name,
+      if (dob.isNotEmpty) 'dob': dob,
+    });
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> startAadhaarOvse({String channel = 'web'}) async {
+    final r = await _dio.post('/loan-verification/aadhaar/init', data: {'channel': channel});
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> aadhaarOvseResult(String txnId) async {
+    final r = await _dio.get('/loan-verification/aadhaar/result/$txnId');
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> verifyLiveness(String imageBase64) async {
+    final r = await _dio.post('/loan-verification/liveness', data: {'imageBase64': imageBase64});
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> verifyFaceMatch({required String selfieBase64, String? identityPhotoBase64}) async {
+    final r = await _dio.post('/loan-verification/face-match', data: {
+      'selfieBase64': selfieBase64,
+      if (identityPhotoBase64 != null) 'identityPhotoBase64': identityPhotoBase64,
+    });
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> verifyBankWithSignCare({required String accountNumber, required String ifsc}) async {
+    final r = await _dio.post('/loan-verification/bank', data: {'accountNumber': accountNumber, 'ifsc': ifsc});
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> fetchExperian() async {
+    final r = await _dio.post('/loan-verification/credit-report');
+    return _dataOf(r.data);
+  }
+
   // Old simple apply kept for compatibility.
   Future<String> apply(num amount, int tenureMonths, {String? purpose, List<String>? docs}) async {
     try {

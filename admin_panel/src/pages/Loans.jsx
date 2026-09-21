@@ -578,6 +578,15 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
   const panVerified = getPanStatus(loan)
   const nextDue = getNextDue(loan)
   const creditReport = loan.creditReport || loan.userKyc?.creditReport || null
+  const signcare = loan.signcareVerification || null
+  const signcareStages = [
+    ['Consent', signcare?.consent?.accepted ? { status: 'VERIFIED', message: 'Customer consent recorded' } : null],
+    ['PAN', signcare?.pan], ['Aadhaar OVSE', signcare?.aadhaar],
+    ['Face liveness', signcare?.liveness], ['Face match', signcare?.faceMatch],
+    ['Bank account', signcare?.bank], ['Experian', signcare?.credit],
+    ['Account Aggregator', signcare?.accountAggregator], ['Agreement', signcare?.agreement],
+    ['eStamp', signcare?.eStamp], ['Aadhaar eSign', signcare?.eSign], ['Audit trail', signcare?.auditTrail],
+  ]
 
   return (
     <Modal show={Boolean(loan)} onHide={onHide} size="xl" centered>
@@ -699,6 +708,36 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
                 <summary>View full credit report response</summary>
                 <div className="ekyc-raw-label">Credit report response</div>
                 <pre>{JSON.stringify(creditReport.response, null, 2)}</pre>
+              </details>
+            )}
+          </div>
+
+          <div className="detail-section">
+            <div className="section-heading-row">
+              <h4>SignCare Verification Flow</h4>
+              <Badge bg={signcare ? 'info' : 'secondary'}>{signcare ? 'Live record' : 'Not started'}</Badge>
+            </div>
+            <div className="detail-grid">
+              {signcareStages.map(([label, stage]) => {
+                const stageStatus = normalize(stage?.status || 'NOT_STARTED')
+                const tone = stageStatus === 'VERIFIED' ? 'success' : stageStatus === 'FAILED' ? 'danger' : stageStatus === 'PENDING' ? 'warning' : 'secondary'
+                return (
+                  <div className="info-box" key={label}>
+                    <span>{label}</span>
+                    <div className="d-flex align-items-center gap-2 mb-1"><Badge bg={tone}>{stageStatus.replaceAll('_', ' ')}</Badge></div>
+                    <strong>{stage?.message || 'Awaiting customer action'}</strong>
+                    {stage?.requestId && <small>Request: {stage.requestId}</small>}
+                    {stage?.providerReference && <small>Provider ref: {stage.providerReference}</small>}
+                    {stage?.verifiedAt && <small>Verified: {formatDate(stage.verifiedAt)}</small>}
+                  </div>
+                )
+              })}
+            </div>
+            {signcare && (
+              <details className="ekyc-raw">
+                <summary>View complete SignCare evidence</summary>
+                <div className="ekyc-raw-label">Provider responses and audit metadata</div>
+                <pre>{JSON.stringify(signcare, null, 2)}</pre>
               </details>
             )}
           </div>

@@ -61,7 +61,8 @@ import adminInvoices from './routes/adminInvoices.js';
 import adminOffers from './routes/adminOffers.js';
 import adminRewards from './routes/adminRewards.js';
 import adminClubAPI from './routes/adminClubAPI.js';
-import creditReportRoutes from './routes/creditReports.js';
+import loanVerificationRoutes from './routes/loanVerification.js';
+import signcareWebhookRoutes from './routes/signcareWebhook.js';
 import upiConsumerRoutes from './routes/upiConsumer.js';
 import merchantBusinessRoutes from './routes/merchantBusiness.js';
 import merchantQrRoutes from './routes/merchantQr.js';
@@ -295,7 +296,10 @@ app.use('/api/webhooks/velxapay', velxapayWebhookRoutes);
 app.use('/api/admin/merchant-businesses', adminMerchantBusinessesRoutes);
 app.use("/api/admin/services", adminServiceRoutes);
 app.use("/api/admin/push", adminPush);
-app.use("/api/credit-report", creditReportRoutes);
+// SignCare is the only loan verification provider. The legacy credit-report
+// route is intentionally no longer mounted.
+app.use("/api/loan-verification", loanVerificationRoutes);
+app.use("/api/signcare/webhook", signcareWebhookRoutes);
 app.use("/api/upi-consumer", upiConsumerRoutes);
 
 // Club APIs

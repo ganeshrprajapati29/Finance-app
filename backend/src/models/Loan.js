@@ -143,6 +143,12 @@ const loanSchema = new mongoose.Schema({
     terms: consentSchema,
     privacy: consentSchema
   },
+  verification: {
+    provider: { type: String, default: 'SIGNCARE' },
+    verificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'LoanVerification' },
+    snapshot: mongoose.Schema.Types.Mixed,
+    capturedAt: Date,
+  },
   statusHistory: [statusHistorySchema],
   transactions: [transactionSchema],
   schedule: [scheduleSchema],

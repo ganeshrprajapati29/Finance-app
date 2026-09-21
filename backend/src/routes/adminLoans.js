@@ -5,6 +5,9 @@ import { requireAdmin } from '../middlewares/adminAuth.js';
 import { ok, fail } from '../utils/response.js';
 import { quickSort, mergeSort, PriorityQueue } from '../utils/dsa.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
+import LoanVerification from '../models/LoanVerification.js';
+
+const REQUIRED_SIGNCARE_STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit'];
 
 const router = Router();
 
@@ -25,6 +28,14 @@ router.get('/', requireAdmin, async (req, res, next) => {
       .limit(Number(limit));
 
     const total = await Loan.countDocuments(query);
+    const userIds = loans.map((loan) => loan.userId?._id || loan.userId).filter(Boolean);
+    const verificationRows = await LoanVerification.find({ userId: { $in: userIds } }).lean();
+    const verificationByUser = new Map(verificationRows.map((row) => [String(row.userId), row]));
+    const loansWithVerification = loans.map((loan) => {
+      const item = loan.toObject();
+      item.signcareVerification = verificationByUser.get(String(item.userId?._id || item.userId)) || null;
+      return item;
+    });
 
     // If loans need custom sorting (e.g., by due dates), use DSA algorithms
     if (sortBy === 'nextDueDate' && loans.length > 0) {
@@ -33,10 +44,10 @@ router.get('/', requireAdmin, async (req, res, next) => {
         const bDue = b.schedule?.find(s => !s.paid)?.dueDate?.getTime() || Infinity;
         return sortOrder === 'desc' ? bDue - aDue : aDue - bDue;
       };
-      const sortedLoans = quickSort(loans, compareFn);
+      const sortedLoans = quickSort(loansWithVerification, compareFn);
       ok(res, { items: sortedLoans, total });
     } else {
-      ok(res, { items: loans, total });
+      ok(res, { items: loansWithVerification, total });
     }
   } catch (e) {
     next(e);
@@ -57,6 +68,17 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     }
 
     if (decision === 'APPROVED') {
+      const verification = await LoanVerification.findOne({ userId: loan.userId }).lean();
+      const incomplete = REQUIRED_SIGNCARE_STAGES.filter((stage) => verification?.[stage]?.status !== 'VERIFIED');
+      if (incomplete.length) {
+        return fail(
+          res,
+          'VERIFICATION_INCOMPLETE',
+          `Complete SignCare verification before approval: ${incomplete.join(', ')}.`,
+          409,
+          { incompleteStages: incomplete }
+        );
+      }
       const approved = Number(amountApproved);
       const apr = Number(rateAPR);
       const tenure = Number(tenureMonths);

@@ -8,6 +8,7 @@ import { uploadToCloudinary } from '../services/cloudinary.js';
 import { ok, fail } from '../utils/response.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
+import LoanVerification from '../models/LoanVerification.js';
 import multer from 'multer';
 
 // Memory storage for Cloudinary uploads
@@ -258,6 +259,19 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
         400
       );
     }
+    const signcareVerification = await LoanVerification.findOne({ userId: req.user.uid }).lean();
+    const requiredSigncareStages = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit'];
+    const incompleteStage = requiredSigncareStages.find(
+      (stage) => signcareVerification?.[stage]?.status !== 'VERIFIED'
+    );
+    if (incompleteStage) {
+      return fail(
+        res,
+        'SIGNCARE_VERIFICATION_REQUIRED',
+        `Please complete ${incompleteStage} verification before submitting the loan application.`,
+        409
+      );
+    }
 
     // Handle document uploads to Cloudinary if files are provided
     let documents = payload.documents || {};
@@ -342,6 +356,17 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
 
     const loanAccountNumber = generateLoanAccountNumber();
 
+    const verificationSnapshot = signcareVerification ? Object.fromEntries(
+      ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail']
+        .map((key) => [key, {
+          status: signcareVerification[key]?.status || 'NOT_STARTED',
+          requestId: signcareVerification[key]?.requestId || '',
+          providerReference: signcareVerification[key]?.providerReference || '',
+          message: signcareVerification[key]?.message || '',
+          verifiedAt: signcareVerification[key]?.verifiedAt || null,
+        }])
+    ) : {};
+
     const loan = await Loan.create({
       userId: req.user.uid,
       loanAccountNumber: loanAccountNumber,
@@ -370,6 +395,12 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
           accepted: true, acceptedAt: new Date(), version: payload.consents.version,
           ipAddress: req.ip, userAgent: req.get('user-agent') || ''
         }
+      },
+      verification: {
+        provider: 'SIGNCARE',
+        verificationId: signcareVerification?._id,
+        snapshot: verificationSnapshot,
+        capturedAt: new Date(),
       },
       statusHistory: [{
         status: 'PENDING',
