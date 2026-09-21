@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/friendly_error.dart';
@@ -31,6 +32,9 @@ class _LoanDetailPageState extends State<LoanDetailPage> {
   bool _paying = false;
   String? _error;
   String? _notice;
+  Map<String, dynamic> _agreement = const {};
+  bool _agreementBusy = false;
+  bool _agreementAccepted = false;
 
   late final PaymentService _payments = PaymentService();
 
@@ -51,9 +55,14 @@ class _LoanDetailPageState extends State<LoanDetailPage> {
     setState(() => _loading = _loan == null);
     try {
       final fresh = await LoanService().detail(widget.id);
+      Map<String, dynamic> agreement = const {};
+      if (fresh.status == 'APPROVED' || fresh.decision?.agreementStatus == 'SIGNED') {
+        agreement = await LoanService().agreement(widget.id);
+      }
       if (!mounted) return;
       setState(() {
         _loan = fresh;
+        _agreement = agreement;
         _error = null;
       });
     } catch (e) {
@@ -62,6 +71,45 @@ class _LoanDetailPageState extends State<LoanDetailPage> {
           friendlyErrorMessage(e, fallback: 'Unable to load this loan.'));
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _openDocument(String? value) async {
+    final uri = Uri.tryParse(value ?? '');
+    if (uri == null || !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) setState(() => _error = 'The document could not be opened. Please try again.');
+    }
+  }
+
+  Future<void> _startSigning() async {
+    if (!_agreementAccepted) {
+      setState(() => _error = 'Please review and accept the agreement before continuing.');
+      return;
+    }
+    setState(() { _agreementBusy = true; _error = null; });
+    try {
+      final data = await LoanService().startAgreementSigning(widget.id);
+      final url = data['signingUrl']?.toString();
+      if (url == null || url.isEmpty) throw Exception('The secure signing page is unavailable.');
+      await _openDocument(url);
+      if (mounted) setState(() { _agreement = {..._agreement, ...data}; _notice = 'Complete Aadhaar eSign, then return here and refresh the status.'; });
+    } catch (e) {
+      if (mounted) setState(() => _error = friendlyErrorMessage(e, fallback: 'Secure signing could not be started.'));
+    } finally {
+      if (mounted) setState(() => _agreementBusy = false);
+    }
+  }
+
+  Future<void> _refreshSigning() async {
+    setState(() { _agreementBusy = true; _error = null; });
+    try {
+      final data = await LoanService().refreshAgreementStatus(widget.id);
+      if (mounted) setState(() { _agreement = {..._agreement, ...data}; _notice = data['status'] == 'SIGNED' ? 'Agreement signed and verified successfully.' : 'Your signature is still pending.'; });
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = friendlyErrorMessage(e, fallback: 'Signing status could not be refreshed.'));
+    } finally {
+      if (mounted) setState(() => _agreementBusy = false);
     }
   }
 
@@ -307,6 +355,58 @@ class _LoanDetailPageState extends State<LoanDetailPage> {
               ],
             ),
           ),
+          if (loan.status == 'APPROVED' || loan.decision?.agreementStatus == 'SIGNED') ...[
+            const KpSectionHeader(title: 'Digital loan agreement'),
+            KpCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.verified_user_outlined, color: KhatuColors.teal),
+                    KhatuSpace.gapSm,
+                    Expanded(child: Text(
+                      (_agreement['status'] ?? loan.decision?.agreementStatus ?? 'PENDING_SIGNATURE') == 'SIGNED'
+                          ? 'Agreement signed and verified'
+                          : 'Review and Aadhaar eSign required',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    )),
+                  ]),
+                  KhatuSpace.gapMd,
+                  const Text('Review the approved amount, APR, fees, tenure and repayment terms before signing. Disbursal starts only after your digital signature is verified.'),
+                  KhatuSpace.gapMd,
+                  OutlinedButton.icon(
+                    onPressed: () => _openDocument((_agreement['signedAgreementUrl'] ?? _agreement['agreementUrl'] ?? loan.decision?.signedAgreementUrl ?? loan.decision?.agreementUrl)?.toString()),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: Text((_agreement['status'] ?? loan.decision?.agreementStatus) == 'SIGNED' ? 'View signed agreement' : 'Review agreement PDF'),
+                  ),
+                  if ((_agreement['status'] ?? loan.decision?.agreementStatus) != 'SIGNED') ...[
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _agreementAccepted,
+                      onChanged: _agreementBusy ? null : (value) => setState(() => _agreementAccepted = value == true),
+                      title: const Text('I have reviewed and accept the approved loan terms.'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    FilledButton.icon(
+                      onPressed: _agreementBusy ? null : _startSigning,
+                      icon: _agreementBusy
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.draw_outlined),
+                      label: const Text('Continue to Aadhaar eSign'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _agreementBusy ? null : _refreshSigning,
+                      icon: const Icon(Icons.sync_rounded),
+                      label: const Text('I have signed - refresh status'),
+                    ),
+                  ] else ...[
+                    KhatuSpace.gapSm,
+                    const KpNoticeBanner(icon: Icons.shield_outlined, color: KhatuColors.success, message: 'Signed copy and digital audit trail are securely recorded.'),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ],
         KpSectionHeader(
           title: 'Repayment schedule',

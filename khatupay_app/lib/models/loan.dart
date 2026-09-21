@@ -57,10 +57,15 @@ class LoanDecision {
   final String? lenderName;
   final String? kfsUrl;
   final String? agreementUrl;
+  final String? signedAgreementUrl;
+  final String? agreementStatus;
+  final String? agreementDocumentId;
+  final DateTime? agreementSignedAt;
 
   LoanDecision({this.amountApproved, this.rateAPR, this.tenureMonths, this.processingFee,
     this.taxAmount, this.netDisbursalAmount, this.rejectionReason, this.lenderName,
-    this.kfsUrl, this.agreementUrl});
+    this.kfsUrl, this.agreementUrl, this.signedAgreementUrl,
+    this.agreementStatus, this.agreementDocumentId, this.agreementSignedAt});
 
   factory LoanDecision.fromJson(Map<String, dynamic>? json) => LoanDecision(
         amountApproved: json?['amountApproved'],
@@ -73,6 +78,12 @@ class LoanDecision {
         lenderName: json?['lenderName']?.toString(),
         kfsUrl: json?['kfsUrl']?.toString(),
         agreementUrl: json?['agreementUrl']?.toString(),
+        signedAgreementUrl: json?['signedAgreementUrl']?.toString(),
+        agreementStatus: json?['agreementStatus']?.toString(),
+        agreementDocumentId: json?['agreementDocumentId']?.toString(),
+        agreementSignedAt: json?['agreementSignedAt'] != null
+            ? DateTime.tryParse(json!['agreementSignedAt'].toString())
+            : null,
       );
 }
 
@@ -138,6 +149,11 @@ class Loan {
                 'amountApproved': decision?.amountApproved,
                 'rateAPR': decision?.rateAPR,
                 'tenureMonths': decision?.tenureMonths,
+                'agreementUrl': decision?.agreementUrl,
+                'signedAgreementUrl': decision?.signedAgreementUrl,
+                'agreementStatus': decision?.agreementStatus,
+                'agreementDocumentId': decision?.agreementDocumentId,
+                'agreementSignedAt': decision?.agreementSignedAt?.toIso8601String(),
               }
             : null,
         'schedule': schedule,

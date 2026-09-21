@@ -10,6 +10,8 @@ import { notifyUserSmart } from '../services/smartNotifications.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
 import LoanVerification from '../models/LoanVerification.js';
 import multer from 'multer';
+import { createESign, getESignStatus, getESignAudit, signcareRequestId } from '../services/signcare.js';
+import { generateLoanAgreementPdf } from '../services/loanAgreement.js';
 
 // Memory storage for Cloudinary uploads
 const memoryStorage = multer.memoryStorage();
@@ -483,6 +485,142 @@ router.get('/', requireAuth, async (req, res, next) => {
   try {
     const rows = await Loan.find({ userId: req.user.uid }).sort({ createdAt: -1 });
     ok(res, rows);
+  } catch (e) { next(e); }
+});
+
+function signcareData(result) {
+  const body = result?.response || {};
+  return body?.data || body?.result || body;
+}
+
+function safeProviderData(data = {}) {
+  const {
+    content, documentContent, signedDocument, esignLink, signingUrl,
+    ...safe
+  } = data || {};
+  return safe;
+}
+
+router.get('/:id/agreement', requireAuth, async (req, res, next) => {
+  try {
+    const loan = await Loan.findOne({ _id: req.params.id, userId: req.user.uid }).lean();
+    if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
+    const verification = await LoanVerification.findOne({ userId: req.user.uid }).lean();
+    ok(res, {
+      status: loan.decision?.agreementStatus || 'NOT_AVAILABLE',
+      agreementUrl: loan.decision?.agreementUrl || '',
+      signedAgreementUrl: loan.decision?.signedAgreementUrl || '',
+      documentId: loan.decision?.agreementDocumentId || '',
+      signedAt: loan.decision?.agreementSignedAt || null,
+      eSignStatus: verification?.eSign?.status || 'NOT_STARTED',
+      auditStatus: verification?.auditTrail?.status || 'NOT_STARTED',
+    });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/agreement/sign', requireAuth, async (req, res, next) => {
+  try {
+    const loan = await Loan.findOne({ _id: req.params.id, userId: req.user.uid });
+    if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
+    if (loan.status !== 'APPROVED') return fail(res, 'INVALID_STATE', 'The agreement becomes available after loan approval.', 409);
+    if (loan.decision?.agreementStatus === 'SIGNED') {
+      return ok(res, { status: 'SIGNED', signedAgreementUrl: loan.decision.signedAgreementUrl });
+    }
+    if (!req.body?.accepted) return fail(res, 'CONSENT_REQUIRED', 'Review and accept the loan agreement before continuing.', 400);
+
+    const [borrower, verification] = await Promise.all([
+      User.findById(req.user.uid).select('name email mobile').lean(),
+      LoanVerification.findOne({ userId: req.user.uid }),
+    ]);
+    if (!borrower || !verification) return fail(res, 'VERIFICATION_NOT_FOUND', 'Your verified borrower profile is unavailable.', 409);
+
+    const pdf = await generateLoanAgreementPdf(loan, borrower);
+    const requestId = signcareRequestId('KP-ESIGN');
+    const result = await createESign({
+      referenceId: `KP-LOAN-${loan._id}`,
+      documentInfo: { name: `KhatuPay Loan Agreement ${loan.loanAccountNumber || loan._id}.pdf`, content: pdf.toString('base64') },
+      sequentialSigning: false,
+      userInfo: [{
+        name: borrower.name || loan.application?.personal?.name,
+        emailId: borrower.email || loan.application?.personal?.email,
+        mobileNo: borrower.mobile || loan.application?.personal?.mobile,
+        userType: 'Signer', signatureType: 'Aadhaar', userReferenceId: `KPUSER-${borrower._id}`,
+        aadhaarOptions: { otp: true, biometricThumbScan: false, irisScan: false, face: false },
+        pageToBeSigned: 2, signAppearance: 4,
+      }],
+      senderName: 'KhatuPay', descriptionForInvitee: 'Review and sign your KhatuPay loan agreement.',
+      skipVerificationCode: false,
+    }, requestId);
+    const data = signcareData(result);
+    const signer = Array.isArray(data.userInfo) ? data.userInfo[0] : data.signerInfo?.[0];
+    const documentId = String(data.documentId || '').trim();
+    const signingUrl = String(signer?.esignLink || data.esignLink || '').trim();
+    if (!documentId || !signingUrl) return fail(res, 'ESIGN_START_FAILED', 'The signing page could not be created. Please try again.', 502);
+
+    verification.eSign = {
+      status: 'PENDING', requestId: result.requestId || requestId, providerReference: documentId,
+      message: 'Agreement is awaiting Aadhaar eSign.', updatedAt: new Date(), data: safeProviderData(data),
+    };
+    loan.decision.agreementStatus = 'PENDING_SIGNATURE';
+    loan.decision.agreementDocumentId = documentId;
+    await Promise.all([verification.save(), loan.save()]);
+    ok(res, { status: 'PENDING_SIGNATURE', documentId, signingUrl }, 'Your secure signing page is ready.');
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/agreement/status', requireAuth, async (req, res, next) => {
+  try {
+    const loan = await Loan.findOne({ _id: req.params.id, userId: req.user.uid });
+    if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found', 404);
+    if (loan.decision?.agreementStatus === 'SIGNED' && loan.decision?.signedAgreementUrl) {
+      return ok(res, {
+        status: 'SIGNED', signedAgreementUrl: loan.decision.signedAgreementUrl,
+        signedAt: loan.decision.agreementSignedAt,
+      });
+    }
+    const verification = await LoanVerification.findOne({ userId: req.user.uid });
+    const documentId = loan.decision?.agreementDocumentId || verification?.eSign?.providerReference;
+    if (!documentId || !verification) return fail(res, 'ESIGN_NOT_STARTED', 'Start agreement signing before checking its status.', 409);
+
+    const requestId = signcareRequestId('KP-ESIGN-STATUS');
+    const result = await getESignStatus({ documentId, ...(verification.eSign?.data?.documentReferenceId ? { documentReferenceId: verification.eSign.data.documentReferenceId } : {}) }, requestId);
+    const data = signcareData(result);
+    const providerStatus = String(data.documentStatus || data.status || '').toUpperCase();
+    const completed = ['COMPLETED', 'SIGNED', 'SUCCESS'].includes(providerStatus);
+    if (!completed) {
+      verification.eSign.status = providerStatus === 'FAILED' ? 'FAILED' : 'PENDING';
+      verification.eSign.message = providerStatus === 'FAILED' ? 'Agreement signing was not completed.' : 'Agreement signing is still pending.';
+      verification.eSign.updatedAt = new Date();
+      verification.eSign.data = safeProviderData(data);
+      await verification.save();
+      return ok(res, { status: verification.eSign.status, providerStatus });
+    }
+
+    const content = data.content || data.documentContent || data.signedDocument;
+    if (!content) return fail(res, 'SIGNED_DOCUMENT_PENDING', 'Signature is complete, but the signed copy is still being prepared. Please refresh shortly.', 409);
+    const base64 = String(content).replace(/^data:[^;]+;base64,/i, '').replace(/\s/g, '');
+    const uploaded = await uploadToCloudinary(Buffer.from(base64, 'base64'), 'khatupay/signed-loan-agreements');
+    loan.decision.agreementStatus = 'SIGNED';
+    loan.decision.agreementDocumentId = documentId;
+    loan.decision.agreementSignedAt = new Date();
+    loan.decision.signedAgreementUrl = uploaded.secure_url;
+    verification.eSign = {
+      status: 'VERIFIED', requestId: result.requestId || requestId, providerReference: documentId,
+      message: 'Loan agreement signed successfully.', verifiedAt: new Date(), updatedAt: new Date(), data: safeProviderData(data),
+    };
+    try {
+      const auditResult = await getESignAudit(documentId, signcareRequestId('KP-ESIGN-AUDIT'));
+      verification.auditTrail = {
+        status: 'VERIFIED', requestId: auditResult.requestId, providerReference: documentId,
+        message: 'Digital signing audit trail verified.', verifiedAt: new Date(), updatedAt: new Date(),
+        data: safeProviderData(signcareData(auditResult)),
+      };
+    } catch (_) {
+      verification.auditTrail = { status: 'PENDING', providerReference: documentId, message: 'Signed successfully. Audit trail sync is pending.', updatedAt: new Date() };
+    }
+    loan.statusHistory.push({ status: 'APPROVED', title: 'Agreement signed', message: 'The digital loan agreement was signed successfully.', actorType: 'USER', actorId: req.user.uid });
+    await Promise.all([loan.save(), verification.save()]);
+    ok(res, { status: 'SIGNED', signedAgreementUrl: uploaded.secure_url, signedAt: loan.decision.agreementSignedAt });
   } catch (e) { next(e); }
 });
 

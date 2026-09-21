@@ -130,6 +130,8 @@ const loanSchema = new mongoose.Schema({
     processingFee: Number, taxAmount: Number, netDisbursalAmount: Number,
     totalRepaymentAmount: Number, rejectionReason: String,
     lenderName: String, offerExpiresAt: Date, kfsUrl: String, agreementUrl: String,
+    signedAgreementUrl: String, agreementStatus: String,
+    agreementDocumentId: String, agreementSignedAt: Date,
     decidedAt: Date, decidedBy: { type: mongoose.Schema.Types.ObjectId, ref:'User' }
   },
   disbursementDate: Date,

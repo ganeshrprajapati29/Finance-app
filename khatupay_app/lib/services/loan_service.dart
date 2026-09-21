@@ -200,6 +200,33 @@ class LoanService {
     return Loan.fromJson(Map<String, dynamic>.from(data));
   }
 
+  Future<Map<String, dynamic>> agreement(String loanId) async {
+    try {
+      final r = await _dio.get('/loans/$loanId/agreement');
+      return _dataOf(r.data);
+    } on DioException catch (e) {
+      throw Exception(_friendlyError(e, fallback: 'Agreement details could not be loaded.'));
+    }
+  }
+
+  Future<Map<String, dynamic>> startAgreementSigning(String loanId) async {
+    try {
+      final r = await _dio.post('/loans/$loanId/agreement/sign', data: {'accepted': true});
+      return _dataOf(r.data);
+    } on DioException catch (e) {
+      throw Exception(_friendlyError(e, fallback: 'Secure signing could not be started.'));
+    }
+  }
+
+  Future<Map<String, dynamic>> refreshAgreementStatus(String loanId) async {
+    try {
+      final r = await _dio.post('/loans/$loanId/agreement/status');
+      return _dataOf(r.data);
+    } on DioException catch (e) {
+      throw Exception(_friendlyError(e, fallback: 'Signing status could not be refreshed.'));
+    }
+  }
+
   Future<List<Map<String, dynamic>>> repaymentHistory(String loanId) async {
     final r = await _dio.get('/repayments/$loanId');
     final rows = r.data is Map ? r.data['data'] : null;

@@ -443,7 +443,13 @@ const Loans = () => {
                             </>
                           )}
                           {normalize(loan.status) === 'APPROVED' && (
-                            <Button variant="outline-primary" size="sm" onClick={() => disburseLoan(loan)} disabled={processing}>
+                            <Button
+                              variant="outline-primary"
+                              size="sm"
+                              title={loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
+                              onClick={() => disburseLoan(loan)}
+                              disabled={processing || loan.decision?.agreementStatus !== 'SIGNED'}
+                            >
                               <Send size={15} />
                             </Button>
                           )}
@@ -648,6 +654,27 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
               <Info label="Address" value={personal.address || 'N/A'} />
               <Info label="Father" value={personal.fatherName || 'N/A'} />
               <Info label="Mother" value={personal.motherName || 'N/A'} />
+            </div>
+          </div>
+
+          <div className="detail-section">
+            <div className="section-heading-row">
+              <h4>Digital Loan Agreement</h4>
+              <Badge bg={loan.decision?.agreementStatus === 'SIGNED' ? 'success' : 'warning'}>
+                {(loan.decision?.agreementStatus || 'PENDING SIGNATURE').replaceAll('_', ' ')}
+              </Badge>
+            </div>
+            <div className="detail-grid">
+              <Info label="Agreement reference" value={loan.decision?.agreementDocumentId || signcare?.eSign?.providerReference || 'Not created'} />
+              <Info label="Signed at" value={formatDate(loan.decision?.agreementSignedAt || signcare?.eSign?.verifiedAt)} />
+              <Info label="Aadhaar eSign" value={signcare?.eSign?.status || 'NOT_STARTED'} />
+              <Info label="Audit trail" value={signcare?.auditTrail?.status || 'NOT_STARTED'} />
+              <Info label="Generated agreement" value={loan.decision?.agreementUrl ? 'Available' : 'Not available'} />
+              <Info label="Signed agreement" value={loan.decision?.signedAgreementUrl ? 'Available' : 'Pending'} />
+            </div>
+            <div className="d-flex flex-wrap gap-2 mt-3">
+              {loan.decision?.agreementUrl && <Button as="a" size="sm" variant="outline-primary" href={loan.decision.agreementUrl} target="_blank" rel="noreferrer">View agreement PDF</Button>}
+              {loan.decision?.signedAgreementUrl && <Button as="a" size="sm" variant="success" href={loan.decision.signedAgreementUrl} target="_blank" rel="noreferrer">View signed agreement</Button>}
             </div>
           </div>
 
@@ -900,7 +927,13 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
           </>
         )}
         {normalize(loan.status) === 'APPROVED' && (
-          <Button onClick={() => onDisburse(loan)} disabled={processing}>Disburse</Button>
+          <Button
+            onClick={() => onDisburse(loan)}
+            disabled={processing || loan.decision?.agreementStatus !== 'SIGNED'}
+            title={loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
+          >
+            {loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse' : 'Awaiting signature'}
+          </Button>
         )}
       </Modal.Footer>
     </Modal>

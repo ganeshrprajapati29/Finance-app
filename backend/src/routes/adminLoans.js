@@ -6,6 +6,9 @@ import { ok, fail } from '../utils/response.js';
 import { quickSort, mergeSort, PriorityQueue } from '../utils/dsa.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
 import LoanVerification from '../models/LoanVerification.js';
+import User from '../models/User.js';
+import { uploadToCloudinary } from '../services/cloudinary.js';
+import { generateLoanAgreementPdf } from '../services/loanAgreement.js';
 
 const REQUIRED_SIGNCARE_STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit'];
 
@@ -102,9 +105,26 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
         lenderName: String(lenderName || '').trim(),
         kfsUrl: String(kfsUrl || '').trim(),
         agreementUrl: String(agreementUrl || '').trim(),
+        agreementStatus: 'PENDING_SIGNATURE',
         decidedAt: new Date(),
         decidedBy: req.admin.id,
       };
+      if (!loan.decision.agreementUrl) {
+        const borrower = await User.findById(loan.userId).select('name email mobile').lean();
+        const agreementPdf = await generateLoanAgreementPdf(loan, borrower);
+        const uploaded = await uploadToCloudinary(agreementPdf, 'khatupay/loan-agreements');
+        loan.decision.agreementUrl = uploaded.secure_url;
+      }
+      const verificationRecord = await LoanVerification.findOne({ userId: loan.userId });
+      if (!verificationRecord) {
+        return fail(res, 'VERIFICATION_NOT_FOUND', 'The borrower verification record is unavailable.', 409);
+      }
+      verificationRecord.agreement = {
+        status: 'VERIFIED', message: 'Final loan agreement generated and ready for signature.',
+        providerReference: String(loan._id), verifiedAt: new Date(), updatedAt: new Date(),
+        data: { loanId: String(loan._id), agreementUrl: loan.decision.agreementUrl },
+      };
+      await verificationRecord.save();
       loan.statusHistory.push({
         status: 'APPROVED', title: 'Loan approved',
         message: 'Your loan offer is ready for review.', actorType: 'ADMIN', actorId: req.admin.id
@@ -195,6 +215,9 @@ router.post('/:id/disburse', requireAdmin, async (req, res, next) => {
     const txnId = String(req.body?.txnId || '').trim();
     if (!txnId) {
       return fail(res, 'REFERENCE_REQUIRED', 'Enter the confirmed bank transfer reference before marking this loan disbursed.', 400);
+    }
+    if (loan.decision?.agreementStatus !== 'SIGNED' || !loan.decision?.signedAgreementUrl) {
+      return fail(res, 'AGREEMENT_NOT_SIGNED', 'The borrower must sign the loan agreement before disbursal.', 409);
     }
 
     // Simulate bank transfer to user's account
