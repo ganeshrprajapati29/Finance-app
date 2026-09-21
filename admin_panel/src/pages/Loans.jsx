@@ -578,6 +578,11 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
   const panVerified = getPanStatus(loan)
   const nextDue = getNextDue(loan)
   const signcare = loan.signcareVerification || null
+  const bsaData = signcare?.bankStatement?.data || {}
+  const bsaReport = bsaData.jsonDetails || bsaData.json_details || null
+  const statementAccount = bsaReport?.statementAccount || {}
+  const statementTransactions = bsaReport?.consolidatedinfo?.xns_list || []
+  const statementSummary = bsaReport?.consolidatedinfo?.xns || {}
   const signcareCredit = signcare?.credit?.data || {}
   const experianReport = signcareCredit.jsonExperianReport || signcareCredit.experianReport || null
   const experianAccounts = experianReport?.caiS_Account?.caiS_Account_DETAILS || []
@@ -607,7 +612,7 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
     ['Consent', signcare?.consent?.accepted ? { status: 'VERIFIED', message: 'Customer consent recorded' } : null],
     ['PAN', signcare?.pan], ['Aadhaar OVSE', signcare?.aadhaar],
     ['Face liveness', signcare?.liveness], ['Face match', signcare?.faceMatch],
-    ['Bank account', signcare?.bank], ['Experian', signcare?.credit],
+    ['Bank account', signcare?.bank], ['Bank statement analysis', signcare?.bankStatement], ['Experian', signcare?.credit],
     ['Account Aggregator', signcare?.accountAggregator], ['Agreement', signcare?.agreement],
     ['eStamp', signcare?.eStamp], ['Aadhaar eSign', signcare?.eSign], ['Audit trail', signcare?.auditTrail],
   ]
@@ -707,6 +712,34 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
                 <summary>View full PAN provider response</summary>
                 <div className="ekyc-raw-label">PAN verification response</div>
                 <pre>{JSON.stringify(panResponse && Object.keys(panResponse).length ? panResponse : panData, null, 2)}</pre>
+              </details>
+            )}
+          </div>
+
+          <div className="detail-section credit-report-section">
+            <div className="section-heading-row">
+              <h4>Bank Statement Analysis</h4>
+              <Badge bg={signcare?.bankStatement?.status === 'VERIFIED' ? 'success' : 'secondary'}>
+                {signcare?.bankStatement?.status || 'Not analysed'}
+              </Badge>
+            </div>
+            <div className="detail-grid">
+              <Info label="Bank" value={statementAccount.bank || 'N/A'} />
+              <Info label="Account" value={statementAccount.accountNo ? `****${String(statementAccount.accountNo).slice(-4)}` : 'N/A'} />
+              <Info label="Account Type" value={statementAccount.accountType || statementAccount.accountSubType || 'N/A'} />
+              <Info label="IFSC" value={statementAccount.ifsc || 'N/A'} />
+              <Info label="Branch" value={statementAccount.branch || 'N/A'} />
+              <Info label="Current Balance" value={statementAccount.currentBalance || 'N/A'} />
+              <Info label="Statement Period" value={[statementSummary.startDate, statementSummary.endDate].filter(Boolean).join(' to ') || 'N/A'} />
+              <Info label="Transactions Analysed" value={statementTransactions.length || 'N/A'} />
+              <Info label="Analysis Order" value={signcare?.bankStatement?.providerReference || 'N/A'} />
+              <Info label="Analysed At" value={formatDate(signcare?.bankStatement?.verifiedAt)} />
+            </div>
+            {bsaReport && (
+              <details className="ekyc-raw">
+                <summary>View complete bank statement analysis</summary>
+                <div className="ekyc-raw-label">SignCare BSA response</div>
+                <pre>{JSON.stringify(bsaReport, null, 2)}</pre>
               </details>
             )}
           </div>

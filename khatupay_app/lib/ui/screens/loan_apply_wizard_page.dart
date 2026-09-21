@@ -88,6 +88,10 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
   String _incomeProofPath = '';
   String _incomeProofFileName = '';
   bool _pickingIncomeProof = false;
+  bool _bankStatementAnalysing = false;
+  bool _bankStatementVerified = false;
+  String? _bankStatementOrderId;
+  String? _bankStatementMessage;
   final _imagePicker = ImagePicker();
   String _selfiePath = '';
   bool _capturingSelfie = false;
@@ -405,11 +409,16 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       final result = await LoanService().startAadhaarOvse();
       if (!mounted) return;
       setState(() {
-        _aadhaarOtpSessionId = (result['txnId'] ?? result['providerReference'] ?? '').toString();
-        _aadhaarMessage = 'Complete face-auth verification in the official Aadhaar app, then return here.';
+        _aadhaarOtpSessionId =
+            (result['txnId'] ?? result['providerReference'] ?? '').toString();
+        _aadhaarMessage =
+            'Complete face-auth verification in the official Aadhaar app, then return here.';
       });
       final requestUrl = (result['requestUrl'] ?? '').toString();
-      if (requestUrl.isNotEmpty) await launchUrl(Uri.parse(requestUrl), mode: LaunchMode.externalApplication);
+      if (requestUrl.isNotEmpty) {
+        await launchUrl(Uri.parse(requestUrl),
+            mode: LaunchMode.externalApplication);
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _aadhaarMessage =
@@ -536,7 +545,9 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         accountNumber: account,
         ifsc: ifsc,
       );
-      final summary = result['summary'] is Map ? Map<String, dynamic>.from(result['summary']) : const <String, dynamic>{};
+      final summary = result['summary'] is Map
+          ? Map<String, dynamic>.from(result['summary'])
+          : const <String, dynamic>{};
       final name = (summary['name'] ?? '').toString();
       if (!mounted) return;
       setState(() {
@@ -571,8 +582,12 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           'I authorise Khatu Pay to verify my identity, bank account and credit information through SignCare for loan eligibility assessment.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('I agree')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Not now')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('I agree')),
         ],
       ),
     );
@@ -624,14 +639,22 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     try {
       final picked = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+        allowedExtensions: _incomeProofType == 'BANK_STATEMENT'
+            ? ['pdf']
+            : ['pdf', 'jpg', 'jpeg', 'png'],
       );
       final file = picked?.files.firstOrNull;
       if (file?.path == null) return;
       setState(() {
         _incomeProofPath = file!.path!;
         _incomeProofFileName = file.name;
+        _bankStatementVerified = false;
+        _bankStatementOrderId = null;
+        _bankStatementMessage = null;
       });
+      if (_incomeProofType == 'BANK_STATEMENT') {
+        await _startBankStatementAnalysis(file!.path!);
+      }
     } catch (e) {
       if (mounted) {
         _showError(friendlyErrorMessage(e,
@@ -639,6 +662,94 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       }
     } finally {
       if (mounted) setState(() => _pickingIncomeProof = false);
+    }
+  }
+
+  Future<void> _startBankStatementAnalysis(String path) async {
+    setState(() {
+      _bankStatementAnalysing = true;
+      _bankStatementMessage = 'Uploading statement for secure analysis...';
+    });
+    try {
+      if (!await _ensureSignCareConsent()) return;
+      final password = await _optionalStatementPassword();
+      if (!mounted) return;
+      final result = await LoanService().analyseBankStatement(
+        filePath: path,
+        password: password ?? '',
+        accountType: _employmentType == 'Salaried' ? 'SALARIED' : 'SME',
+      );
+      final orderId =
+          (result['orderId'] ?? result['providerReference'] ?? '').toString();
+      if (orderId.isEmpty) {
+        throw Exception('Bank statement analysis could not be started.');
+      }
+      setState(() {
+        _bankStatementOrderId = orderId;
+        _bankStatementMessage =
+            'Analysis started. Checking the report status...';
+      });
+      await _checkBankStatementAnalysis();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _bankStatementMessage = friendlyErrorMessage(e,
+            fallback:
+                'Bank statement could not be analysed. Check the PDF and try again.'));
+      }
+    } finally {
+      if (mounted) setState(() => _bankStatementAnalysing = false);
+    }
+  }
+
+  Future<String?> _optionalStatementPassword() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('PDF password'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Password (optional)',
+            hintText: 'Leave blank if the PDF opens without a password',
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, ''),
+              child: const Text('No password')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text),
+              child: const Text('Continue')),
+        ],
+      ),
+    );
+    controller.dispose();
+    return value;
+  }
+
+  Future<void> _checkBankStatementAnalysis() async {
+    final orderId = (_bankStatementOrderId ?? '').trim();
+    if (orderId.isEmpty) return;
+    setState(() => _bankStatementAnalysing = true);
+    try {
+      final result = await LoanService().bankStatementAnalysisStatus(orderId);
+      final verified = result['status'] == 'VERIFIED';
+      if (!mounted) return;
+      setState(() {
+        _bankStatementVerified = verified;
+        _bankStatementMessage = verified
+            ? 'Bank statement analysed successfully.'
+            : 'Analysis is still processing. Tap Check status after a moment.';
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _bankStatementMessage = friendlyErrorMessage(e,
+            fallback: 'Could not check bank statement analysis status.'));
+      }
+    } finally {
+      if (mounted) setState(() => _bankStatementAnalysing = false);
     }
   }
 
@@ -658,9 +769,11 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       if (liveness['status'] != 'VERIFIED') {
         throw Exception('Live face verification needs another clear photo.');
       }
-      final faceMatch = await LoanService().verifyFaceMatch(imageBase64);
+      final faceMatch =
+          await LoanService().verifyFaceMatch(selfieBase64: imageBase64);
       if (faceMatch['status'] != 'VERIFIED') {
-        throw Exception('Your selfie could not be matched with verified Aadhaar details.');
+        throw Exception(
+            'Your selfie could not be matched with verified Aadhaar details.');
       }
       if (!mounted) return;
       setState(() {
@@ -676,7 +789,8 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           _livenessVerified = false;
           _faceMatchVerified = false;
           _selfieVerificationMessage = friendlyErrorMessage(e,
-              fallback: 'Live selfie could not be verified. Please try again in good light.');
+              fallback:
+                  'Live selfie could not be verified. Please try again in good light.');
         });
       }
     } finally {
@@ -703,6 +817,9 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         if (income <= 0) return 'Please enter your monthly income.';
         if (_incomeProofPath.isEmpty) {
           return 'Please upload your income proof document.';
+        }
+        if (_incomeProofType == 'BANK_STATEMENT' && !_bankStatementVerified) {
+          return 'Please complete bank statement analysis before continuing.';
         }
         return null;
       case 2:
@@ -810,7 +927,8 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       if (!_creditVerified) {
         final credit = await LoanService().fetchExperian();
         if (credit['status'] != 'VERIFIED') {
-          throw Exception('Credit report verification is pending. Please try again.');
+          throw Exception(
+              'Credit report verification is pending. Please try again.');
         }
         _creditVerified = true;
       }
@@ -953,14 +1071,16 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
             Expanded(
               flex: 3,
               child: _field(amountC, 'Loan amount', Icons.currency_rupee,
-                  required: true, number: true,
+                  required: true,
+                  number: true,
                   onChanged: (_) => setState(() {})),
             ),
             SizedBox(width: 10.w),
             Expanded(
               flex: 2,
               child: _field(tenureC, 'Months', Icons.calendar_month,
-                  required: true, number: true,
+                  required: true,
+                  number: true,
                   onChanged: (_) => setState(() {})),
             ),
           ],
@@ -1027,8 +1147,19 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           selectedType: _incomeProofType,
           fileName: _incomeProofFileName,
           picking: _pickingIncomeProof,
-          onTypeChanged: (value) => setState(() => _incomeProofType = value),
+          analysing: _bankStatementAnalysing,
+          analysisVerified: _bankStatementVerified,
+          analysisMessage: _bankStatementMessage,
+          onTypeChanged: (value) => setState(() {
+            _incomeProofType = value;
+            _incomeProofPath = '';
+            _incomeProofFileName = '';
+            _bankStatementVerified = false;
+            _bankStatementOrderId = null;
+            _bankStatementMessage = null;
+          }),
           onPick: _pickIncomeProofFile,
+          onCheckStatus: _checkBankStatementAnalysis,
         ),
       ],
     );
@@ -1257,8 +1388,8 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
                     child: Row(
                       children: [
                         Expanded(
-                          child: _heroStat(
-                              'Estimated EMI', kpMoney(estimate.emi)),
+                          child:
+                              _heroStat('Estimated EMI', kpMoney(estimate.emi)),
                         ),
                         Container(
                           width: 1,
@@ -1304,7 +1435,10 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
             onEdit: () => _goToStep(1),
             rows: [
               ('Employment', _employmentType),
-              ('Monthly income', kpMoney(num.tryParse(monthlyIncomeC.text.trim()) ?? 0)),
+              (
+                'Monthly income',
+                kpMoney(num.tryParse(monthlyIncomeC.text.trim()) ?? 0)
+              ),
               ('Employer / business', employerC.text.trim()),
               ('Income proof', _incomeProofFileName),
             ],
@@ -1512,8 +1646,7 @@ class _ProgressHeader extends StatelessWidget {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                 decoration: BoxDecoration(
                   color: KhatuColors.softTeal,
                   borderRadius: BorderRadius.circular(KhatuRadius.pill),
@@ -1879,14 +2012,16 @@ class _AadhaarEkycPanel extends StatelessWidget {
               ],
             ),
             SizedBox(height: 12.h),
-            const Text('Verify through the official Aadhaar app using consent and face authentication. Khatu Pay does not collect your Aadhaar number.'),
+            const Text(
+                'Verify through the official Aadhaar app using consent and face authentication. Khatu Pay does not collect your Aadhaar number.'),
             SizedBox(height: 12.h),
             Row(
               children: [
-                Expanded(child: OutlinedButton.icon(
+                Expanded(
+                    child: OutlinedButton.icon(
                   onPressed: sending || verified ? null : onSendOtp,
                   icon: const Icon(Icons.open_in_new_rounded),
-                  child: sending
+                  label: sending
                       ? SizedBox(
                           width: 16.w,
                           height: 16.w,
@@ -1908,7 +2043,9 @@ class _AadhaarEkycPanel extends StatelessWidget {
                         child: const CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.verified_outlined),
-                label: Text(verified ? 'Aadhaar Verified' : 'Check verification status'),
+                label: Text(verified
+                    ? 'Aadhaar Verified'
+                    : 'Check verification status'),
               ),
             ),
             if (message != null && message!.isNotEmpty) ...[
@@ -2116,10 +2253,11 @@ class _LiveSelfiePanel extends StatelessWidget {
             ),
             if (message != null && message!.isNotEmpty) ...[
               SizedBox(height: 8.h),
-              Text(message!, style: TextStyle(
-                color: verified ? Colors.green : Colors.red.shade700,
-                fontWeight: FontWeight.w700,
-              )),
+              Text(message!,
+                  style: TextStyle(
+                    color: verified ? Colors.green : Colors.red.shade700,
+                    fontWeight: FontWeight.w700,
+                  )),
             ],
             if (hasSelfie) ...[
               SizedBox(height: 12.h),
@@ -2150,8 +2288,11 @@ class _LiveSelfiePanel extends StatelessWidget {
                     : Icon(hasSelfie
                         ? Icons.flip_camera_android_outlined
                         : Icons.camera_alt_outlined),
-                label:
-                    Text(capturing ? 'Opening Camera...' : hasSelfie ? 'Retake Live Photo' : 'Capture Live Photo'),
+                label: Text(capturing
+                    ? 'Opening Camera...'
+                    : hasSelfie
+                        ? 'Retake Live Photo'
+                        : 'Capture Live Photo'),
               ),
             ),
           ],
@@ -2165,15 +2306,23 @@ class _IncomeProofPanel extends StatelessWidget {
   final String selectedType;
   final String fileName;
   final bool picking;
+  final bool analysing;
+  final bool analysisVerified;
+  final String? analysisMessage;
   final ValueChanged<String> onTypeChanged;
   final VoidCallback onPick;
+  final VoidCallback onCheckStatus;
 
   const _IncomeProofPanel({
     required this.selectedType,
     required this.fileName,
     required this.picking,
+    required this.analysing,
+    required this.analysisVerified,
+    required this.analysisMessage,
     required this.onTypeChanged,
     required this.onPick,
+    required this.onCheckStatus,
   });
 
   @override
@@ -2208,7 +2357,9 @@ class _IncomeProofPanel extends StatelessWidget {
             ),
             SizedBox(height: 6.h),
             Text(
-              'Choose the type of proof you have, then upload it as a PDF or image.',
+              selectedType == 'BANK_STATEMENT'
+                  ? 'Upload a PDF statement. It will be securely analysed before submission.'
+                  : 'Choose the type of proof you have, then upload it as a PDF or image.',
               style: TextStyle(
                   color: KhatuColors.muted,
                   fontSize: 12.sp,
@@ -2235,15 +2386,20 @@ class _IncomeProofPanel extends StatelessWidget {
             ),
             SizedBox(height: 12.h),
             OutlinedButton.icon(
-              onPressed: picking ? null : onPick,
-              icon: picking
+              onPressed: picking || analysing ? null : onPick,
+              icon: picking || analysing
                   ? SizedBox(
                       width: 16.w,
                       height: 16.w,
                       child: const CircularProgressIndicator(strokeWidth: 2))
                   : Icon(hasFile ? Icons.refresh : Icons.attach_file),
-              label:
-                  Text(hasFile ? 'Change File' : 'Choose File (PDF or Image)'),
+              label: Text(analysing
+                  ? 'Analysing statement...'
+                  : hasFile
+                      ? 'Change File'
+                      : selectedType == 'BANK_STATEMENT'
+                          ? 'Choose Bank Statement PDF'
+                          : 'Choose File (PDF or Image)'),
             ),
             if (hasFile) ...[
               SizedBox(height: 8.h),
@@ -2263,6 +2419,40 @@ class _IncomeProofPanel extends StatelessWidget {
                   ),
                 ],
               ),
+            ],
+            if (selectedType == 'BANK_STATEMENT' &&
+                analysisMessage != null) ...[
+              SizedBox(height: 10.h),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    analysisVerified
+                        ? Icons.verified_rounded
+                        : Icons.schedule_rounded,
+                    size: 18,
+                    color: analysisVerified ? Colors.green : KhatuColors.gold,
+                  ),
+                  SizedBox(width: 7.w),
+                  Expanded(
+                    child: Text(analysisMessage!,
+                        style: TextStyle(
+                          color: analysisVerified
+                              ? Colors.green
+                              : KhatuColors.muted,
+                          fontWeight: FontWeight.w700,
+                        )),
+                  ),
+                ],
+              ),
+              if (!analysisVerified && hasFile) ...[
+                SizedBox(height: 8.h),
+                OutlinedButton.icon(
+                  onPressed: analysing ? null : onCheckStatus,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Check analysis status'),
+                ),
+              ],
             ],
           ],
         ),

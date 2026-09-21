@@ -74,6 +74,29 @@ class LoanService {
     return _dataOf(r.data);
   }
 
+  Future<Map<String, dynamic>> analyseBankStatement({
+    required String filePath,
+    String password = '',
+    String accountType = 'SALARIED',
+  }) async {
+    final form = FormData.fromMap({
+      'statement': await MultipartFile.fromFile(filePath,
+          filename: 'bank_statement.pdf'),
+      'password': password,
+      'accountType': accountType,
+    });
+    final r = await _dio.post('/loan-verification/bank-statement/analyse',
+        data: form);
+    return _dataOf(r.data);
+  }
+
+  Future<Map<String, dynamic>> bankStatementAnalysisStatus(
+      String orderId) async {
+    final r = await _dio.post('/loan-verification/bank-statement/status',
+        data: {'orderId': orderId});
+    return _dataOf(r.data);
+  }
+
   // Old simple apply kept for compatibility.
   Future<String> apply(num amount, int tenureMonths,
       {String? purpose, List<String>? docs}) async {

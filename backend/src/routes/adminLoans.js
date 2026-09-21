@@ -70,6 +70,10 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     if (decision === 'APPROVED') {
       const verification = await LoanVerification.findOne({ userId: loan.userId }).lean();
       const incomplete = REQUIRED_SIGNCARE_STAGES.filter((stage) => verification?.[stage]?.status !== 'VERIFIED');
+      if (loan.application?.documents?.incomeProofType === 'BANK_STATEMENT' &&
+          verification?.bankStatement?.status !== 'VERIFIED') {
+        incomplete.push('bankStatement');
+      }
       if (incomplete.length) {
         return fail(
           res,

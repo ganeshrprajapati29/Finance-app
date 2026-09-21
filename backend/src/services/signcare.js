@@ -76,6 +76,19 @@ export const verifyBankAccount = ({ accountNumber, ifsc, consentText, requestId 
     consent: 'Y', consent_text: consentText, request_id: requestId, accountNumber, ifsc: String(ifsc).toUpperCase(),
   }, requestId);
 
+export const submitBankStatement = ({ fileBase64, password, accountType, consentText, requestId }) =>
+  signcareRequest('post', '/api/v1/Bank/statement-analyser/corporate', {
+    consent: 'Y', consent_text: consentText, request_id: requestId,
+    file_base64: cleanBase64(fileBase64), accountType: accountType || 'SALARIED',
+    webhookUrl: signcareConfig.webhookUrl, ...(password ? { password } : {}),
+  }, requestId);
+
+export const getBankStatementAnalysis = ({ orderId, consentText, requestId }) =>
+  signcareRequest('post', '/api/v1/Bank/statement-analyser-details/corporate', {
+    consent: 'Y', consent_text: consentText, request_id: requestId,
+    order_id: orderId, response_type: 'json',
+  }, requestId);
+
 export const fetchExperianReport = (payload, requestId) =>
   signcareRequest('post', '/api/v1/CreditBureau', { ...payload, requestId }, requestId);
 

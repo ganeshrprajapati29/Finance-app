@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import Joi from 'joi';
+import multer from 'multer';
 import LoanVerification from '../models/LoanVerification.js';
 import Loan from '../models/Loan.js';
 import User from '../models/User.js';
@@ -9,13 +10,32 @@ import { ok, fail } from '../utils/response.js';
 import signcareConfig from '../config/signcare.js';
 import {
   SignCareError, createESign, createEStamp, fetchExperianReport, getAadhaarOvseResult,
+  getBankStatementAnalysis,
   getESignAudit, getESignStatus, initAadhaarOvse, publicSigncareConfig, signcareRequestId,
-  verifyBankAccount, verifyFaceMatch, verifyLiveness, verifyPan,
+  submitBankStatement, verifyBankAccount, verifyFaceMatch, verifyLiveness, verifyPan,
 } from '../services/signcare.js';
 
 const router = Router();
 const CONSENT_TEXT = 'I consent to Khatu Pay verifying my identity, bank account and credit information through SignCare for loan eligibility assessment.';
-const STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail'];
+const STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'bankStatement', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail'];
+const statementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => callback(
+    file.mimetype === 'application/pdf' ? null : new Error('Only PDF bank statements are supported.'),
+    file.mimetype === 'application/pdf'
+  ),
+}).single('statement');
+const acceptStatement = (req, res, next) => statementUpload(req, res, (error) => {
+  if (!error) return next();
+  const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+  return fail(
+    res,
+    tooLarge ? 'STATEMENT_TOO_LARGE' : 'INVALID_STATEMENT',
+    tooLarge ? 'Bank statement PDF must be 12 MB or smaller.' : error.message,
+    400
+  );
+});
 
 const getRecord = (userId) => LoanVerification.findOneAndUpdate(
   { userId }, { $setOnInsert: { userId, provider: 'SIGNCARE' } }, { new: true, upsert: true, setDefaultsOnInsert: true }
@@ -184,6 +204,58 @@ router.post('/bank', requireAuth, async (req, res, next) => {
     await saveStage(record, 'bank', (requestId) => verifyBankAccount({ ...payload, consentText: CONSENT_TEXT, requestId }),
       (data) => data.valid === true || data.verified === true || data.accountExists === true || verifiedFlag(data, ['isValid']));
     ok(res, publicStage(record.bank), record.bank.message);
+  } catch (error) { next(error); }
+});
+
+router.post('/bank-statement/analyse', requireAuth, acceptStatement, async (req, res, next) => {
+  try {
+    if (!req.file?.buffer) return fail(res, 'STATEMENT_REQUIRED', 'Select a PDF bank statement.', 400);
+    const input = await Joi.object({
+      password: Joi.string().allow('').max(100).default(''),
+      accountType: Joi.string().valid('SALARIED', 'SME').default('SALARIED'),
+    }).validateAsync(req.body || {});
+    const record = await requireConsent(req.user.uid);
+    const requestId = signcareRequestId('KP-BSA');
+    record.bankStatement = { status: 'PENDING', requestId, message: 'Bank statement analysis started.', updatedAt: new Date() };
+    await record.save();
+    const result = await submitBankStatement({
+      fileBase64: req.file.buffer.toString('base64'), password: input.password,
+      accountType: input.accountType, consentText: CONSENT_TEXT, requestId,
+    });
+    const data = stageData(result.response);
+    const orderId = String(data.orderId || data.order_id || '');
+    if (!orderId) throw new SignCareError('Bank statement analysis order was not created.', 502, data);
+    record.bankStatement = {
+      status: 'PENDING', requestId: result.requestId, providerReference: orderId,
+      message: 'Bank statement is being analysed.', updatedAt: new Date(), data: { orderId },
+    };
+    await record.save();
+    ok(res, { ...publicStage(record.bankStatement), orderId }, 'Bank statement analysis started.');
+  } catch (error) { next(error); }
+});
+
+router.post('/bank-statement/status', requireAuth, async (req, res, next) => {
+  try {
+    const { orderId } = await Joi.object({ orderId: Joi.string().required() }).validateAsync(req.body);
+    const record = await requireConsent(req.user.uid);
+    if (record.bankStatement?.providerReference && record.bankStatement.providerReference !== orderId) {
+      return fail(res, 'INVALID_ORDER', 'This bank statement request does not belong to your account.', 403);
+    }
+    const result = await getBankStatementAnalysis({
+      orderId, consentText: CONSENT_TEXT,
+      requestId: record.bankStatement?.requestId || signcareRequestId('KP-BSA-STATUS'),
+    });
+    const data = stageData(result.response);
+    const report = data.jsonDetails || data.json_details;
+    const verified = Boolean(report?.statementAccount || report?.consolidatedinfo);
+    record.bankStatement = {
+      status: verified ? 'VERIFIED' : 'PENDING', requestId: result.requestId,
+      providerReference: orderId,
+      message: verified ? 'Bank statement analysed successfully.' : 'Bank statement analysis is still processing.',
+      ...(verified ? { verifiedAt: new Date() } : {}), updatedAt: new Date(), data,
+    };
+    await record.save();
+    ok(res, publicStage(record.bankStatement), record.bankStatement.message);
   } catch (error) { next(error); }
 });
 

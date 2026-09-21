@@ -272,6 +272,15 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
         409
       );
     }
+    if (payload.documents?.incomeProofType === 'BANK_STATEMENT' &&
+        signcareVerification?.bankStatement?.status !== 'VERIFIED') {
+      return fail(
+        res,
+        'BANK_STATEMENT_ANALYSIS_REQUIRED',
+        'Please complete bank statement analysis before submitting the loan application.',
+        409
+      );
+    }
 
     // Handle document uploads to Cloudinary if files are provided
     let documents = payload.documents || {};
@@ -357,7 +366,7 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
     const loanAccountNumber = generateLoanAccountNumber();
 
     const verificationSnapshot = signcareVerification ? Object.fromEntries(
-      ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail']
+      ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'bankStatement', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail']
         .map((key) => [key, {
           status: signcareVerification[key]?.status || 'NOT_STARTED',
           requestId: signcareVerification[key]?.requestId || '',
