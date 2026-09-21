@@ -577,8 +577,32 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
   const panNumber = getPanNumber(loan)
   const panVerified = getPanStatus(loan)
   const nextDue = getNextDue(loan)
-  const creditReport = loan.creditReport || loan.userKyc?.creditReport || null
   const signcare = loan.signcareVerification || null
+  const signcareCredit = signcare?.credit?.data || {}
+  const experianReport = signcareCredit.jsonExperianReport || signcareCredit.experianReport || null
+  const experianAccounts = experianReport?.caiS_Account?.caiS_Account_DETAILS || []
+  const experianSummary = experianReport?.caiS_Account?.caiS_Summary || {}
+  const experianScore = experianReport?.score?.fcirexScore ?? signcare?.credit?.summary?.score ?? null
+  const creditReport = loan.creditReport || loan.userKyc?.creditReport || (experianReport ? {
+    provider: 'SignCare',
+    environment: 'Production',
+    bureau: 'Experian',
+    status: signcare?.credit?.status || 'VERIFIED',
+    score: experianScore,
+    referenceId: signcare?.credit?.providerReference || signcare?.credit?.requestId,
+    panMasked: maskPan(panNumber),
+    name: panName,
+    purpose: loan.application?.purpose,
+    createdAt: signcare?.credit?.verifiedAt || signcare?.credit?.updatedAt,
+    reportNumber: experianReport?.creditProfileHeader?.reportNumber,
+    exactMatch: experianReport?.match_result?.exact_match,
+    accountCount: experianAccounts.length,
+    activeAccounts: experianAccounts.filter((item) => !item.date_Closed && Number(item.current_Balance || 0) > 0).length,
+    outstandingBalance: experianAccounts.reduce((sum, item) => sum + Number(item.current_Balance || 0), 0),
+    overdueAmount: experianAccounts.reduce((sum, item) => sum + Number(item.amount_Past_Due || 0), 0),
+    inquiries30Days: experianReport?.totalCAPS_Summary?.totalCAPSLast30Days,
+    response: signcareCredit,
+  } : null)
   const signcareStages = [
     ['Consent', signcare?.consent?.accepted ? { status: 'VERIFIED', message: 'Customer consent recorded' } : null],
     ['PAN', signcare?.pan], ['Aadhaar OVSE', signcare?.aadhaar],
@@ -689,20 +713,48 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
 
           <div className="detail-section credit-report-section">
             <div className="section-heading-row">
-              <h4>Credit Report</h4>
+              <h4>Experian Credit Report</h4>
               <Badge bg={creditReport?.status ? 'info' : 'secondary'}>{creditReport?.status || 'Not fetched'}</Badge>
             </div>
             <div className="detail-grid">
               <Info label="Provider" value={creditReport?.provider || 'N/A'} />
               <Info label="Environment" value={creditReport?.environment || 'N/A'} />
               <Info label="Bureau" value={creditReport?.bureau || 'N/A'} />
-              <Info label="Score" value={creditReport?.score || 'N/A'} />
+              <Info label="Score" value={creditReport?.score ?? 'N/A'} />
               <Info label="Reference ID" value={creditReport?.referenceId || 'N/A'} />
+              <Info label="Report Number" value={creditReport?.reportNumber || 'N/A'} />
               <Info label="PAN" value={creditReport?.panMasked || maskPan(panNumber) || 'N/A'} />
               <Info label="Report Name" value={creditReport?.name || panName || 'N/A'} />
               <Info label="Purpose" value={creditReport?.purpose || loan.application?.purpose || 'N/A'} />
+              <Info label="Exact Match" value={creditReport?.exactMatch || 'N/A'} />
+              <Info label="Credit Accounts" value={creditReport?.accountCount ?? 'N/A'} />
+              <Info label="Active Accounts" value={creditReport?.activeAccounts ?? 'N/A'} />
+              <Info label="Outstanding Balance" value={creditReport?.outstandingBalance === undefined ? 'N/A' : formatCurrency(creditReport.outstandingBalance)} />
+              <Info label="Past Due Amount" value={creditReport?.overdueAmount === undefined ? 'N/A' : formatCurrency(creditReport.overdueAmount)} />
+              <Info label="Enquiries (30 days)" value={creditReport?.inquiries30Days ?? 'N/A'} />
               <Info label="Fetched At" value={formatDate(creditReport?.createdAt)} />
             </div>
+            {experianAccounts.length > 0 && (
+              <div className="table-responsive mt-3">
+                <Table hover size="sm" className="align-middle mb-0">
+                  <thead><tr><th>Lender</th><th>Account</th><th>Status</th><th>Balance</th><th>Past due</th></tr></thead>
+                  <tbody>
+                    {experianAccounts.map((account, index) => {
+                      const number = String(account.account_Number || '')
+                      return (
+                        <tr key={`${number}-${index}`}>
+                          <td>{account.subscriber_Name || 'N/A'}</td>
+                          <td>{account.accountTypeDescription || account.account_Type || 'N/A'}{number ? ` | ****${number.slice(-4)}` : ''}</td>
+                          <td>{account.accountStatusDescription || account.account_Status || 'N/A'}</td>
+                          <td>{formatCurrency(account.current_Balance || 0)}</td>
+                          <td>{formatCurrency(account.amount_Past_Due || 0)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </Table>
+              </div>
+            )}
             {creditReport?.response && (
               <details className="ekyc-raw">
                 <summary>View full credit report response</summary>

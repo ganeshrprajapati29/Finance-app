@@ -23,13 +23,15 @@ const getRecord = (userId) => LoanVerification.findOneAndUpdate(
 
 function publicStage(stage = {}) {
   const data = stage.data || {};
+  const experian = data.jsonExperianReport || data.experianReport || {};
   return {
     status: stage.status || 'NOT_STARTED', requestId: stage.requestId || '',
     providerReference: stage.providerReference || '', message: stage.message || '',
     verifiedAt: stage.verifiedAt || null, updatedAt: stage.updatedAt || null,
     summary: {
       name: data.name || data.fullName || data.residentName || data.accountHolderName || '',
-      score: data.score ?? data.creditScore ?? data.livenessScore ?? data.matchScore ?? null,
+      score: data.score?.fcirexScore ?? data.score ?? data.creditScore ??
+        experian.score?.fcirexScore ?? data.livenessScore ?? data.matchScore ?? null,
       bankName: data.bankName || '', documentStatus: data.documentStatus || '',
     },
   };
@@ -206,7 +208,17 @@ router.post('/credit-report', requireAuth, async (req, res, next) => {
     for (const stage of ['pan', 'aadhaar', 'liveness', 'faceMatch']) {
       if (record[stage]?.status !== 'VERIFIED') return fail(res, 'VERIFICATION_INCOMPLETE', `Complete ${stage} verification first.`, 409);
     }
-    await saveStage(record, 'credit', (requestId) => fetchExperianReport({ ...payload, phoneNumber: Number(payload.phoneNumber), pincode: Number(payload.pincode), pan: payload.pan.toUpperCase() }, requestId), () => true);
+    await saveStage(
+      record,
+      'credit',
+      (requestId) => fetchExperianReport({
+        ...payload,
+        phoneNumber: Number(payload.phoneNumber),
+        pincode: Number(payload.pincode),
+        pan: payload.pan.toUpperCase(),
+      }, requestId),
+      (data) => Boolean(data.jsonExperianReport || data.experianReport)
+    );
     ok(res, publicStage(record.credit), 'Credit report received for review.');
   } catch (error) { next(error); }
 });
