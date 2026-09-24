@@ -43,7 +43,7 @@ const drawFooter = (doc) => {
     .fillColor('#64748b')
     .font('Helvetica')
     .fontSize(8)
-    .text('This is a system generated KhatuPay invoice. For support, contact KhatuPay admin team.', 44, 758, {
+    .text('This is a system generated KhatuPay invoice. For support, contact Khatu Pay support.', 44, 758, {
       width: 507,
       align: 'center'
     });

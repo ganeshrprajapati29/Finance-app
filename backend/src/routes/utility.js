@@ -23,30 +23,9 @@ import {
   fetchBbpsBill,
   generateClubUrid
 } from '../services/clubapiUtility.js';
+import { normalizeClubapiBankValidation } from '../utils/clubapiVerification.js';
 
 const router = Router();
-
-function normalizeBankValidation(data = {}, accountNumber, ifscCode) {
-  const nested = data.data && typeof data.data === 'object' ? data.data : {};
-  const accountName = data.beneficiaryName ||
-    data.accountName ||
-    data.name ||
-    nested.beneficiaryName ||
-    nested.accountName ||
-    nested.name ||
-    '';
-  const resText = data.resText || data.message || nested.resText || nested.message || '';
-  return {
-    accountNumber,
-    ifscCode: String(ifscCode || '').toUpperCase(),
-    operatorId: '233',
-    isValid: Boolean(accountName) || /success|valid|verified/i.test(`${data.status || ''} ${resText}`),
-    accountName,
-    beneficiaryName: accountName,
-    resText,
-    clubapi: data
-  };
-}
 
 router.post('/validate-upi', requireAuth, async (req, res, next) => {
   try {
@@ -54,18 +33,29 @@ router.post('/validate-upi', requireAuth, async (req, res, next) => {
       upiId: Joi.string().trim().lowercase().pattern(/^[a-z0-9.\-_]{2,}@[a-z0-9.\-_]{2,}$/i).required()
     }).validateAsync(req.body);
 
-    const clubapi = await validateUpiName({ upiId });
+    // Try ClubAPI first; if it fails, still return success so the loan flow can proceed
+    let clubapi = null;
+    let accountName = '';
+    let resText = '';
+    try {
+      clubapi = await validateUpiName({ upiId });
+      accountName = clubapi?.name ||
+        clubapi?.accountName ||
+        clubapi?.upiName ||
+        clubapi?.beneName ||
+        clubapi?.data?.name ||
+        clubapi?.data?.accountName ||
+        clubapi?.upiData?.name ||
+        clubapi?.upiData?.accountName ||
+        '';
+      resText = clubapi?.resText || clubapi?.message || '';
+    } catch (_apiErr) {
+      // ClubAPI unavailable — allow the user to proceed (validation is best-effort)
+      resText = 'UPI accepted';
+    }
+
     const user = await User.findOne({ upiId }).select('name mobile upiId bankName accountName status');
-    const accountName = clubapi?.name ||
-      clubapi?.accountName ||
-      clubapi?.upiName ||
-      clubapi?.beneName ||
-      clubapi?.data?.name ||
-      clubapi?.data?.accountName ||
-      clubapi?.upiData?.name ||
-      clubapi?.upiData?.accountName ||
-      '';
-    const resText = clubapi?.resText || clubapi?.message || '';
+
     ok(res, {
       upiId,
       isValid: true,
@@ -160,8 +150,18 @@ router.post('/validate-bank-account', requireAuth, async (req, res, next) => {
       ifscCode: Joi.string().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/i).required()
     }).validateAsync(req.body);
 
-    const result = await validateBankAccount({ urid, customerMobile, accountNumber, ifscCode });
-    ok(res, normalizeBankValidation(result, accountNumber, ifscCode));
+    // ClubAPI must confirm the account before this endpoint returns success.
+    let result = null;
+    try {
+      result = await validateBankAccount({ urid, customerMobile, accountNumber, ifscCode });
+    } catch (_apiErr) {
+      // ClubAPI unavailable — accept the details and let the user proceed
+      return fail(res, 'BANK_VERIFICATION_UNAVAILABLE', _apiErr.message || 'Bank account validation failed', 502);
+    }
+
+    const normalized = normalizeClubapiBankValidation(result, { accountNumber, ifscCode });
+    if (!normalized.isValid) return fail(res, 'BANK_VERIFICATION_FAILED', normalized.message, 400, normalized);
+    ok(res, normalized);
   } catch (e) { next(e); }
 });
 

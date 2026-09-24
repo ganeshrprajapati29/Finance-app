@@ -139,3 +139,15 @@ export async function sendMobilePlans({ operatorId, urid }) {
 export async function sendMobileDetails() {
   return postClubapi('/utility/mobileDetails.php', {}, { timeout: 30000 });
 }
+
+/**
+ * PAN verification: POST /utility/transaction.php with transType=panVerify
+ * Returns { firstName, middleName, lastName, status } on success.
+ * Note: do NOT send urid — ClubAPI rejects custom URIDs for this transType.
+ */
+export async function sendPanVerify({ pan }) {
+  return postClubapi('/utility/transaction.php', {
+    pan: String(pan).toUpperCase(),
+    transType: 'panVerify',
+  }, { timeout: 15000 });
+}

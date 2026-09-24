@@ -1,4 +1,5 @@
 import MerchantLedger from '../models/MerchantLedger.js';
+import { processQueuedMerchantPayouts } from '../services/velxapay/payoutService.js';
 
 let timer;
 export function startMerchantSettlementJob() {
@@ -9,6 +10,7 @@ export function startMerchantSettlementJob() {
         { type: 'COLLECTION_CREDIT', status: 'PENDING', availableOn: { $lte: new Date() } },
         { $set: { status: 'AVAILABLE' } }
       );
+      await processQueuedMerchantPayouts();
     } catch (error) { console.error('Merchant settlement availability job failed:', error.message); }
   };
   // DB connection is established asynchronously during boot. The first

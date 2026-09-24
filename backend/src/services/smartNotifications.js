@@ -102,7 +102,6 @@ function shouldSendEmail(event, context = {}) {
   if (context.email === true || context.forceEmail === true) return true;
   return [
     'loan_application_submitted',
-    'login_suspicious',
     'security_alert',
     'password_changed',
     'kyc_submitted',
@@ -120,6 +119,9 @@ function shouldSendEmail(event, context = {}) {
     'emi_due_soon',
     'emi_overdue',
     'admin_user_action',
+    'business_qr_pending',
+    'business_qr_approved',
+    'business_qr_rejected',
   ].includes(event);
 }
 
@@ -213,6 +215,29 @@ function buildTemplate(event, user, context = {}) {
       priority: context.priority || 'MEDIUM',
       route: context.route || '/notifications',
     },
+    business_qr_pending: {
+      title: `${name}, your Business QR request is under review`,
+      message: `We have received the details for ${context.businessName || 'your business'}. Our team is reviewing the profile, KYC and settlement bank details. You will receive an update after review.`,
+      type: 'business',
+      priority: 'MEDIUM',
+      route: '/business',
+    },
+    business_qr_approved: {
+      title: `${name}, your Business QR is approved`,
+      message: `Congratulations. ${context.businessName || 'Your business'} is approved for Khatu Pay Business QR collections. Customers can scan your QR and payments will be processed securely through VelxaPay.`,
+      type: 'business',
+      priority: 'HIGH',
+      route: '/business/qr',
+    },
+    business_qr_rejected: {
+      title: `${name}, your Business QR request needs attention`,
+      message: context.reason
+        ? `Your Business QR request for ${context.businessName || 'your business'} could not be approved right now. Reason: ${context.reason}`
+        : `Your Business QR request for ${context.businessName || 'your business'} could not be approved right now. Please review the details and submit again.`,
+      type: 'business',
+      priority: 'HIGH',
+      route: '/business/verification',
+    },
     kyc_submitted: {
       title: `${name}, KYC submitted successfully`,
       message: 'Your KYC documents have been submitted for review. We will notify you once verification is complete.',
@@ -275,7 +300,7 @@ function buildTemplate(event, user, context = {}) {
     },
     kyc_pending_review: {
       title: `${name}, KYC is under review`,
-      message: 'Your KYC request is with the KhatuPay team. You will receive an update after admin approval.',
+      message: 'Your KYC request is with the Khatu Pay team. You will receive an update after review.',
       type: 'kyc',
       priority: 'LOW',
       route: '/kyc',

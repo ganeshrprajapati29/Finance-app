@@ -28,7 +28,17 @@ router.post('/', async (req, res, next) => {
       if (normalized !== 'success') { payment.provider = { ...(payment.provider || {}), webhook: req.body }; await payment.save(); }
       emitToUser(payment.merchantUserId, 'merchant:payment', { orderId: payment.orderId, status: payment.status, amount: payment.amount, utr: payment.utr });
     } else if (String(type).toUpperCase() === 'WITHDRAW') {
-      const payout = await MerchantPayout.findOne({ providerOrderId: String(platOrderNum || '') });
+      const reference = String(platOrderNum || orderId || '').trim();
+      if (!reference) return ok(res, { received: true }, 'Webhook acknowledged.');
+      const payout = await MerchantPayout.findOne({
+        $or: [
+          { providerOrderId: reference },
+          { 'request.order_id': reference },
+          { 'request.orderId': reference },
+          { 'response.data.platOrderNum': reference },
+          { 'response.platOrderNum': reference },
+        ],
+      });
       if (payout) {
         payout.status = normalized === 'success' ? 'SUCCESS' : normalized === 'failed' ? 'FAILED' : 'PROCESSING'; payout.utr = utr; payout.response = req.body; await payout.save();
         const settlement = await MerchantSettlement.findById(payout.settlementId);

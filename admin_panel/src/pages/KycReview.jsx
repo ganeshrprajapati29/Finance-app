@@ -9,6 +9,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import api from '../api/axios'
+import ExperianReport from '../components/ExperianReport.jsx'
 import {
   AlertStrip,
   DataTable,
@@ -128,6 +129,7 @@ const KycReview = () => {
         kycSummary: data.kycSummary,
         loans: data.loans || [],
         creditReports: data.creditReports || [],
+        signcareVerification: data.signcareVerification || null,
       })
       setNotes('')
     } catch {
@@ -410,15 +412,14 @@ const KycDetailModal = ({ user, notes, setNotes, saving, onHide, onApprove, onRe
           <Col md={4}><Info label="Verified at" value={formatDateTime(pan.verifiedAt)} /></Col>
         </Row>
 
-        <SectionTitle>Credit report</SectionTitle>
-        <Row className="g-2">
-          <Col md={4}><Info label="Provider" value={reports[0]?.provider || 'Not fetched'} /></Col>
-          <Col md={4}><Info label="Bureau" value={reports[0]?.bureau} /></Col>
-          <Col md={4}><Info label="Score" value={reports[0]?.score} /></Col>
-          <Col md={4}><Info label="Status" value={reports[0]?.status} /></Col>
-          <Col md={4}><Info label="Reference" value={reports[0]?.referenceId} /></Col>
-          <Col md={4}><Info label="Fetched at" value={formatDateTime(reports[0]?.createdAt)} /></Col>
-        </Row>
+        <div className="mt-3">
+          <ExperianReport
+            stage={user.signcareVerification?.credit}
+            archive={reports[0]}
+            userId={user._id}
+            customerName={user.name}
+          />
+        </div>
 
         <SectionTitle>Uploaded documents</SectionTitle>
         <Row className="g-2">

@@ -13,6 +13,8 @@ import AdminNotificationHistory from '../models/AdminNotificationHistory.js';
 import Settings from '../models/Settings.js';
 import Settlement from '../models/Settlement.js';
 import CreditReport from '../models/CreditReport.js';
+import LoanVerification from '../models/LoanVerification.js';
+import { verificationWithoutWorkbook, withoutWorkbook } from '../utils/signcareCreditReport.js';
 import { ok, fail } from '../utils/response.js';
 import { sendFCMToToken } from '../services/fcm.js';  // ✅ New import
 import { quickSort } from '../utils/dsa.js';
@@ -87,9 +89,35 @@ function buildCreditReportSummary(report) {
     purpose: report.purpose,
     consent: report.consent,
     request: report.request,
-    response: report.response,
+    response: withoutWorkbook(report.response),
     createdAt: report.createdAt,
     updatedAt: report.updatedAt,
+  };
+}
+
+function signcareCreditReportSummary(verification) {
+  const credit = verification?.credit || {};
+  const data = credit.data || {};
+  const experian = data.jsonExperianReport || data.experianReport || null;
+  if (!experian && !credit.status) return null;
+  const accounts = experian?.caiS_Account?.caiS_Account_DETAILS || [];
+  return {
+    provider: 'SignCare',
+    environment: 'production',
+    referenceId: credit.providerReference || credit.requestId,
+    bureau: experian ? 'Experian' : 'Credit Bureau',
+    status: credit.status,
+    score: experian?.score?.fcirexScore ?? data.score?.fcirexScore ?? data.score ?? null,
+    reportNumber: experian?.creditProfileHeader?.reportNumber,
+    exactMatch: experian?.match_result?.exact_match,
+    accountCount: accounts.length,
+    activeAccounts: accounts.filter((item) => !item.date_Closed && Number(item.current_Balance || 0) > 0).length,
+    outstandingBalance: accounts.reduce((sum, item) => sum + Number(item.current_Balance || 0), 0),
+    overdueAmount: accounts.reduce((sum, item) => sum + Number(item.amount_Past_Due || 0), 0),
+    inquiries30Days: experian?.totalCAPS_Summary?.totalCAPSLast30Days,
+    response: withoutWorkbook(data),
+    createdAt: credit.verifiedAt || credit.updatedAt,
+    updatedAt: credit.updatedAt,
   };
 }
 
@@ -696,12 +724,13 @@ router.get('/kyc', async (req, res, next) => {
     ]);
 
     const userIds = users.map((user) => user._id);
-    const [loanCounts, creditReports] = await Promise.all([
+    const [loanCounts, creditReports, verificationRows] = await Promise.all([
       Loan.aggregate([
         { $match: { userId: { $in: userIds } } },
         { $group: { _id: '$userId', total: { $sum: 1 }, latestLoanAt: { $max: '$createdAt' } } },
       ]),
       CreditReport.find({ userId: { $in: userIds } }).sort({ createdAt: -1 }).lean(),
+      LoanVerification.find({ userId: { $in: userIds } }).lean(),
     ]);
 
     const loanCountByUser = new Map(loanCounts.map((item) => [String(item._id), item]));
@@ -710,6 +739,7 @@ router.get('/kyc', async (req, res, next) => {
       const key = String(report.userId);
       if (!creditByUser.has(key)) creditByUser.set(key, report);
     }
+    const verificationByUser = new Map(verificationRows.map((row) => [String(row.userId), row]));
 
     const items = users.map((user) => {
       const key = String(user._id);
@@ -721,7 +751,7 @@ router.get('/kyc', async (req, res, next) => {
           total: loanMeta.total || 0,
           latestLoanAt: loanMeta.latestLoanAt,
         },
-        creditReport: buildCreditReportSummary(creditByUser.get(key)),
+        creditReport: buildCreditReportSummary(creditByUser.get(key)) || signcareCreditReportSummary(verificationByUser.get(key)),
       };
     });
 
@@ -736,16 +766,22 @@ router.get('/kyc/:id', async (req, res, next) => {
       .lean();
     if (!user) return fail(res, 'USER_NOT_FOUND', 'User not found', 404);
 
-    const [loans, creditReports] = await Promise.all([
+    const [loans, creditReports, verification] = await Promise.all([
       Loan.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10).lean(),
       CreditReport.find({ userId: user._id }).sort({ createdAt: -1 }).lean(),
+      LoanVerification.findOne({ userId: user._id }).lean(),
     ]);
+    const signcareCredit = signcareCreditReportSummary(verification);
 
     ok(res, {
       user,
       kycSummary: buildKycSummary(user),
       loans,
-      creditReports: creditReports.map(buildCreditReportSummary),
+      signcareVerification: verificationWithoutWorkbook(verification),
+      creditReports: [
+        ...creditReports.map(buildCreditReportSummary),
+        ...(signcareCredit ? [signcareCredit] : []),
+      ],
     });
   } catch (e) { next(e); }
 });
@@ -827,14 +863,20 @@ router.get('/loans', async (req, res, next) => {
       Loan.countDocuments(q),
     ]);
     const userIds = loans.map((loan) => loan.userId?._id).filter(Boolean);
-    const creditReports = await CreditReport.find({ userId: { $in: userIds } }).sort({ createdAt: -1 }).lean();
+    const [creditReports, verificationRows] = await Promise.all([
+      CreditReport.find({ userId: { $in: userIds } }).sort({ createdAt: -1 }).lean(),
+      LoanVerification.find({ userId: { $in: userIds } }).lean(),
+    ]);
     const creditByUser = new Map();
     for (const report of creditReports) {
       const key = String(report.userId);
       if (!creditByUser.has(key)) creditByUser.set(key, report);
     }
+    const verificationByUser = new Map(verificationRows.map((row) => [String(row.userId), row]));
 
     const items = loans.map((loan) => {
+      const userId = String(loan.userId?._id);
+      const signcareVerification = verificationByUser.get(userId) || null;
       const userKyc = loan.userId?.kyc || {};
       const documents = loan.application?.documents || {};
       const aadhaarEkyc = documents.aadhaarEkyc || {};
@@ -875,7 +917,8 @@ router.get('/loans', async (req, res, next) => {
           },
         },
         userKyc: loan.userId ? buildKycSummary(loan.userId) : null,
-        creditReport: buildCreditReportSummary(creditByUser.get(String(loan.userId?._id))),
+        signcareVerification,
+        creditReport: buildCreditReportSummary(creditByUser.get(userId)) || signcareCreditReportSummary(signcareVerification),
       };
     });
     ok(res, { items, total, page: Number(page), limit: Number(limit) });

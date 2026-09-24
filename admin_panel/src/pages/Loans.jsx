@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import api from '../api/axios'
 import { AlertStrip, PageHeader } from '../components/AdminUI.jsx'
+import ExperianReport from '../components/ExperianReport.jsx'
 
 const normalize = (value) => String(value || '').trim().toUpperCase()
 
@@ -84,6 +85,14 @@ const statusMap = {
   REJECTED: { bg: 'danger', label: 'Rejected', color: '#DC2626' },
   DISBURSED: { bg: 'info', label: 'Disbursed', color: '#0891B2' },
   CLOSED: { bg: 'secondary', label: 'Closed', color: '#475569' },
+}
+
+const riskTone = (riskLevel) => {
+  const level = normalize(riskLevel)
+  if (level === 'LOW') return 'success'
+  if (level === 'MEDIUM') return 'warning'
+  if (level === 'HIGH') return 'danger'
+  return 'secondary'
 }
 
 const Loans = () => {
@@ -589,36 +598,15 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
   const statementAccount = bsaReport?.statementAccount || {}
   const statementTransactions = bsaReport?.consolidatedinfo?.xns_list || []
   const statementSummary = bsaReport?.consolidatedinfo?.xns || {}
-  const signcareCredit = signcare?.credit?.data || {}
-  const experianReport = signcareCredit.jsonExperianReport || signcareCredit.experianReport || null
-  const experianAccounts = experianReport?.caiS_Account?.caiS_Account_DETAILS || []
-  const experianSummary = experianReport?.caiS_Account?.caiS_Summary || {}
-  const experianScore = experianReport?.score?.fcirexScore ?? signcare?.credit?.summary?.score ?? null
-  const creditReport = loan.creditReport || loan.userKyc?.creditReport || (experianReport ? {
-    provider: 'SignCare',
-    environment: 'Production',
-    bureau: 'Experian',
-    status: signcare?.credit?.status || 'VERIFIED',
-    score: experianScore,
-    referenceId: signcare?.credit?.providerReference || signcare?.credit?.requestId,
-    panMasked: maskPan(panNumber),
-    name: panName,
-    purpose: loan.application?.purpose,
-    createdAt: signcare?.credit?.verifiedAt || signcare?.credit?.updatedAt,
-    reportNumber: experianReport?.creditProfileHeader?.reportNumber,
-    exactMatch: experianReport?.match_result?.exact_match,
-    accountCount: experianAccounts.length,
-    activeAccounts: experianAccounts.filter((item) => !item.date_Closed && Number(item.current_Balance || 0) > 0).length,
-    outstandingBalance: experianAccounts.reduce((sum, item) => sum + Number(item.current_Balance || 0), 0),
-    overdueAmount: experianAccounts.reduce((sum, item) => sum + Number(item.amount_Past_Due || 0), 0),
-    inquiries30Days: experianReport?.totalCAPS_Summary?.totalCAPSLast30Days,
-    response: signcareCredit,
-  } : null)
+  const underwriting = loan.underwriting || loan.verification?.snapshot?.underwriting || null
+  const underwritingMetrics = underwriting?.metrics || {}
+  const underwritingFlags = Array.isArray(underwriting?.flags) ? underwriting.flags : []
+  const creditArchive = loan.creditReport || loan.userKyc?.creditReport || null
   const signcareStages = [
     ['Consent', signcare?.consent?.accepted ? { status: 'VERIFIED', message: 'Customer consent recorded' } : null],
     ['PAN', signcare?.pan], ['Aadhaar OVSE', signcare?.aadhaar],
     ['Face liveness', signcare?.liveness], ['Face match', signcare?.faceMatch],
-    ['Bank account', signcare?.bank], ['Bank statement analysis', signcare?.bankStatement], ['Experian', signcare?.credit],
+    ['Bank account', signcare?.bank], ['UPI ID', signcare?.upi], ['Bank statement analysis', signcare?.bankStatement], ['Experian', signcare?.credit],
     ['Account Aggregator', signcare?.accountAggregator], ['Agreement', signcare?.agreement],
     ['eStamp', signcare?.eStamp], ['Aadhaar eSign', signcare?.eSign], ['Audit trail', signcare?.auditTrail],
   ]
@@ -644,6 +632,43 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
             <Col lg={4}><DetailBox icon={IndianRupee} label="Requested" value={formatCurrency(getRequestedAmount(loan))} meta={loan.application?.purpose || 'No purpose'} /></Col>
             <Col lg={4}><DetailBox icon={Banknote} label="Approved" value={formatCurrency(getApprovedAmount(loan))} meta={`${loan.decision?.rateAPR || 0}% APR / ${loan.decision?.tenureMonths || 0} months`} /></Col>
           </Row>
+
+          <div className="detail-section">
+            <div className="section-heading-row">
+              <h4>Underwriting Risk Summary</h4>
+              <div className="d-flex align-items-center gap-2 flex-wrap">
+                <Badge bg={riskTone(underwriting?.riskLevel)}>{underwriting?.riskLevel || 'Not generated'}</Badge>
+                {underwriting?.recommendation && <Badge bg="info">{String(underwriting.recommendation).replaceAll('_', ' ')}</Badge>}
+              </div>
+            </div>
+            <div className="detail-grid">
+              <Info label="Risk score" value={underwriting?.score === undefined ? 'N/A' : `${underwriting.score}/100`} />
+              <Info label="Bureau score" value={underwritingMetrics.bureauScore ?? 'N/A'} />
+              <Info label="Monthly income" value={formatCurrency(underwritingMetrics.monthlyIncome || employment.monthlyIncome || 0)} />
+              <Info label="Requested amount" value={formatCurrency(underwritingMetrics.requestedAmount || getRequestedAmount(loan))} />
+              <Info label="Loan to annual income" value={underwritingMetrics.emiBurdenRatio === null || underwritingMetrics.emiBurdenRatio === undefined ? 'N/A' : `${underwritingMetrics.emiBurdenRatio}x`} />
+              <Info label="Outstanding balance" value={formatCurrency(underwritingMetrics.outstandingBalance || 0)} />
+              <Info label="Past due amount" value={formatCurrency(underwritingMetrics.overdueAmount || 0)} />
+              <Info label="Recent enquiries" value={underwritingMetrics.inquiries30Days ?? 'N/A'} />
+              <Info label="BSA transactions" value={underwritingMetrics.bankStatementTransactions ?? 'N/A'} />
+              <Info label="Incomplete stages" value={underwritingMetrics.incompleteStages?.length ? underwritingMetrics.incompleteStages.join(', ') : 'None'} />
+            </div>
+            <div className="risk-flag-list">
+              {underwritingFlags.length ? underwritingFlags.map((flag) => (
+                <div className="risk-flag" key={`${flag.code}-${flag.message}`}>
+                  <Badge bg={riskTone(flag.severity)}>{flag.severity || 'INFO'}</Badge>
+                  <strong>{flag.code || 'RISK_FLAG'}</strong>
+                  <span>{flag.message || 'Review this application manually.'}</span>
+                </div>
+              )) : (
+                <div className="risk-flag muted">
+                  <Badge bg="success">CLEAR</Badge>
+                  <strong>No risk flags</strong>
+                  <span>All available SignCare checks are within configured thresholds.</span>
+                </div>
+              )}
+            </div>
+          </div>
 
           <div className="detail-section">
             <h4>Applicant Details</h4>
@@ -771,58 +796,13 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
             )}
           </div>
 
-          <div className="detail-section credit-report-section">
-            <div className="section-heading-row">
-              <h4>Experian Credit Report</h4>
-              <Badge bg={creditReport?.status ? 'info' : 'secondary'}>{creditReport?.status || 'Not fetched'}</Badge>
-            </div>
-            <div className="detail-grid">
-              <Info label="Provider" value={creditReport?.provider || 'N/A'} />
-              <Info label="Environment" value={creditReport?.environment || 'N/A'} />
-              <Info label="Bureau" value={creditReport?.bureau || 'N/A'} />
-              <Info label="Score" value={creditReport?.score ?? 'N/A'} />
-              <Info label="Reference ID" value={creditReport?.referenceId || 'N/A'} />
-              <Info label="Report Number" value={creditReport?.reportNumber || 'N/A'} />
-              <Info label="PAN" value={creditReport?.panMasked || maskPan(panNumber) || 'N/A'} />
-              <Info label="Report Name" value={creditReport?.name || panName || 'N/A'} />
-              <Info label="Purpose" value={creditReport?.purpose || loan.application?.purpose || 'N/A'} />
-              <Info label="Exact Match" value={creditReport?.exactMatch || 'N/A'} />
-              <Info label="Credit Accounts" value={creditReport?.accountCount ?? 'N/A'} />
-              <Info label="Active Accounts" value={creditReport?.activeAccounts ?? 'N/A'} />
-              <Info label="Outstanding Balance" value={creditReport?.outstandingBalance === undefined ? 'N/A' : formatCurrency(creditReport.outstandingBalance)} />
-              <Info label="Past Due Amount" value={creditReport?.overdueAmount === undefined ? 'N/A' : formatCurrency(creditReport.overdueAmount)} />
-              <Info label="Enquiries (30 days)" value={creditReport?.inquiries30Days ?? 'N/A'} />
-              <Info label="Fetched At" value={formatDate(creditReport?.createdAt)} />
-            </div>
-            {experianAccounts.length > 0 && (
-              <div className="table-responsive mt-3">
-                <Table hover size="sm" className="align-middle mb-0">
-                  <thead><tr><th>Lender</th><th>Account</th><th>Status</th><th>Balance</th><th>Past due</th></tr></thead>
-                  <tbody>
-                    {experianAccounts.map((account, index) => {
-                      const number = String(account.account_Number || '')
-                      return (
-                        <tr key={`${number}-${index}`}>
-                          <td>{account.subscriber_Name || 'N/A'}</td>
-                          <td>{account.accountTypeDescription || account.account_Type || 'N/A'}{number ? ` | ****${number.slice(-4)}` : ''}</td>
-                          <td>{account.accountStatusDescription || account.account_Status || 'N/A'}</td>
-                          <td>{formatCurrency(account.current_Balance || 0)}</td>
-                          <td>{formatCurrency(account.amount_Past_Due || 0)}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </Table>
-              </div>
-            )}
-            {creditReport?.response && (
-              <details className="ekyc-raw">
-                <summary>View full credit report response</summary>
-                <div className="ekyc-raw-label">Credit report response</div>
-                <pre>{JSON.stringify(creditReport.response, null, 2)}</pre>
-              </details>
-            )}
-          </div>
+          <ExperianReport
+            stage={signcare?.credit}
+            archive={creditArchive}
+            userId={loan.userId?._id || loan.userId}
+            customerName={panName || getUserName(loan)}
+            panMasked={maskPan(panNumber)}
+          />
 
           <div className="detail-section">
             <div className="section-heading-row">
@@ -1411,6 +1391,38 @@ const loansStyles = `
     word-break: break-word;
   }
 
+  .risk-flag-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .risk-flag {
+    display: grid;
+    grid-template-columns: auto minmax(140px, 220px) minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    background: #FFFFFF;
+  }
+
+  .risk-flag strong {
+    color: #0F172A;
+    font-size: 13px;
+    word-break: break-word;
+  }
+
+  .risk-flag span:last-child {
+    color: #475569;
+    font-weight: 700;
+    word-break: break-word;
+  }
+
+  .risk-flag.muted {
+    background: #F8FAFC;
+  }
+
   .ekyc-photo {
     width: 96px;
     height: 96px;
@@ -1513,6 +1525,11 @@ const loansStyles = `
     .schedule-summary,
     .doc-grid {
       grid-template-columns: 1fr;
+    }
+
+    .risk-flag {
+      grid-template-columns: 1fr;
+      align-items: flex-start;
     }
   }
 

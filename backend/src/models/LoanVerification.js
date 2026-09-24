@@ -22,6 +22,7 @@ const loanVerificationSchema = new mongoose.Schema({
   liveness: { type: stageSchema, default: () => ({}) },
   faceMatch: { type: stageSchema, default: () => ({}) },
   bank: { type: stageSchema, default: () => ({}) },
+  upi: { type: stageSchema, default: () => ({}) },
   bankStatement: { type: stageSchema, default: () => ({}) },
   credit: { type: stageSchema, default: () => ({}) },
   accountAggregator: { type: stageSchema, default: () => ({}) },

@@ -163,7 +163,7 @@ export async function getMobileDetails() {
 export async function validateBankAccount({ urid, customerMobile, accountNumber, ifscCode }) {
   try {
     const response = await postClub('/transaction.php', {
-      urid,
+      urid: urid || generateClubUrid('KPB'),
       customerMobile,
       operatorId: '233',
       accountNumber,

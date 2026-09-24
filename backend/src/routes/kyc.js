@@ -10,6 +10,7 @@ import { ok, fail } from '../utils/response.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
 import { sendAadhaarOtp, verifyAadhaarOtp, verifyPan } from '../services/clubapiUtility.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
+import { isPanVerified, normalizePanKycData } from '../utils/panKyc.js';
 import multer from 'multer';
 
 // Memory storage for Cloudinary uploads
@@ -78,27 +79,6 @@ function isClubSuccess(result) {
   const status = String(result?.status || '').toUpperCase();
   const text = String(result?.resText || result?.message || '').toLowerCase();
   return status === 'SUCCESS' || text.includes('success') || Boolean(result?.aadhaarData || result?.data);
-}
-
-function panKycData(result) {
-  const data = result?.panData || result?.data || result?.panDetails || {};
-  const name = [
-    data.firstName,
-    data.middleName,
-    data.lastName
-  ]
-    .filter((part) => part !== undefined && part !== null && String(part).trim())
-    .map((part) => String(part).trim())
-    .join(' ');
-  return {
-    pan: data.pan || data.panNumber || result?.pan || '',
-    name: data.name || data.fullName || data.panName || result?.name || result?.panName || name,
-    firstName: data.firstName || '',
-    middleName: data.middleName || '',
-    lastName: data.lastName || '',
-    aadhaarSeedingStatus: data.aadhaarSeedingStatus || data.aadhaarLinked || '',
-    raw: result
-  };
 }
 
 // user add docs (form-data files[] + documentType/documentNumber)
@@ -217,8 +197,8 @@ router.post('/me/pan/verify', requireAuth, async (req, res, next) => {
     }).validateAsync(req.body);
 
     const result = await verifyPan({ pan });
-    const verified = isClubSuccess(result);
-    const panData = panKycData(result);
+    const panData = normalizePanKycData(result, { panNumber: pan });
+    const verified = isClubSuccess(result) || isPanVerified(result, panData);
     const u = await User.findById(req.user.uid);
     if (!u) return fail(res, 'NOT_FOUND', 'User not found', 404);
     u.kyc = u.kyc || { docs: [], documents: [] };

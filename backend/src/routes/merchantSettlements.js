@@ -9,6 +9,7 @@ import MerchantLedger from '../models/MerchantLedger.js';
 import MerchantSettlement from '../models/MerchantSettlement.js';
 import MerchantPayout from '../models/MerchantPayout.js';
 import { created, fail, ok } from '../utils/response.js';
+import { processQueuedMerchantPayouts } from '../services/velxapay/payoutService.js';
 
 const router = Router();
 async function availableBalance(userId) {
@@ -50,6 +51,9 @@ router.post('/request', requireAuth, async (req, res, next) => {
       amount: Number(amount), status: 'REQUESTED', requestedAt: new Date(),
     });
     await MerchantPayout.create({ settlementId: settlement._id, businessId: business._id, amount: Number(amount), status: 'QUEUED' });
+    processQueuedMerchantPayouts({ limit: 3 }).catch((error) =>
+      console.error('Merchant payout processor failed:', error.message)
+    );
     created(res, settlement, 'Settlement request queued. Bank transfer status will update after provider confirmation.');
   } catch (error) { next(error); }
 });

@@ -17,7 +17,9 @@ router.post('/', async (req, res) => {
     ] };
     const record = await LoanVerification.findOne(query);
     if (!record) return;
-    if (body.verifiedClaims || body.verificationPassed !== undefined) {
+    if (Array.isArray(body.docs) || body.transactionId) {
+      record.aadhaar = { ...record.aadhaar?.toObject?.(), status: 'PENDING', requestId: reference, providerReference, message: 'DigiLocker update received; confirming document status.', updatedAt: new Date(), data: body };
+    } else if (body.verifiedClaims || body.verificationPassed !== undefined) {
       record.aadhaar = { ...record.aadhaar?.toObject?.(), status: 'PENDING', requestId: reference, providerReference, message: 'Aadhaar update received; awaiting authoritative status check.', updatedAt: new Date(), data: body };
     } else if (body.documentStatus || body.signerInfo) {
       record.eSign = { ...record.eSign?.toObject?.(), status: 'PENDING', requestId: reference, providerReference, message: 'eSign update received; awaiting authoritative status check.', updatedAt: new Date(), data: body };

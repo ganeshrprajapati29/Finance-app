@@ -536,6 +536,15 @@ router.post('/wallet/service', requireAuth, fraudCheck, async (req, res, next) =
     if (Math.abs(Number(amount) - resolution.amount) > 0.009) {
       return fail(res, 'AMOUNT_MISMATCH', 'The amount changed. Please review and try again.', 400);
     }
+    const rechargeType = String(resolution.metadata?.recharge?.type || '').toLowerCase();
+    if (['mobile', 'dth'].includes(rechargeType)) {
+      return fail(
+        res,
+        'WALLET_DISABLED_FOR_RECHARGE',
+        'Wallet payment is not available for recharge. Please pay with UPI, card or net banking.',
+        400,
+      );
+    }
 
     const payable = resolution.amount;
 

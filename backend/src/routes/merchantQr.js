@@ -6,21 +6,23 @@ import MerchantQR from '../models/MerchantQR.js';
 import MerchantPayment from '../models/MerchantPayment.js';
 import { created, fail, ok } from '../utils/response.js';
 import { initiateMerchantPayin, makeMerchantOrderId } from '../services/velxapay/payinService.js';
+import { activateMerchantQr } from '../utils/merchantQr.js';
 
 const router = Router();
 router.get('/public/:merchantId', async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ publicId: req.params.merchantId, status: 'APPROVED' }).select('publicId businessName category status');
     if (!business) return fail(res, 'MERCHANT_UNAVAILABLE', 'This merchant is not accepting payments right now.', 404);
-    ok(res, business);
+    const qr = await MerchantQR.findOne({ businessId: business._id });
+    if (qr?.status === 'DISABLED') return fail(res, 'MERCHANT_QR_DISABLED', 'This merchant QR is not accepting payments right now.', 404);
+    ok(res, { ...business.toObject(), qrStatus: qr?.status || 'NOT_GENERATED' });
   } catch (error) { next(error); }
 });
 router.post('/', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid, status: 'APPROVED' });
     if (!business) return fail(res, 'APPROVAL_REQUIRED', 'Business approval is required before generating a QR.', 409);
-    const payload = `https://khatupay.com/pay/merchant/${business.publicId}`;
-    const qr = await MerchantQR.findOneAndUpdate({ businessId: business._id }, { userId: req.user.uid, qrReference: business.publicId, payload, status: 'ACTIVE' }, { upsert: true, new: true });
+    const qr = await activateMerchantQr(business, req.user.uid);
     ok(res, qr);
   } catch (error) { next(error); }
 });
@@ -36,6 +38,8 @@ router.post('/payment-order', async (req, res, next) => {
     }).validateAsync(req.body, { abortEarly: false, stripUnknown: true });
     const business = await MerchantBusiness.findOne({ publicId: payload.merchantId, status: 'APPROVED' });
     if (!business) return fail(res, 'MERCHANT_UNAVAILABLE', 'This merchant is not accepting payments right now.', 404);
+    const qr = await MerchantQR.findOne({ businessId: business._id });
+    if (qr?.status === 'DISABLED') return fail(res, 'MERCHANT_QR_DISABLED', 'This merchant QR is not accepting payments right now.', 409);
     const orderId = makeMerchantOrderId();
     const payment = await MerchantPayment.create({ businessId: business._id, merchantUserId: business.userId, orderId, amount: payload.amount, customer: payload, status: 'CREATED' });
     try {

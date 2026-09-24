@@ -110,7 +110,7 @@ router.post('/', async (req, res) => {
         <p>Email: ${email}</p>
         <p>Password: ${password}</p>
         <p>Please change your password after first login.</p>
-        <p>Regards,<br>Khatu Pay Admin Team</p>`,
+        <p>Regards,<br>Khatu Pay Team</p>`,
         `Welcome to Khatu Pay Collections Team. Email: ${email}, Password: ${password}`
       )
     } catch (emailError) {
@@ -251,7 +251,7 @@ router.post('/:id/reset-password', async (req, res) => {
         <p>Your password has been reset.</p>
         <p>New password: ${password}</p>
         <p>Please change your password after login.</p>
-        <p>Regards,<br>Khatu Pay Admin Team</p>`,
+        <p>Regards,<br>Khatu Pay Team</p>`,
         `Password reset. New password: ${password}`
       )
     } catch (emailError) {

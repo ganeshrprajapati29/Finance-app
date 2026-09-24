@@ -8,7 +8,10 @@ import MerchantKyc from '../models/MerchantKyc.js';
 import MerchantQR from '../models/MerchantQR.js';
 import User from '../models/User.js';
 import { created, fail, ok } from '../utils/response.js';
-import { velxapayConfig } from '../config/velxapay.js';
+import { verifyBankAccount, signcareRequestId } from '../services/signcare.js';
+import { normalizeSigncarePennyDrop } from '../utils/signcareBankVerification.js';
+import { activateMerchantQr } from '../utils/merchantQr.js';
+import { notifyUserSmart } from '../services/smartNotifications.js';
 
 const router = Router();
 const profileSchema = Joi.object({
@@ -71,6 +74,15 @@ router.post('/kyc', requireAuth, async (req, res, next) => {
       status: 'PENDING', submittedAt: new Date()
     }, { upsert: true, new: true });
     business.status = 'SUBMITTED'; await business.save();
+    notifyUserSmart(req.user.uid, 'business_qr_pending', {
+      email: true,
+      force: true,
+      businessName: business.businessName,
+      reference: business.publicId,
+      route: '/business',
+      dedupeKey: `business-qr-pending:${business._id}:${new Date().toISOString().slice(0, 10)}`,
+      data: { businessId: String(business._id), publicId: business.publicId, status: business.status },
+    }).catch((error) => console.error('Business QR pending email failed:', error.message));
     ok(res, kyc, 'Business KYC submitted for review.');
   } catch (error) { next(error); }
 });
@@ -83,8 +95,47 @@ router.post('/bank-account', requireAuth, async (req, res, next) => {
       accountHolderName: Joi.string().min(2).required(), accountNumber: Joi.string().pattern(/^\d{6,20}$/).required(),
       ifscCode: Joi.string().uppercase().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/).required(), bankName: Joi.string().allow(''),
     }).validateAsync(req.body, { abortEarly: false, stripUnknown: true });
-    const bank = await MerchantBankAccount.findOneAndUpdate({ businessId: business._id }, { ...payload, userId: req.user.uid, status: 'PENDING' }, { upsert: true, new: true });
-    ok(res, { ...bank.toObject(), accountNumber: `****${bank.accountNumber.slice(-4)}` }, 'Bank account submitted for verification.');
+    const requestId = signcareRequestId('KP-MERCHANT-BANK');
+    const result = await verifyBankAccount({
+      accountNumber: payload.accountNumber,
+      ifsc: payload.ifscCode,
+      consentText: 'I consent to Khatu Pay verifying my merchant settlement bank account through SignCare Penny Drop Basic.',
+      requestId,
+    });
+    const normalized = normalizeSigncarePennyDrop(result.response, {
+      accountNumber: payload.accountNumber,
+      ifsc: payload.ifscCode,
+    });
+    const temporaryReview = !normalized.isValid &&
+      /max\s*retries|timeout|timed\s*out/i.test(`${normalized.bankResponse} ${normalized.message}`);
+    const last4 = payload.accountNumber.slice(-4);
+    const reviewMessage = `Bank details submitted for Khatu Pay review. IFSC ${payload.ifscCode.toUpperCase()}, account ending ${last4}.`;
+    const bank = await MerchantBankAccount.findOneAndUpdate(
+      { businessId: business._id },
+      {
+        ...payload,
+        accountHolderName: normalized.accountName || payload.accountHolderName,
+        userId: req.user.uid,
+        status: normalized.isValid ? 'VERIFIED' : temporaryReview ? 'REVIEW' : 'FAILED',
+        ...(normalized.isValid ? { verifiedAt: new Date() } : {}),
+        verificationReference: normalized.requestId || result.requestId || requestId,
+        verificationProvider: 'SIGNCARE_PENNY_DROP_BASIC',
+        verificationMessage: temporaryReview ? reviewMessage : normalized.message,
+        verificationData: {
+          ...normalized,
+          ...(temporaryReview ? { status: 'REVIEW', message: reviewMessage, reviewReason: 'PROVIDER_RETRY_LIMIT' } : {}),
+        },
+      },
+      { upsert: true, new: true },
+    );
+    if (!normalized.isValid && !temporaryReview) {
+      return fail(res, 'BANK_VERIFICATION_FAILED', normalized.message, 400, normalized);
+    }
+    ok(
+      res,
+      { ...bank.toObject(), accountNumber: `****${bank.accountNumber.slice(-4)}` },
+      temporaryReview ? reviewMessage : 'Merchant bank account verified successfully.',
+    );
   } catch (error) { next(error); }
 });
 
@@ -96,8 +147,7 @@ router.post('/activate', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid, status: 'APPROVED' });
     if (!business) return fail(res, 'APPROVAL_REQUIRED', 'Business approval is required before generating a QR.', 409);
-    const payload = `${velxapayConfig.publicPayBaseUrl}/${business.publicId}`;
-    const qr = await MerchantQR.findOneAndUpdate({ businessId: business._id }, { userId: req.user.uid, qrReference: business.publicId, payload, status: 'ACTIVE' }, { upsert: true, new: true });
+    const qr = await activateMerchantQr(business, req.user.uid);
     ok(res, qr, 'Business QR activated.');
   } catch (error) { next(error); }
 });

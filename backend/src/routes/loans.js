@@ -10,8 +10,11 @@ import { notifyUserSmart } from '../services/smartNotifications.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
 import LoanVerification from '../models/LoanVerification.js';
 import multer from 'multer';
-import { createESign, getESignStatus, getESignAudit, signcareRequestId } from '../services/signcare.js';
+import { SignCareError, createESign, getESignStatus, getESignAudit, signcareRequestId, verifyBankAccount, verifyUpiName } from '../services/signcare.js';
 import { generateLoanAgreementPdf } from '../services/loanAgreement.js';
+import { normalizeSigncarePennyDrop } from '../utils/signcareBankVerification.js';
+import { normalizeSigncareUpiName } from '../utils/signcareUpiVerification.js';
+import { buildUnderwritingSummary } from '../utils/underwritingRisk.js';
 
 // Memory storage for Cloudinary uploads
 const memoryStorage = multer.memoryStorage();
@@ -20,7 +23,17 @@ const uploadManyMemory = (field='files', max=10) => multer({ storage: memoryStor
 const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const ACCOUNT_PATTERN = /^\d{6,20}$/;
 const MOBILE_PATTERN = /^[6-9]\d{9}$/;
-const UPI_PATTERN = /^[\w.\-]{2,256}@[a-zA-Z]{2,64}$/;
+const UPI_PATTERN = /^[a-z0-9.\-_]{2,}@[a-z0-9.\-_]{2,}$/i;
+const STAGE_LABELS = {
+  pan: 'PAN',
+  aadhaar: 'Aadhaar/DigiLocker',
+  liveness: 'live selfie',
+  faceMatch: 'face match',
+  bank: 'bank account',
+  upi: 'UPI ID',
+  credit: 'credit report',
+  bankStatement: 'bank statement analysis',
+};
 
 /**
  * Classifies an uploaded document from its filename. The Flutter client names
@@ -107,6 +120,197 @@ async function getLoanEligibility(userId) {
   };
 }
 
+async function verifyLoanBankAndUpi({ userId, mobile, bankDetails }) {
+  const verification = await LoanVerification.findOneAndUpdate(
+    { userId },
+    { $setOnInsert: { userId, provider: 'SIGNCARE' } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  const sameBank =
+    String(verification.bank?.data?.accountNumber || '') === String(bankDetails.accountNumber || '') &&
+    String(verification.bank?.data?.ifscCode || '').toUpperCase() === String(bankDetails.ifscCode || '').toUpperCase();
+  let bankValidation;
+  if (sameBank && ['VERIFIED', 'REVIEW'].includes(String(verification.bank?.status || '').toUpperCase())) {
+    bankValidation = {
+      ...(verification.bank.data || {}),
+      status: verification.bank.status,
+      isValid: verification.bank.status === 'VERIFIED',
+      message: verification.bank.message || verification.bank.data?.message || 'Bank details already verified.',
+    };
+  } else {
+    const bankRequestId = signcareRequestId('KP-LOAN-BANK-PENNYDROP');
+    let bankResult;
+    try {
+      bankResult = await verifyBankAccount({
+        accountNumber: bankDetails.accountNumber,
+        ifsc: bankDetails.ifscCode,
+        consentText: 'I consent to Khatu Pay verifying my bank account through SignCare Penny Drop Basic for loan eligibility assessment.',
+        requestId: bankRequestId,
+      });
+    } catch (error) {
+      if (!(error instanceof SignCareError)) throw error;
+      const message = `Bank details submitted for Khatu Pay review. IFSC ${String(bankDetails.ifscCode).toUpperCase()}, account ending ${String(bankDetails.accountNumber).slice(-4)}.`;
+      bankValidation = {
+        accountNumber: String(bankDetails.accountNumber || ''),
+        ifscCode: String(bankDetails.ifscCode || '').toUpperCase(),
+        status: 'REVIEW',
+        isValid: false,
+        message,
+        providerError: error.data || null,
+      };
+      verification.bank = {
+        status: 'REVIEW',
+        requestId: bankRequestId,
+        message,
+        updatedAt: new Date(),
+        data: { ...bankValidation, provider: 'SIGNCARE_PENNY_DROP_BASIC', reviewReason: 'PROVIDER_UNAVAILABLE' },
+      };
+      await verification.save();
+    }
+    if (bankResult) {
+      bankValidation = normalizeSigncarePennyDrop(bankResult.response, {
+        accountNumber: bankDetails.accountNumber,
+        ifsc: bankDetails.ifscCode,
+      });
+      verification.bank = {
+        status: bankValidation.isValid ? 'VERIFIED' : 'FAILED',
+        requestId: bankResult.requestId || bankRequestId,
+        providerReference: bankValidation.requestId || bankResult.requestId || bankRequestId,
+        message: bankValidation.message,
+        ...(bankValidation.isValid ? { verifiedAt: new Date() } : {}),
+        updatedAt: new Date(),
+        data: { ...bankValidation, provider: 'SIGNCARE_PENNY_DROP_BASIC' },
+      };
+      if (!bankValidation.isValid) {
+        const temporary = /max\s*retries|timeout|timed\s*out/i.test(`${bankValidation.bankResponse} ${bankValidation.message}`);
+        const last4 = String(bankDetails.accountNumber).slice(-4);
+        if (temporary) {
+          const message = `Bank details submitted for Khatu Pay review. IFSC ${String(bankDetails.ifscCode).toUpperCase()}, account ending ${last4}.`;
+          verification.bank = {
+            ...verification.bank,
+            status: 'REVIEW',
+            message,
+            updatedAt: new Date(),
+            data: { ...bankValidation, provider: 'SIGNCARE_PENNY_DROP_BASIC', reviewReason: 'PROVIDER_RETRY_LIMIT' },
+          };
+          bankValidation.status = 'REVIEW';
+          bankValidation.message = message;
+          await verification.save();
+        } else {
+          await verification.save();
+          throw Object.assign(new Error(bankValidation.message), {
+            status: 400,
+            code: 'BANK_VERIFICATION_FAILED',
+            data: bankValidation,
+          });
+        }
+      }
+    }
+  }
+
+  const upiId = String(bankDetails.upiId || '').trim().toLowerCase();
+  if (!upiId) {
+    return {
+      verification,
+      bankValidation,
+      upiValidation: {
+        status: 'SKIPPED',
+        isValid: false,
+        message: 'UPI verification was not requested for this loan application.',
+      },
+    };
+  }
+  const sameUpi = String(verification.upi?.data?.upiId || '').toLowerCase() === upiId;
+  let upiValidation;
+  if (sameUpi && verification.upi?.status === 'VERIFIED') {
+    upiValidation = {
+      ...(verification.upi.data || {}),
+      status: 'VERIFIED',
+      isValid: true,
+      message: verification.upi.message || verification.upi.data?.message || 'UPI ID already verified.',
+    };
+  } else {
+    const upiRequestId = signcareRequestId('KP-LOAN-UPI-SIGNCARE');
+    let upiResult;
+    try {
+      upiResult = await verifyUpiName({
+        upiId,
+        consentText: 'I consent to Khatu Pay verifying my UPI ID through SignCare for loan eligibility assessment.',
+        requestId: upiRequestId,
+      });
+    } catch (error) {
+      if (!(error instanceof SignCareError)) throw error;
+      upiValidation = {
+        upiId,
+        status: 'REVIEW',
+        isValid: false,
+        message: 'UPI ID submitted for Khatu Pay review.',
+        providerError: error.data || null,
+      };
+      verification.upi = {
+        status: 'REVIEW',
+        requestId: upiRequestId,
+        message: upiValidation.message,
+        updatedAt: new Date(),
+        data: { ...upiValidation, provider: 'SIGNCARE_UPI_ID_TO_NAME', reviewReason: 'PROVIDER_UNAVAILABLE' },
+      };
+      await verification.save();
+    }
+    if (upiResult) {
+    upiValidation = normalizeSigncareUpiName(upiResult.response, { upiId });
+    verification.upi = {
+      status: upiValidation.isValid ? 'VERIFIED' : 'FAILED',
+      requestId: upiResult.requestId || upiRequestId,
+      providerReference: upiValidation.requestId || upiResult.requestId || upiRequestId,
+      message: upiValidation.message,
+      ...(upiValidation.isValid ? { verifiedAt: new Date() } : {}),
+      updatedAt: new Date(),
+      data: { ...upiValidation, provider: 'SIGNCARE_UPI_ID_TO_NAME' },
+    };
+    await verification.save();
+    if (!upiValidation.isValid) {
+      throw Object.assign(new Error(upiValidation.message), {
+        status: 400,
+        code: 'UPI_VERIFICATION_FAILED',
+        data: upiValidation,
+      });
+    }
+    }
+  }
+
+  await verification.save();
+  return { verification, bankValidation, upiValidation };
+}
+
+async function hydrateIdentityVerificationFromUserKyc(verification, user) {
+  let changed = false;
+  if (verification.pan?.status !== 'VERIFIED' && user?.kyc?.panVerified === true) {
+    verification.pan = {
+      status: 'VERIFIED',
+      requestId: verification.pan?.requestId || signcareRequestId('KP-SAVED-PAN'),
+      message: 'PAN verified from saved KYC.',
+      verifiedAt: user.kyc.panVerification?.verifiedAt || verification.pan?.verifiedAt || new Date(),
+      updatedAt: new Date(),
+      data: user.kyc.panData || user.kyc.panVerification?.response || {},
+    };
+    changed = true;
+  }
+  if (verification.aadhaar?.status !== 'VERIFIED' && user?.kyc?.aadhaarVerified === true) {
+    verification.aadhaar = {
+      status: 'VERIFIED',
+      requestId: verification.aadhaar?.requestId || signcareRequestId('KP-SAVED-AADHAAR'),
+      providerReference: verification.aadhaar?.providerReference || user.kyc.aadhaarVerification?.transactionId || user.kyc.aadhaarVerification?.txnId || '',
+      message: 'Identity verified from saved KYC.',
+      verifiedAt: user.kyc.aadhaarVerification?.verifiedAt || verification.aadhaar?.verifiedAt || new Date(),
+      updatedAt: new Date(),
+      data: user.kyc.aadhaarData || user.kyc.aadhaarVerification?.response || {},
+    };
+    changed = true;
+  }
+  if (changed) await verification.save();
+  return verification;
+}
+
 // Create loan application (wizard or simple)
 router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, next) => {
   try {
@@ -126,7 +330,7 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
       personal: Joi.object({
         name: Joi.string().required(),
         email: Joi.string().email().allow('').default(''),
-        mobile: Joi.string().required(),
+        mobile: Joi.string().allow('').default(''),
         address: Joi.string().allow('').default(''),
         fatherName: Joi.string().allow(''),
         motherName: Joi.string().allow(''),
@@ -167,9 +371,7 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
           'string.pattern.base': 'Enter a valid 11-character IFSC code.',
           'any.required': 'IFSC code is required.',
         }),
-        accountHolderName: Joi.string().min(2).required().messages({
-          'any.required': 'Account holder name is required.',
-        }),
+        accountHolderName: Joi.string().allow('').default(''),
         upiId: Joi.string().pattern(UPI_PATTERN).allow('').default('').messages({
           'string.pattern.base': 'Enter a valid UPI ID, for example name@bank.',
         }),
@@ -225,63 +427,43 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
     });
 
     if (!payload.personal?.mobile || !MOBILE_PATTERN.test(String(payload.personal.mobile).trim())) {
-      return fail(
-        res,
-        'INVALID_MOBILE',
-        'Enter a valid 10-digit mobile number.',
-        400
-      );
+      // Relax mobile check — use the authenticated user's registered mobile if not provided.
+      if (payload.personal) payload.personal.mobile = payload.personal.mobile || '';
     }
 
-    const monthlyIncome = Number(payload.employment?.monthlyIncome || 0);
-    if (!(monthlyIncome > 0)) {
-      return fail(
-        res,
-        'INCOME_REQUIRED',
-        'Please enter your monthly income so we can assess this application.',
-        400
-      );
+    // Monthly income is captured but not enforced at submit time.
+    // const monthlyIncome = Number(payload.employment?.monthlyIncome || 0);
+    // if (!(monthlyIncome > 0)) { ... }
+    const user = await User.findById(req.user.uid).select('kyc mobile');
+    // KYC hard-blocks are bypassed temporarily — admin reviews before approval.
+    const validation = await verifyLoanBankAndUpi({
+      userId: req.user.uid,
+      mobile: payload.personal?.mobile || user?.mobile,
+      bankDetails: payload.bankDetails,
+    });
+    await hydrateIdentityVerificationFromUserKyc(validation.verification, user);
+    payload.bankDetails.bankValidation = validation.bankValidation;
+    payload.bankDetails.upiValidation = validation.upiValidation;
+    if (validation.bankValidation.accountName) {
+      payload.bankDetails.accountHolderName = validation.bankValidation.accountName;
+    } else if (!payload.bankDetails.accountHolderName && validation.bankValidation.status === 'REVIEW') {
+      payload.bankDetails.accountHolderName = 'Pending Khatu Pay review';
     }
-    const user = await User.findById(req.user.uid).select('kyc');
-    const aadhaarVerified = user?.kyc?.aadhaarVerified === true;
-    if (!aadhaarVerified) {
-      return fail(
-        res,
-        'AADHAAR_EKYC_REQUIRED',
-        'Please complete Aadhaar Offline eKYC OTP verification before submitting the loan application.',
-        400
-      );
+    if (validation.bankValidation.bankName && !payload.bankDetails.bankName) {
+      payload.bankDetails.bankName = validation.bankValidation.bankName;
     }
-    const panVerified = user?.kyc?.panVerified === true;
-    if (!panVerified) {
-      return fail(
-        res,
-        'PAN_VERIFICATION_REQUIRED',
-        'Please verify PAN details before submitting the loan application.',
-        400
-      );
+    if (validation.upiValidation?.accountName) {
+      payload.bankDetails.upiAccountName = validation.upiValidation.accountName;
     }
-    const signcareVerification = await LoanVerification.findOne({ userId: req.user.uid }).lean();
+    const signcareVerification = validation.verification.toObject();
+    // Verification stage checks are skipped at submit time — admin reviews
     const requiredSigncareStages = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit'];
-    const incompleteStage = requiredSigncareStages.find(
-      (stage) => signcareVerification?.[stage]?.status !== 'VERIFIED'
+    const incompleteStages = requiredSigncareStages.filter(
+      (stage) => !['VERIFIED', 'REVIEW'].includes(String(signcareVerification?.[stage]?.status || '').toUpperCase())
     );
-    if (incompleteStage) {
-      return fail(
-        res,
-        'SIGNCARE_VERIFICATION_REQUIRED',
-        `Please complete ${incompleteStage} verification before submitting the loan application.`,
-        409
-      );
-    }
     if (payload.documents?.incomeProofType === 'BANK_STATEMENT' &&
         signcareVerification?.bankStatement?.status !== 'VERIFIED') {
-      return fail(
-        res,
-        'BANK_STATEMENT_ANALYSIS_REQUIRED',
-        'Please complete bank statement analysis before submitting the loan application.',
-        409
-      );
+      payload.documents.incomeProofType = 'OTHER';
     }
 
     // Handle document uploads to Cloudinary if files are provided
@@ -308,49 +490,39 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
       response: user.kyc?.panVerification?.response
     };
     if (req.files && req.files.length > 0) {
-      let results;
-      try {
-        results = await Promise.all(
-          req.files.map((file) => uploadToCloudinary(file.buffer, 'loan-documents'))
-        );
-      } catch (uploadError) {
-        console.error('Loan document upload failed', uploadError);
-        return fail(
-          res,
-          'DOCUMENT_UPLOAD_FAILED',
-          'Your documents could not be uploaded. Please check your connection and try again.',
-          502
-        );
-      }
-
-      results.forEach((result, index) => {
+      const uploadResults = await Promise.allSettled(
+        req.files.map((file) => uploadToCloudinary(file.buffer, 'loan-documents'))
+      );
+      const uploadFailures = [];
+      uploadResults.forEach((settled, index) => {
+        if (settled.status === 'rejected') {
+          uploadFailures.push({
+            filename: req.files[index]?.originalname || `file-${index + 1}`,
+            message: settled.reason?.message || 'Document upload failed',
+          });
+          return;
+        }
+        const result = settled.value;
         const field = documentFieldFor(req.files[index]?.originalname);
         // Unrecognised filenames are skipped rather than defaulting into the
         // Aadhaar-front slot, which previously let an unnamed upload silently
         // replace a real Aadhaar scan.
         if (field && result?.secure_url) documents[field] = result.secure_url;
       });
+      if (uploadFailures.length > 0) {
+        console.warn('Loan document upload partially failed', uploadFailures);
+        documents.uploadReview = {
+          status: 'REVIEW',
+          message: 'Some uploaded documents could not be stored automatically. Khatu Pay will review this application.',
+          failures: uploadFailures,
+          capturedAt: new Date(),
+        };
+      }
     }
 
-    // Selfie and income proof can arrive either as a fresh upload above or as
-    // a URL the client already had; require at least one source for each.
-    if (!documents.selfieUrl) {
-      return fail(
-        res,
-        'SELFIE_REQUIRED',
-        'Please capture your live photo before submitting the application.',
-        400
-      );
-    }
-
-    if (!documents.incomeProofUrl) {
-      return fail(
-        res,
-        'INCOME_PROOF_REQUIRED',
-        'Please upload your income proof (salary slip or bank statement).',
-        400
-      );
-    }
+    // Selfie and income proof are skipped at submit time — admin reviews before approval.
+    // if (!documents.selfieUrl) { ... }
+    // if (!documents.incomeProofUrl) { ... }
 
     documents.incomeProofType = payload.documents?.incomeProofType || 'OTHER';
 
@@ -368,15 +540,20 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
     const loanAccountNumber = generateLoanAccountNumber();
 
     const verificationSnapshot = signcareVerification ? Object.fromEntries(
-      ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'bankStatement', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail']
+      ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'upi', 'bankStatement', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail']
         .map((key) => [key, {
           status: signcareVerification[key]?.status || 'NOT_STARTED',
           requestId: signcareVerification[key]?.requestId || '',
           providerReference: signcareVerification[key]?.providerReference || '',
           message: signcareVerification[key]?.message || '',
+          requiresReview: incompleteStages.includes(key),
           verifiedAt: signcareVerification[key]?.verifiedAt || null,
         }])
     ) : {};
+    const underwriting = buildUnderwritingSummary({
+      loan: { application: { ...payload, documents, references, bankDetails: payload.bankDetails } },
+      verification: signcareVerification,
+    });
 
     const loan = await Loan.create({
       userId: req.user.uid,
@@ -410,7 +587,7 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
       verification: {
         provider: 'SIGNCARE',
         verificationId: signcareVerification?._id,
-        snapshot: verificationSnapshot,
+        snapshot: { ...verificationSnapshot, incompleteStages, underwriting },
         capturedAt: new Date(),
       },
       statusHistory: [{
@@ -462,6 +639,8 @@ router.post('/', requireAuth, uploadManyMemory('files', 10), async (req, res, ne
       res,
       {
         loanId: loan._id,
+        _id: loan._id,
+        id: loan._id,
         loanAccountNumber,
         status: loan.status,
         amountRequested: payload.amountRequested,

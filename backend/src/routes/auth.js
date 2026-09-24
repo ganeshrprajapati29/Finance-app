@@ -81,7 +81,7 @@ async function createOtp(email, purpose, ttlMinutes = 10) {
 }
 
 // Find the newest unused, unexpired OTP for email+purpose and verify the candidate against its hash
-async function verifyOtp(email, purpose, candidate) {
+async function verifyOtp(email, purpose, candidate, { consume = true } = {}) {
   const record = await Otp.findOne({ email: email.toLowerCase(), purpose, used: false }).sort({ createdAt: -1 });
   if (!record) return { ok: false, error: 'INVALID_OTP' };
   if (record.expiresAt < new Date()) return { ok: false, error: 'OTP_EXPIRED' };
@@ -94,9 +94,20 @@ async function verifyOtp(email, purpose, candidate) {
     return { ok: false, error: 'INVALID_OTP' };
   }
 
-  record.used = true;
-  await record.save();
+  if (consume) {
+    record.used = true;
+    await record.save();
+  }
   return { ok: true, record };
+}
+
+function otpFailure(res, error) {
+  const messages = {
+    INVALID_OTP: 'Incorrect OTP. Please check the 6-digit code and try again.',
+    OTP_EXPIRED: 'OTP expired. Please request a new code.',
+    OTP_LOCKED: 'Too many incorrect OTP attempts. Please request a new code.',
+  };
+  return fail(res, error, messages[error] || 'Incorrect OTP. Please try again.', 400);
 }
 
 /* ===============================
@@ -161,8 +172,7 @@ router.post('/verify-email', async (req, res, next) => {
 
     const result = await verifyOtp(email, 'email_verify', otp);
     if (!result.ok) {
-      const messages = { INVALID_OTP: 'Invalid OTP', OTP_EXPIRED: 'OTP expired', OTP_LOCKED: 'Too many attempts, request a new OTP' };
-      return fail(res, result.error, messages[result.error] || 'Invalid OTP', 400);
+      return otpFailure(res, result.error);
     }
 
     await User.updateOne({ email: email.toLowerCase() }, { $set: { emailVerified: true } });
@@ -273,7 +283,7 @@ router.post('/login', credentialLimiter, async (req, res, next) => {
       ip: loginContext.ip,
       device: loginContext.device,
       force: suspiciousLogin,
-      email: suspiciousLogin,
+      email: false,
       dedupeKey: suspiciousLogin
         ? `login-suspicious:${user._id}:${loginContext.ip}:${new Date().toISOString().slice(0, 10)}`
         : undefined,
@@ -372,6 +382,22 @@ router.post('/forgot', async (req, res, next) => {
   }
 });
 
+router.post('/check-reset-otp', async (req, res, next) => {
+  try {
+    const { email, otp } = await Joi.object({
+      email: Joi.string().email().required(),
+      otp: Joi.string().length(6).required(),
+    }).validateAsync(req.body);
+
+    const result = await verifyOtp(email, 'password_reset', otp, { consume: false });
+    if (!result.ok) return otpFailure(res, result.error);
+    ok(res, { otpValid: true }, 'OTP verified.');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
+    next(err);
+  }
+});
+
 /* ===============================
    RESET PASSWORD
    =============================== */
@@ -385,8 +411,7 @@ router.post('/reset', async (req, res, next) => {
 
     const result = await verifyOtp(email, 'password_reset', otp);
     if (!result.ok) {
-      const messages = { INVALID_OTP: 'Invalid OTP', OTP_EXPIRED: 'OTP expired', OTP_LOCKED: 'Too many attempts, request a new OTP' };
-      return fail(res, result.error, messages[result.error] || 'Invalid OTP', 400);
+      return otpFailure(res, result.error);
     }
 
     const user = await User.findOne({ email: email.toLowerCase() });
@@ -431,25 +456,45 @@ router.post('/forgot-pin', async (req, res, next) => {
   }
 });
 
+router.post('/check-pin-otp', async (req, res, next) => {
+  try {
+    const { email, mobile, otp } = await Joi.object({
+      email: Joi.string().email(),
+      mobile: Joi.string().min(8),
+      otp: Joi.string().length(6).required(),
+    }).xor('email', 'mobile').validateAsync(req.body);
+
+    const user = await User.findOne(email ? { email: email.toLowerCase() } : { mobile });
+    if (!user) return otpFailure(res, 'INVALID_OTP');
+
+    const result = await verifyOtp(user.email, 'pin_reset', otp, { consume: false });
+    if (!result.ok) return otpFailure(res, result.error);
+    ok(res, { otpValid: true }, 'OTP verified.');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
+    next(err);
+  }
+});
+
 /* ===============================
    RESET PIN
    =============================== */
 router.post('/reset-pin', async (req, res, next) => {
   try {
-    const { email, otp, newPin } = await Joi.object({
-      email: Joi.string().email().required(),
+    const { email, mobile, otp, newPin } = await Joi.object({
+      email: Joi.string().email(),
+      mobile: Joi.string().min(8),
       otp: Joi.string().length(6).required(),
       newPin: Joi.string().pattern(/^\d{4}$/).required(),
-    }).validateAsync(req.body);
+    }).xor('email', 'mobile').validateAsync(req.body);
 
-    const result = await verifyOtp(email, 'pin_reset', otp);
+    const user = await User.findOne(email ? { email: email.toLowerCase() } : { mobile });
+    if (!user) return fail(res, 'INVALID_OTP', 'The verification code is invalid or expired.', 400);
+
+    const result = await verifyOtp(user.email, 'pin_reset', otp);
     if (!result.ok) {
-      const messages = { INVALID_OTP: 'Invalid OTP', OTP_EXPIRED: 'OTP expired', OTP_LOCKED: 'Too many attempts, request a new OTP' };
-      return fail(res, result.error, messages[result.error] || 'Invalid OTP', 400);
+      return otpFailure(res, result.error);
     }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return fail(res, 'USER_NOT_FOUND', 'User not found', 404);
 
     user.mpinHash = await bcrypt.hash(newPin, 12);
     user.pinAttempts = 0;

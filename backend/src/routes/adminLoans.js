@@ -6,13 +6,32 @@ import { ok, fail } from '../utils/response.js';
 import { quickSort, mergeSort, PriorityQueue } from '../utils/dsa.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
 import LoanVerification from '../models/LoanVerification.js';
+import { verificationWithoutWorkbook } from '../utils/signcareCreditReport.js';
 import User from '../models/User.js';
 import { uploadToCloudinary } from '../services/cloudinary.js';
 import { generateLoanAgreementPdf } from '../services/loanAgreement.js';
+import { buildUnderwritingSummary } from '../utils/underwritingRisk.js';
 
-const REQUIRED_SIGNCARE_STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'credit'];
+const REQUIRED_SIGNCARE_STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'upi', 'credit'];
+const STAGE_LABELS = {
+  pan: 'PAN',
+  aadhaar: 'Aadhaar/DigiLocker',
+  liveness: 'live selfie',
+  faceMatch: 'face match',
+  bank: 'bank account',
+  upi: 'UPI ID',
+  credit: 'credit report',
+  bankStatement: 'bank statement analysis',
+};
 
 const router = Router();
+
+function attachUnderwritingSummary(loan, rawVerification) {
+  const verification = verificationWithoutWorkbook(rawVerification);
+  loan.signcareVerification = verification || null;
+  loan.underwriting = loan.verification?.snapshot?.underwriting || buildUnderwritingSummary({ loan, verification });
+  return loan;
+}
 
 // 🟢 Get all loan applications (paginated) with DSA optimizations
 router.get('/', requireAdmin, async (req, res, next) => {
@@ -36,8 +55,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
     const verificationByUser = new Map(verificationRows.map((row) => [String(row.userId), row]));
     const loansWithVerification = loans.map((loan) => {
       const item = loan.toObject();
-      item.signcareVerification = verificationByUser.get(String(item.userId?._id || item.userId)) || null;
-      return item;
+      return attachUnderwritingSummary(item, verificationByUser.get(String(item.userId?._id || item.userId)) || null);
     });
 
     // If loans need custom sorting (e.g., by due dates), use DSA algorithms
@@ -72,6 +90,15 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
 
     if (decision === 'APPROVED') {
       const verification = await LoanVerification.findOne({ userId: loan.userId }).lean();
+      loan.verification = {
+        provider: loan.verification?.provider || 'SIGNCARE',
+        verificationId: loan.verification?.verificationId || verification?._id,
+        capturedAt: loan.verification?.capturedAt || new Date(),
+        snapshot: {
+          ...(loan.verification?.snapshot || {}),
+          underwriting: buildUnderwritingSummary({ loan, verification }),
+        },
+      };
       const incomplete = REQUIRED_SIGNCARE_STAGES.filter((stage) => verification?.[stage]?.status !== 'VERIFIED');
       if (loan.application?.documents?.incomeProofType === 'BANK_STATEMENT' &&
           verification?.bankStatement?.status !== 'VERIFIED') {
@@ -81,9 +108,9 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
         return fail(
           res,
           'VERIFICATION_INCOMPLETE',
-          `Complete SignCare verification before approval: ${incomplete.join(', ')}.`,
+          `Complete verification before approval: ${incomplete.map((stage) => STAGE_LABELS[stage] || stage).join(', ')}.`,
           409,
-          { incompleteStages: incomplete }
+          { incompleteStages: incomplete.map((stage) => STAGE_LABELS[stage] || stage) }
         );
       }
       const approved = Number(amountApproved);

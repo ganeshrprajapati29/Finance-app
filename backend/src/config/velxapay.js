@@ -8,6 +8,9 @@ export const velxapayConfig = Object.freeze({
   verifyUrl: clean(process.env.VELXAPAY_VERIFY_URL) || 'https://velxapay.com/v2/payment/verify',
   payoutUrl: clean(process.env.VELXAPAY_PAYOUT_URL) || 'https://velxapay.com/v2/amount/withdraw',
   publicPayBaseUrl: clean(process.env.MERCHANT_PAY_PUBLIC_URL) || 'https://khatupay.com/pay/merchant',
+  returnUrl: clean(process.env.VELXAPAY_RETURN_URL) ||
+    clean(process.env.RAZORPAY_SUCCESS_URL) ||
+    `${clean(process.env.APP_BASE_URL) || 'https://khatupay.com'}/payment-success`,
 });
 
 export function assertVelxapayConfigured({ webhook = false } = {}) {
