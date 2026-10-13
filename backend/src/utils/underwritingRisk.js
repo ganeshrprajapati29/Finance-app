@@ -1,4 +1,5 @@
 import { isSevereAccount } from './signcareCreditReport.js';
+import { approvalBlockingStages } from './loanVerificationPolicy.js';
 
 function asNumber(value, fallback = null) {
   const n = Number(value);
@@ -7,10 +8,6 @@ function asNumber(value, fallback = null) {
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function stageStatus(verification, key) {
-  return String(verification?.[key]?.status || 'NOT_STARTED').toUpperCase();
 }
 
 function creditData(verification = {}) {
@@ -56,11 +53,10 @@ export function buildUnderwritingSummary({ loan = {}, verification = {} } = {}) 
   const statementAccount = bsa?.statementAccount || {};
   const statementTransactions = asArray(bsa?.consolidatedinfo?.xns_list);
 
-  const requiredStages = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'upi', 'credit'];
-  const incompleteStages = requiredStages.filter((key) => stageStatus(verification, key) !== 'VERIFIED');
-  if (application.documents?.incomeProofType === 'BANK_STATEMENT' && stageStatus(verification, 'bankStatement') !== 'VERIFIED') {
-    incompleteStages.push('bankStatement');
-  }
+  const incompleteStages = approvalBlockingStages(verification, {
+    upiId: application.bankDetails?.upiId,
+    incomeProofType: application.documents?.incomeProofType,
+  });
 
   const flags = [];
   let riskPoints = 0;

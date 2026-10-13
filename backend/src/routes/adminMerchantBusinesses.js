@@ -7,8 +7,10 @@ import MerchantQR from '../models/MerchantQR.js';
 import MerchantPayment from '../models/MerchantPayment.js';
 import MerchantSettlement from '../models/MerchantSettlement.js';
 import { fail, ok } from '../utils/response.js';
-import { activateMerchantQr } from '../utils/merchantQr.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
+import { fetchRazorpayProductConfiguration, fetchRazorpaySubMerchant, mapRazorpayAccountStatus, razorpayPartnerV1Request } from '../services/razorpayPartner.js';
+import User from '../models/User.js';
+import { buildOnboardingChecklist, submitProviderOnboarding } from '../services/merchantOnboarding.js';
 
 const router = Router();
 
@@ -50,11 +52,13 @@ async function buildBusinessRow(business) {
     bankObject.accountNumberMasked = `****${String(bankObject.accountNumber).slice(-4)}`;
     delete bankObject.accountNumber;
   }
+  const owner = await User.findById(business.userId?._id || business.userId).select('kyc.panVerified kyc.aadhaarVerified').lean();
   return {
     business,
     kyc,
     bank: bankObject || null,
     qr,
+    onboarding: buildOnboardingChecklist({ business, bank, qr, user: owner }),
     payments: payments[0] || { total: 0, successful: 0, collectedAmount: 0 },
     settlements: settlements[0] || { total: 0, settledAmount: 0, pendingAmount: 0 },
     history: {
@@ -66,9 +70,46 @@ async function buildBusinessRow(business) {
 
 router.get('/', requireAdmin, async (_req, res, next) => {
   try {
-    const businesses = await MerchantBusiness.find().populate('userId', 'name email mobile').sort({ createdAt: -1 });
+    const businesses = await MerchantBusiness.find().select('-razorpay.oauthAccessToken -razorpay.oauthRefreshToken -razorpay.oauthStateHash -razorpay.oauthStateExpiresAt').populate('userId', 'name email mobile').sort({ createdAt: -1 });
     const rows = await Promise.all(businesses.map(buildBusinessRow));
     ok(res, rows);
+  } catch (error) { next(error); }
+});
+
+// Sends (or re-sends) a submitted application to Razorpay. Used for applications
+// that were queued while provider access was unavailable.
+router.post('/:id/provider-onboard', requireAdmin, async (req, res, next) => {
+  try {
+    const business = await MerchantBusiness.findById(req.params.id);
+    if (!business) return fail(res, 'NOT_FOUND', 'Business profile not found.', 404);
+    if (!business.onboardingRequest) return fail(res, 'ONBOARDING_NOT_SUBMITTED', 'The owner has not submitted business details yet.', 409);
+    if (business.razorpay?.productId) return fail(res, 'ONBOARDING_ALREADY_STARTED', 'This business is already with Razorpay. Use status sync instead.', 409);
+    const user = await User.findById(business.userId).select('name email mobile kyc');
+    const result = await submitProviderOnboarding(business, user);
+    ok(res, { row: await buildBusinessRow(business), queued: result.queued, reason: result.reason || '' }, result.queued
+      ? `Razorpay did not accept the application yet: ${result.reason || 'provider unavailable'}. It stays queued.`
+      : 'Application submitted to Razorpay.');
+  } catch (error) { next(error); }
+});
+
+router.post('/:id/provider-sync', requireAdmin, async (req, res, next) => {
+  try {
+    const business = await MerchantBusiness.findById(req.params.id);
+    if (!business?.razorpay?.accountId) return fail(res, 'PROVIDER_ACCOUNT_REQUIRED', 'Razorpay onboarding has not started for this business.', 409);
+    const account = await fetchRazorpaySubMerchant(business.razorpay.accountId);
+    business.status = mapRazorpayAccountStatus(account.status);
+    business.razorpay.accountStatus = account.status;
+    business.razorpay.requirements = account.requirements || business.razorpay.requirements;
+    if (business.razorpay.productId) {
+      const product = await fetchRazorpayProductConfiguration(business.razorpay.accountId, business.razorpay.productId);
+      business.razorpay.productStatus = product.status || business.razorpay.productStatus;
+      business.razorpay.requirements = product.requirements || business.razorpay.requirements;
+      business.razorpay.productConfiguration = product;
+      if (product.status) business.status = mapRazorpayAccountStatus(product.status);
+    }
+    business.razorpay.lastSyncedAt = new Date();
+    await business.save();
+    ok(res, { row: await buildBusinessRow(business) }, 'Razorpay business status updated.');
   } catch (error) { next(error); }
 });
 
@@ -127,16 +168,17 @@ router.post('/:id/qr-status', requireAdmin, async (req, res, next) => {
 
     let qr = await MerchantQR.findOne({ businessId: business._id });
     if (status === 'ACTIVE') {
-      if (String(business.status || '').toUpperCase() !== 'APPROVED') {
-        return fail(res, 'BUSINESS_APPROVAL_REQUIRED', 'Approve the business profile before enabling QR.', 409);
-      }
-      const bank = await MerchantBankAccount.findOne({ businessId: business._id });
-      if (!bank || !['VERIFIED', 'REVIEW'].includes(String(bank.status || '').toUpperCase())) {
-        return fail(res, 'BANK_VERIFICATION_REQUIRED', 'Bank account must be VERIFIED or REVIEW before QR can be enabled.', 409);
-      }
-      qr = await activateMerchantQr(business);
+      return fail(res, 'PROVIDER_QR_REQUIRED', 'Only Razorpay can activate a business QR after the payment product is approved.', 409);
     } else {
       if (!qr) return fail(res, 'QR_NOT_FOUND', 'Business QR has not been generated yet.', 404);
+      if (qr.provider === 'RAZORPAY_PARTNER' && qr.providerQrId) {
+        await razorpayPartnerV1Request(
+          'post',
+          `/v1/payments/qr_codes/${encodeURIComponent(qr.providerQrId)}/close`,
+          undefined,
+          { accountId: business.razorpay.accountId },
+        );
+      }
       qr.status = 'DISABLED';
       qr.disabledAt = new Date();
       qr.disabledReason = note || 'Disabled by Khatu Pay.';
@@ -160,32 +202,7 @@ router.post('/:id/decision', requireAdmin, async (req, res, next) => {
     const business = await MerchantBusiness.findById(req.params.id);
     if (!business) return fail(res, 'NOT_FOUND', 'Business profile not found.', 404);
     if (decision === 'APPROVED') {
-      const [kyc, bank] = await Promise.all([MerchantKyc.findOne({ businessId: business._id }), MerchantBankAccount.findOne({ businessId: business._id })]);
-      if (!bank || !['VERIFIED', 'REVIEW'].includes(bank.status)) {
-        return fail(res, 'BANK_VERIFICATION_REQUIRED', 'A SignCare verified or Khatu Pay review bank account is required before approval.', 409);
-      }
-      if (kyc) {
-        kyc.status = 'VERIFIED'; kyc.reviewedAt = new Date();
-      }
-      business.status = 'APPROVED'; business.rejectionReason = '';
-      const qr = await activateMerchantQr(business);
-      await Promise.all([...(kyc ? [kyc.save()] : []), business.save()]);
-      notifyUserSmart(business.userId, 'business_qr_approved', {
-        email: true,
-        force: true,
-        businessName: business.businessName,
-        reference: business.publicId,
-        route: '/business/qr',
-        dedupeKey: `business-qr-approved:${business._id}:${new Date().toISOString().slice(0, 10)}`,
-        data: {
-          businessId: String(business._id),
-          publicId: business.publicId,
-          qrReference: qr.qrReference,
-          paymentUrl: qr.paymentUrl,
-          provider: qr.provider || 'VELXAPAY',
-        },
-      }).catch((error) => console.error('Business QR approval email failed:', error.message));
-      return ok(res, { business, qr }, 'Business approved and QR activated.');
+      return fail(res, 'PROVIDER_REVIEW_REQUIRED', 'Razorpay controls payment-product approval and QR activation. Use Razorpay status sync instead of local approval.', 409);
     } else if (decision === 'REJECTED') {
       const reason = String(req.body?.reason || '').trim();
       if (!reason) return fail(res, 'REASON_REQUIRED', 'Enter a customer-friendly rejection reason.', 400);

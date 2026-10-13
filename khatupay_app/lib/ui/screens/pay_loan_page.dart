@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_theme.dart';
-import '../../routes/app_router.dart';
 import '../../services/payment_service.dart';
 import '../../services/user_service.dart';
 import '../widgets/app_back_button.dart';

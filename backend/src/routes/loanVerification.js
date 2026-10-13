@@ -11,17 +11,20 @@ import { requireAdmin } from '../middlewares/adminAuth.js';
 import { ok, fail } from '../utils/response.js';
 import signcareConfig from '../config/signcare.js';
 import {
-  SignCareError, createESign, createEStamp, fetchExperianReport, getAadhaarOvseResult,
+  SignCareError, fetchExperianReport, getAadhaarOvseResult,
   getDigiLockerDetails, initDigiLocker,
   getBankStatementAnalysis,
-  getESignAudit, getESignStatus, initAadhaarOvse, publicSigncareConfig, signcareRequestId,
+  initAadhaarOvse, publicSigncareConfig, signcareRequestId,
   submitBankStatement, verifyBankAccount, verifyFaceMatch, verifyLiveness, verifyPan, verifyUpiName,
 } from '../services/signcare.js';
+import { creditPrerequisiteGap, stageLabel } from '../utils/loanVerificationPolicy.js';
 import { sendPanVerify } from '../services/clubapiClient.js';
+import { validateBankAccount } from '../services/clubapiUtility.js';
 import { isPanVerified, normalizePanKycData } from '../utils/panKyc.js';
 import { normalizeAadhaarKycData } from '../utils/aadhaarKyc.js';
-import { extractAadhaarFaceImage, faceMatchPassed, faceStageSummary, livenessPassed } from '../utils/faceVerification.js';
+import { extractAadhaarFaceImage, faceMatchPassed, faceStageSummary, livenessPassed, livenessRejected } from '../utils/faceVerification.js';
 import { normalizeSigncarePennyDrop } from '../utils/signcareBankVerification.js';
+import { normalizeClubapiBankValidation } from '../utils/clubapiVerification.js';
 import { normalizeSigncareUpiName } from '../utils/signcareUpiVerification.js';
 import {
   CREDIT_PENDING_STALE_MS, EXPERIAN_PROVIDER, buildExperianRetailRequest, decodeExperianExcel, detachExcelReport,
@@ -32,6 +35,39 @@ import AuditLog from '../models/AuditLog.js';
 const router = Router();
 const CONSENT_TEXT = 'I consent to Khatu Pay verifying my identity, bank account and credit information through SignCare for loan eligibility assessment.';
 const STAGES = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank', 'upi', 'bankStatement', 'credit', 'accountAggregator', 'agreement', 'eStamp', 'eSign', 'auditTrail'];
+const BANK_PROVIDER_DEADLINE_MS = 12_000;
+// ClubAPI is only a fallback/enrichment; it must not stretch a request past the app's wait.
+const CLUBAPI_FALLBACK_DEADLINE_MS = 15_000;
+
+// Stored profiles may contain +91, 91XXXXXXXXXX, or a leading zero even
+// though SignCare expects the national 10-digit number. Normalize once at the
+// boundary instead of blocking an otherwise authenticated borrower.
+function indianMobileNumber(value) {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  return /^[6-9]\d{9}$/.test(digits) ? digits : '';
+}
+
+function withDeadline(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(message), { code: 'PROVIDER_TIMEOUT' })), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function withBankProviderDeadline(request) {
+  return Promise.race([
+    request,
+    new Promise((_, reject) => setTimeout(() => reject(new SignCareError(
+      'Bank verification provider is responding slowly.',
+      503,
+      { reviewReason: 'PROVIDER_TIMEOUT' },
+      'bank',
+    )), BANK_PROVIDER_DEADLINE_MS)),
+  ]);
+}
 const statementUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 },
@@ -60,12 +96,17 @@ function publicStage(stage = {}) {
   const experian = data.jsonExperianReport || data.experianReport || {};
   const pan = normalizePanKycData(data);
   const face = faceStageSummary(data);
+  const bankName = data.bankName || data.bank_name || data.bank || '';
+  const accountName = data.accountName || data.account_name || data.beneficiaryName || data.beneficiary_name || data.name || data.fullName || data.residentName || data.accountHolderName || '';
   return {
     status: stage.status || 'NOT_STARTED', requestId: stage.requestId || '',
     providerReference: stage.providerReference || '', message: stage.message || '',
     verifiedAt: stage.verifiedAt || null, updatedAt: stage.updatedAt || null,
+    accountName,
+    bankName,
+    providerData: data,
     summary: {
-      name: pan.name || data.name || data.fullName || data.residentName || data.accountHolderName || data.accountName || data.beneficiaryName || data.beneficiary_name || '',
+      name: pan.name || data.name || data.fullName || data.residentName || data.accountHolderName || accountName,
       panNumber: pan.panNumber || data.panNumber || data.pan || '',
       firstName: pan.firstName || '',
       middleName: pan.middleName || '',
@@ -90,7 +131,8 @@ function publicStage(stage = {}) {
       matchScore: face.matchScore,
       providerStatus: face.providerStatus,
       providerMessage: face.message,
-      bankName: data.bankName || data.bank_name || '', documentStatus: data.documentStatus || '',
+      bankName,
+      documentStatus: data.documentStatus || '',
     },
   };
 }
@@ -130,6 +172,10 @@ async function hydrateIdentityFromUserKyc(record, user) {
     changed = true;
   }
   if (record.aadhaar?.status !== 'VERIFIED' && user?.kyc?.aadhaarVerified === true) {
+    const savedAadhaarData = {
+      ...(user.kyc.aadhaarVerification?.response || {}),
+      ...(user.kyc.aadhaarData || {}),
+    };
     record.aadhaar = {
       status: 'VERIFIED',
       requestId: record.aadhaar?.requestId || signcareRequestId('KP-SAVED-AADHAAR'),
@@ -137,7 +183,7 @@ async function hydrateIdentityFromUserKyc(record, user) {
       message: 'Identity verified from saved KYC.',
       verifiedAt: user.kyc.aadhaarVerification?.verifiedAt || record.aadhaar?.verifiedAt || new Date(),
       updatedAt: new Date(),
-      data: user.kyc.aadhaarData || user.kyc.aadhaarVerification?.response || {},
+      data: savedAadhaarData,
     };
     changed = true;
   }
@@ -145,23 +191,41 @@ async function hydrateIdentityFromUserKyc(record, user) {
   return record;
 }
 
-function digilockerAadhaarData(data = {}) {
+function digilockerAadhaarDocument(data = {}) {
   const documents = Array.isArray(data.docs) ? data.docs : [];
-  const document = documents.find((item) =>
+  return documents.find((item) =>
     String(item?.docType || item?.doctype || item?.issued?.doctype || '').toUpperCase() === 'ADHAR'
   ) || documents[0] || {};
+}
+
+// dataPdf/dataXml are the full eAadhaar files (hundreds of KB of base64).
+// They are not needed after parsing and would bloat every status response.
+export function compactDigiLockerData(data = {}) {
+  const docs = Array.isArray(data.docs)
+    ? data.docs.map(({ dataPdf, dataXml, ...rest }) => rest)
+    : data.docs;
+  return { ...data, ...(docs ? { docs } : {}) };
+}
+
+export function digilockerAadhaarData(data = {}) {
+  const document = digilockerAadhaarDocument(data);
   const details = document?.details && typeof document.details === 'object'
     ? document.details
     : document;
-  return normalizeAadhaarKycData({ ...details, raw: data });
+  const { dataPdf, dataXml, ...claims } = details || {};
+  return normalizeAadhaarKycData({ ...claims, raw: compactDigiLockerData(data) });
 }
 
-function digilockerComplete(data = {}) {
+export function digilockerComplete(data = {}) {
   if (data.pending === true) return false;
   const documents = Array.isArray(data.docs) ? data.docs : [];
-  return documents.some((item) =>
-    ['FETCHED', 'COMPLETED', 'VERIFIED'].includes(String(item?.status || item?.documentStatus || '').toUpperCase())
-  ) || verifiedFlag(data, ['verificationPassed']);
+  const fetched = documents.some((item) =>
+    ['FETCHED', 'COMPLETED', 'VERIFIED', 'SUCCESS'].includes(String(item?.status || item?.documentStatus || '').toUpperCase())
+  );
+  // SignCare only fills Aadhaar details after DigiLocker returned the eAadhaar.
+  const details = digilockerAadhaarDocument(data)?.details || {};
+  const hasAadhaarDetails = Boolean(String(details.name || '').trim() && String(details.aadhaarNumber || details.dob || '').trim());
+  return fetched || hasAadhaarDetails || verifiedFlag(data, ['verificationPassed']);
 }
 
 // request_url is SignCare's snake_case field name in the DigiLocker init response.
@@ -226,7 +290,7 @@ router.post('/pan', requireAuth, async (req, res, next) => {
     // transType=panVerify returns { firstName, middleName, lastName, status }
     let clubapiName = '';
     try {
-      const clubResult = await sendPanVerify({ pan: panNumber });
+      const clubResult = await withDeadline(sendPanVerify({ pan: panNumber }), CLUBAPI_FALLBACK_DEADLINE_MS, 'ClubAPI PAN lookup timed out.');
       if (clubResult.delivery === 'received') {
         const cd = clubResult.data?.panData || clubResult.data || {};
         const parts = [cd.firstName, cd.middleName, cd.lastName]
@@ -289,8 +353,8 @@ router.post('/digilocker/init', requireAuth, async (req, res, next) => {
   try {
     const record = await requireConsent(req.user.uid);
     const user = await User.findById(req.user.uid).select('mobile').lean();
-    const mobileNumber = String(user?.mobile || '').replace(/\D/g, '');
-    if (!/^\d{10}$/.test(mobileNumber)) {
+    const mobileNumber = indianMobileNumber(user?.mobile);
+    if (!mobileNumber) {
       return fail(res, 'MOBILE_REQUIRED', 'Add a valid mobile number to your profile before identity verification.', 400);
     }
 
@@ -331,10 +395,23 @@ router.get('/digilocker/result/:transactionId', requireAuth, async (req, res, ne
     if (record.aadhaar?.providerReference !== req.params.transactionId) {
       return fail(res, 'INVALID_TRANSACTION', 'This identity verification request does not belong to your account.', 403);
     }
-    const result = await getDigiLockerDetails(
-      req.params.transactionId,
-      record.aadhaar.requestId || signcareRequestId('KP-DIGILOCKER-STATUS'),
-    );
+    let result;
+    try {
+      result = await getDigiLockerDetails(
+        req.params.transactionId,
+        record.aadhaar.requestId || signcareRequestId('KP-DIGILOCKER-STATUS'),
+      );
+    } catch (error) {
+      // Until the customer finishes consent SignCare has no documents for the
+      // transaction and answers with a 4xx / success:false. That is "not yet",
+      // not a failure, so keep the session alive for another check.
+      const notReady = error instanceof SignCareError && [400, 404, 422].includes(error.status);
+      if (!notReady) throw error;
+      record.aadhaar.message = 'Waiting for DigiLocker verification.';
+      record.aadhaar.updatedAt = new Date();
+      await record.save();
+      return ok(res, publicStage(record.aadhaar), 'DigiLocker consent is not complete yet. Finish it and check again.');
+    }
     const data = stageData(result.response);
     const verified = digilockerComplete(data);
     const claims = digilockerAadhaarData(data);
@@ -381,14 +458,21 @@ router.post('/liveness', requireAuth, async (req, res, next) => {
     const { imageBase64 } = await Joi.object({ imageBase64: Joi.string().min(100).required() }).validateAsync(req.body);
     const record = await requireConsent(req.user.uid);
     try {
-      await saveStage(record, 'liveness', (requestId) => verifyLiveness({ image: imageBase64, requestId }),
+      const stage = await saveStage(record, 'liveness', (requestId) => verifyLiveness({ image: imageBase64, requestId }),
         (data) => livenessPassed(data));
+      if (stage.status !== 'VERIFIED' && livenessRejected(stage.data)) {
+        record.liveness.status = 'FAILED';
+        record.liveness.message = 'Live selfie was not accepted. Please retake the photo in good light with only your face visible.';
+        await record.save();
+      }
     } catch (error) {
       if (!(error instanceof SignCareError)) throw error;
       record.liveness = {
-        status: 'REVIEW',
+        status: error.status < 500 ? 'FAILED' : 'REVIEW',
         requestId: record.liveness?.requestId || signcareRequestId('KP-liveness'),
-        message: 'Live photo captured. Khatu Pay will review it.',
+        message: error.status < 500
+          ? 'Live selfie could not be verified. Please retake the photo in good light with only your face visible.'
+          : 'Live photo captured. Verification will be reviewed by Khatu Pay.',
         updatedAt: new Date(),
         data: { providerError: error.data || null },
       };
@@ -450,38 +534,132 @@ router.get('/account-aggregator/status', requireAuth, async (req, res, next) => 
 
 router.post('/bank', requireAuth, async (req, res, next) => {
   try {
-    const payload = await Joi.object({ accountNumber: Joi.string().pattern(/^\d{9,18}$/).required(), ifsc: Joi.string().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/i).required() }).validateAsync(req.body);
+    // Same rule as the loan submit route and the app (6-20 digits); a stricter
+    // rule here rejected valid accounts the app had already accepted.
+    const payload = await Joi.object({
+      accountNumber: Joi.string().trim().pattern(/^\d{6,20}$/).required().messages({ 'string.pattern.base': 'Enter a valid bank account number (6-20 digits).' }),
+      ifsc: Joi.string().trim().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/i).required().messages({ 'string.pattern.base': 'Enter a valid 11-character IFSC code.' }),
+    }).validateAsync(req.body);
 
     const record = await requireConsent(req.user.uid);
+    const cachedBank = record.bank?.data || {};
+    const sameCachedBank =
+      String(cachedBank.accountNumber || '') === String(payload.accountNumber) &&
+      String(cachedBank.ifscCode || '').toUpperCase() === String(payload.ifsc).toUpperCase();
+    if (sameCachedBank && ['VERIFIED', 'REVIEW'].includes(String(record.bank?.status || '').toUpperCase())) {
+      return ok(
+        res,
+        publicStage(record.bank),
+        record.bank.message || 'Bank details already checked. Khatu Pay will complete review if required.',
+      );
+    }
     const requestId = signcareRequestId('KP-BANK-PENNYDROP');
     record.bank = { status: 'PENDING', requestId, message: 'Bank account verification in progress.', updatedAt: new Date() };
     await record.save();
 
     let result;
     try {
-      result = await verifyBankAccount({
+      result = await withBankProviderDeadline(verifyBankAccount({
         accountNumber: payload.accountNumber,
         ifscCode: payload.ifsc,
         ifsc: payload.ifsc,
         consentText: CONSENT_TEXT,
         requestId,
-      });
+      }));
     } catch (error) {
       if (!(error instanceof SignCareError)) throw error;
+      if (error.status === 503 || /slow|timeout|temporarily|unavailable/i.test(error.message || '')) {
+        record.bank = {
+          status: 'REVIEW',
+          requestId,
+          message: 'Bank details received. Khatu Pay will complete verification during review.',
+          updatedAt: new Date(),
+          data: {
+            provider: 'SIGNCARE_PENNY_DROP_BASIC',
+            providerError: error.data || null,
+            reviewReason: 'PROVIDER_TIMEOUT',
+          },
+        };
+        await record.save();
+        return ok(res, publicStage(record.bank), record.bank.message);
+      }
+      try {
+        const user = await User.findById(req.user.uid).select('mobile');
+        const clubapiResponse = await withDeadline(validateBankAccount({
+          customerMobile: String(user?.mobile || '').replace(/\D/g, '').slice(-10),
+          accountNumber: payload.accountNumber,
+          ifscCode: payload.ifsc,
+        }), CLUBAPI_FALLBACK_DEADLINE_MS, 'ClubAPI bank validation timed out.');
+        const clubapi = normalizeClubapiBankValidation(clubapiResponse, {
+          accountNumber: payload.accountNumber,
+          ifscCode: payload.ifsc,
+        });
+        if (clubapi.isValid) {
+          record.bank = {
+            status: 'VERIFIED',
+            requestId,
+            message: clubapi.accountName
+              ? `Bank account validated for ${clubapi.accountName}.`
+              : clubapi.message,
+            verifiedAt: new Date(),
+            updatedAt: new Date(),
+            data: {
+              ...clubapi,
+              provider: 'CLUBAPI',
+              providerUsed: 'CLUBAPI',
+              providersAttempted: ['SIGNCARE', 'CLUBAPI'],
+              signcareError: error.message,
+            },
+          };
+          await record.save();
+          return ok(res, publicStage(record.bank), record.bank.message);
+        }
+      } catch (fallbackError) {
+        console.warn('ClubAPI bank fallback failed after SignCare error:', fallbackError.message);
+      }
       record.bank = {
-        status: 'FAILED',
+        status: 'REVIEW',
         requestId,
-        message: error.message,
+        message: 'Bank verification is temporarily unavailable. Khatu Pay will complete this check during review.',
         updatedAt: new Date(),
-        data: { provider: 'SIGNCARE_PENNY_DROP_BASIC', providerError: error.data || null },
+        data: {
+          provider: 'SIGNCARE_PENNY_DROP_BASIC',
+          providerError: error.data || null,
+          reviewReason: 'PROVIDER_UNAVAILABLE',
+        },
       };
       await record.save();
-      return fail(res, 'BANK_VERIFICATION_UNAVAILABLE', error.message, error.status || 503);
+      return ok(res, publicStage(record.bank), record.bank.message);
     }
     const normalized = normalizeSigncarePennyDrop(result.response, {
       accountNumber: payload.accountNumber,
       ifsc: payload.ifsc,
     });
+    if (normalized.isValid && (!normalized.accountName || !normalized.bankName)) {
+      try {
+        const clubapiResponse = await withDeadline(validateBankAccount({
+          customerMobile: String((await User.findById(req.user.uid).select('mobile'))?.mobile || '').replace(/\D/g, '').slice(-10),
+          accountNumber: payload.accountNumber,
+          ifscCode: payload.ifsc,
+        }), CLUBAPI_FALLBACK_DEADLINE_MS, 'ClubAPI bank validation timed out.');
+        const clubapi = normalizeClubapiBankValidation(clubapiResponse, {
+          accountNumber: payload.accountNumber,
+          ifscCode: payload.ifsc,
+        });
+        if (clubapi.isValid) {
+          normalized.accountName = normalized.accountName || clubapi.accountName;
+          normalized.beneficiaryName = normalized.beneficiaryName || clubapi.accountName;
+          normalized.bankName = normalized.bankName || clubapi.bankName;
+          normalized.providerUsed = 'SIGNCARE+CLUBAPI';
+          normalized.providersAttempted = ['SIGNCARE', 'CLUBAPI'];
+          normalized.message = normalized.accountName
+            ? `Bank account validated for ${normalized.accountName}.`
+            : normalized.message;
+        }
+      } catch (fallbackError) {
+        console.warn('ClubAPI bank-name fallback unavailable during verification:', fallbackError.message);
+      }
+    }
     record.bank = {
       status: normalized.isValid ? 'VERIFIED' : 'FAILED',
       requestId: result.requestId || requestId,
@@ -521,11 +699,24 @@ router.post('/upi', requireAuth, async (req, res, next) => {
     const requestId = signcareRequestId('KP-UPI-SIGNCARE');
     record.upi = { status: 'PENDING', requestId, message: 'UPI verification in progress.', updatedAt: new Date() };
     await record.save();
-    const result = await verifyUpiName({
-      upiId: payload.upiId,
-      consentText: CONSENT_TEXT,
-      requestId,
-    });
+    let result;
+    try {
+      result = await verifyUpiName({
+        upiId: payload.upiId,
+        consentText: CONSENT_TEXT,
+        requestId,
+      });
+    } catch (error) {
+      if (!(error instanceof SignCareError)) throw error;
+      record.upi = {
+        status: 'REVIEW', requestId,
+        message: 'UPI verification is temporarily unavailable. Khatu Pay will complete this check during review.',
+        updatedAt: new Date(),
+        data: { provider: 'SIGNCARE_UPI_ID_TO_NAME', providerError: error.data || null, reviewReason: 'PROVIDER_UNAVAILABLE' },
+      };
+      await record.save();
+      return ok(res, publicStage(record.upi), record.upi.message);
+    }
     const normalized = normalizeSigncareUpiName(result.response, { upiId: payload.upiId });
     record.upi = {
       status: normalized.isValid ? 'VERIFIED' : 'FAILED',
@@ -555,13 +746,37 @@ router.post('/bank-statement/analyse', requireAuth, acceptStatement, async (req,
     const requestId = signcareRequestId('KP-BSA');
     record.bankStatement = { status: 'PENDING', requestId, message: 'Bank statement analysis started.', updatedAt: new Date() };
     await record.save();
-    const result = await submitBankStatement({
-      fileBase64: req.file.buffer.toString('base64'), password: input.password,
-      accountType: input.accountType, consentText: CONSENT_TEXT, requestId,
-    });
+    let result;
+    try {
+      result = await submitBankStatement({
+        fileBase64: req.file.buffer.toString('base64'), password: input.password,
+        accountType: input.accountType, consentText: CONSENT_TEXT, requestId,
+      });
+    } catch (error) {
+      // Never leave the stage PENDING forever: a rejected file is FAILED (the
+      // customer can upload again), an outage is REVIEW.
+      const rejected = error instanceof SignCareError && error.status < 500;
+      record.bankStatement = {
+        status: rejected ? 'FAILED' : 'REVIEW', requestId,
+        message: rejected
+          ? 'This bank statement could not be analysed. Check the PDF and password and upload it again.'
+          : 'Bank statement received. Khatu Pay will complete the analysis during review.',
+        updatedAt: new Date(), data: { providerError: error.data || null, reviewReason: rejected ? 'PROVIDER_REJECTED' : 'PROVIDER_UNAVAILABLE' },
+      };
+      await record.save();
+      if (rejected) return fail(res, 'BANK_STATEMENT_REJECTED', record.bankStatement.message, 422);
+      return ok(res, publicStage(record.bankStatement), record.bankStatement.message);
+    }
     const data = stageData(result.response);
     const orderId = String(data.orderId || data.order_id || '');
-    if (!orderId) throw new SignCareError('Bank statement analysis order was not created.', 502, data);
+    if (!orderId) {
+      record.bankStatement = {
+        status: 'REVIEW', requestId, message: 'Bank statement received. Khatu Pay will complete the analysis during review.',
+        updatedAt: new Date(), data: { reviewReason: 'ORDER_NOT_CREATED', provider: data },
+      };
+      await record.save();
+      return ok(res, publicStage(record.bankStatement), record.bankStatement.message);
+    }
     record.bankStatement = {
       status: 'PENDING', requestId: result.requestId, providerReference: orderId,
       message: 'Bank statement is being analysed.', updatedAt: new Date(), data: { orderId },
@@ -611,12 +826,9 @@ router.post('/credit-report', requireAuth, async (req, res, next) => {
     const user = await User.findById(req.user.uid).lean();
     await hydrateIdentityFromUserKyc(record, user);
 
-    const required = ['pan', 'aadhaar', 'liveness', 'faceMatch', 'bank'];
-    const acceptableStatus = (stage, status) =>
-      status === 'VERIFIED' || (['liveness', 'faceMatch', 'bank'].includes(stage) && status === 'REVIEW');
-    const incomplete = required.find((stage) => !acceptableStatus(stage, record?.[stage]?.status));
+    const incomplete = creditPrerequisiteGap(record);
     if (incomplete) {
-      return fail(res, 'SIGNCARE_VERIFICATION_REQUIRED', `Complete ${incomplete} verification before fetching the credit report.`, 409);
+      return fail(res, 'SIGNCARE_VERIFICATION_REQUIRED', `Complete ${stageLabel(incomplete)} verification before fetching the credit report.`, 409, { stages: [incomplete] });
     }
 
     // Never spend a paid bureau call on a request SignCare is going to reject.
@@ -663,11 +875,20 @@ router.post('/credit-report', requireAuth, async (req, res, next) => {
     try {
       result = await fetchExperianReport(retailRequest, requestId);
     } catch (error) {
+      // An outage or timeout is not the customer's fault: keep the application
+      // moving (REVIEW) and let the credit team re-pull. A bureau rejection of
+      // the identity data stays FAILED so the customer can correct it.
+      const outage = !(error instanceof SignCareError) || error.status >= 500;
       claimed.credit = {
-        status: 'FAILED', requestId, message: error.message, updatedAt: new Date(),
-        data: { provider: EXPERIAN_PROVIDER, request: retailRequest, providerError: error.data || null },
+        status: outage ? 'REVIEW' : 'FAILED', requestId,
+        message: outage
+          ? 'Credit bureau is busy. Khatu Pay will fetch your credit report during review.'
+          : error.message,
+        updatedAt: new Date(),
+        data: { provider: EXPERIAN_PROVIDER, request: retailRequest, providerError: error.data || null, reviewReason: outage ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REJECTED' },
       };
       await claimed.save();
+      if (outage) return ok(res, publicStage(claimed.credit), claimed.credit.message);
       throw error;
     }
 
@@ -769,44 +990,8 @@ router.get('/admin/:userId', requireAdmin, async (req, res, next) => {
   try { const record = await getRecord(req.params.userId); ok(res, present(record, true)); } catch (error) { next(error); }
 });
 
-router.post('/admin/loan/:loanId/estamp', requireAdmin, async (req, res, next) => {
-  try {
-    const loan = await Loan.findById(req.params.loanId);
-    if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found.', 404);
-    const record = await getRecord(loan.userId);
-    await saveStage(record, 'eStamp', (requestId) => createEStamp(req.body, requestId), () => false);
-    ok(res, publicStage(record.eStamp), 'eStamp workflow started.');
-  } catch (error) { next(error); }
-});
-
-router.post('/admin/loan/:loanId/esign', requireAdmin, async (req, res, next) => {
-  try {
-    const loan = await Loan.findById(req.params.loanId);
-    if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found.', 404);
-    const record = await getRecord(loan.userId);
-    await saveStage(record, 'eSign', (requestId) => createESign(req.body, requestId), () => false);
-    ok(res, publicStage(record.eSign), 'Agreement sent for Aadhaar eSign.');
-  } catch (error) { next(error); }
-});
-
-router.post('/admin/loan/:loanId/esign/status', requireAdmin, async (req, res, next) => {
-  try {
-    const loan = await Loan.findById(req.params.loanId); if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found.', 404);
-    const record = await getRecord(loan.userId); const result = await getESignStatus(req.body, record.eSign.requestId || signcareRequestId('KP-ESIGN'));
-    const data = stageData(result.response); const completed = String(data.documentStatus || data.status || '').toUpperCase() === 'COMPLETED';
-    record.eSign = { ...(record.eSign?.toObject?.() || record.eSign || {}), status: completed ? 'VERIFIED' : 'PENDING', message: completed ? 'Agreement signed.' : 'Signature pending.', ...(completed ? { verifiedAt: new Date() } : {}), updatedAt: new Date(), data };
-    await record.save(); ok(res, publicStage(record.eSign));
-  } catch (error) { next(error); }
-});
-
-router.get('/admin/loan/:loanId/esign/audit/:documentId', requireAdmin, async (req, res, next) => {
-  try {
-    const loan = await Loan.findById(req.params.loanId); if (!loan) return fail(res, 'NOT_FOUND', 'Loan not found.', 404);
-    const record = await getRecord(loan.userId); const result = await getESignAudit(req.params.documentId, signcareRequestId('KP-AUDIT'));
-    record.auditTrail = { status: 'VERIFIED', requestId: result.requestId, providerReference: req.params.documentId, message: 'Audit trail fetched.', verifiedAt: new Date(), updatedAt: new Date(), data: stageData(result.response) };
-    await record.save(); ok(res, publicStage(record.auditTrail));
-  } catch (error) { next(error); }
-});
+// Agreement eSign status/audit for admins lives in adminLoans.js
+// (POST /api/admin/loans/:id/agreement/refresh), shared with the webhook and job.
 
 router.use((error, _req, res, next) => {
   if (error instanceof SignCareError || error.isJoi || error.status) {

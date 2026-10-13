@@ -75,8 +75,6 @@ class BiometricService {
         return 'Strong';
       case BiometricType.weak:
         return 'Weak';
-      default:
-        return 'Biometric';
     }
   }
 

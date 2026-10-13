@@ -6,6 +6,17 @@ import '../models/user.dart';
 class UserService {
   final Dio _dio = ApiClient.client;
 
+  String _message(DioException error, String fallback) {
+    final body = error.response?.data;
+    if (body is Map) {
+      final message = body['message'] ?? body['error'];
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return message.toString();
+      }
+    }
+    return fallback;
+  }
+
   /// 🔹 Fetch logged-in user's profile
   Future<KPUser> me() async {
     try {
@@ -18,7 +29,7 @@ class UserService {
       final data = res.data['data'];
       return KPUser.fromJson(data);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to fetch profile';
+      throw _message(e, 'Unable to load your profile right now.');
     }
   }
 
@@ -36,7 +47,7 @@ class UserService {
         options: Options(headers: {'Authorization': 'Bearer $token'}),
       );
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to update profile';
+      throw _message(e, 'Unable to update your profile right now.');
     }
   }
 
@@ -70,7 +81,7 @@ class UserService {
         ),
       );
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'KYC upload failed';
+      throw _message(e, 'Unable to upload your document right now.');
     }
   }
 
@@ -85,7 +96,7 @@ class UserService {
       });
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Aadhaar OTP send failed';
+      throw _message(e, 'Unable to send the verification code right now.');
     }
   }
 
@@ -106,7 +117,7 @@ class UserService {
       });
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Aadhaar OTP verification failed';
+      throw _message(e, 'Unable to verify the code. Please try again.');
     }
   }
 
@@ -115,7 +126,7 @@ class UserService {
       final response = await _dio.post('/kyc/me/pan/verify', data: {'pan': pan});
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'PAN verification failed';
+      throw _message(e, 'Unable to verify PAN right now.');
     }
   }
 
@@ -124,7 +135,7 @@ class UserService {
       final response = await _dio.post('/utility/validate-upi', data: {'upiId': upiId});
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'UPI validation failed';
+      throw _message(e, 'Unable to verify this UPI ID right now.');
     }
   }
 
@@ -156,7 +167,7 @@ class UserService {
       }
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to search loan';
+      throw _message(e, 'Unable to find this loan right now.');
     } catch (e) {
       rethrow;
     }
@@ -179,7 +190,7 @@ class UserService {
       }
       return [];
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to search loans';
+      throw _message(e, 'Unable to load loans right now.');
     } catch (e) {
       rethrow;
     }
@@ -195,7 +206,7 @@ class UserService {
       );
       return Map<String, dynamic>.from(res.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to fetch settings';
+      throw _message(e, 'Unable to load settings right now.');
     }
   }
 
@@ -211,7 +222,7 @@ class UserService {
         options: Options(headers: {'Authorization': 'Bearer $token'}),
       );
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Failed to update settings';
+      throw _message(e, 'Unable to update settings right now.');
     }
   }
 
@@ -228,7 +239,7 @@ class UserService {
       }
       return Map<String, dynamic>.from(response.data['data']);
     } on DioException catch (e) {
-      throw e.response?.data['message'] ?? 'Unable to find receiver';
+      throw _message(e, 'Unable to find this customer right now.');
     } catch (e) {
       rethrow;
     }

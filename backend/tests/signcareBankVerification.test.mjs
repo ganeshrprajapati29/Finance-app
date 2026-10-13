@@ -2,6 +2,60 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { normalizeSigncarePennyDrop } from '../src/utils/signcareBankVerification.js';
+import {
+  buildBankAccountVerifyPayload,
+  buildCorporateBankStatementPayload,
+  buildBankStatementDetailsPayload,
+} from '../src/services/signcare.js';
+
+test('Bank account verify payload matches SignCare contract keys', () => {
+  const payload = buildBankAccountVerifyPayload({
+    accountNumber: '12345678901',
+    ifscCode: 'Sbin0001234',
+  });
+
+  assert.deepEqual(payload, {
+    accountNumber: '12345678901',
+    ifsc: 'SBIN0001234',
+  });
+});
+
+test('Bank statement analyser payload uses SignCare key names exactly', () => {
+  const payload = buildCorporateBankStatementPayload({
+    fileBase64: 'data:application/pdf;base64,abcd1234',
+    password: 'secret123',
+    accountType: 'salaried',
+    consentText: 'Consent text',
+    requestId: 'KP-BSA-123',
+    webhookUrl: 'https://example.com/hook',
+  });
+
+  assert.deepEqual(payload, {
+    consent: 'Y',
+    consent_text: 'Consent text',
+    request_id: 'KP-BSA-123',
+    file_base64: 'abcd1234',
+    password: 'secret123',
+    webhookUrl: 'https://example.com/hook',
+    accountType: 'SALARIED',
+  });
+});
+
+test('Bank statement detail payload uses SignCare detail keys exactly', () => {
+  const payload = buildBankStatementDetailsPayload({
+    orderId: 'ORDER-42',
+    consentText: 'Consent text',
+    requestId: 'KP-BSA-STATUS-1',
+  });
+
+  assert.deepEqual(payload, {
+    consent: 'Y',
+    consent_text: 'Consent text',
+    request_id: 'KP-BSA-STATUS-1',
+    order_id: 'ORDER-42',
+    response_type: 'json',
+  });
+});
 
 test('SignCare Penny Drop Basic success response verifies the account', () => {
   const parsed = normalizeSigncarePennyDrop({

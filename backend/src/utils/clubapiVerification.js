@@ -54,6 +54,14 @@ export function normalizeClubapiBankValidation(data = {}, { accountNumber, ifscC
     nested.name,
     nested.accountHolderName
   );
+  const bankName = firstText(
+    root.bankName,
+    root.bank_name,
+    root.bank,
+    nested.bankName,
+    nested.bank_name,
+    nested.bank,
+  );
   const resText = providerMessage(root, nested, '');
   const explicitValid = [root.isValid, root.valid, root.verified, nested.isValid, nested.valid, nested.verified]
     .some((value) => value === true || String(value).toLowerCase() === 'true');
@@ -70,6 +78,7 @@ export function normalizeClubapiBankValidation(data = {}, { accountNumber, ifscC
     isValid,
     accountName,
     beneficiaryName: accountName,
+    bankName,
     status: status || (isValid ? 'VERIFIED' : 'FAILED'),
     resText,
     message: isValid ? (accountName ? `Bank account validated for ${accountName}.` : 'Bank account validated.') : (resText || 'Bank account could not be verified.'),

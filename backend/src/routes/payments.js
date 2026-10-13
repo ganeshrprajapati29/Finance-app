@@ -12,7 +12,7 @@ import ClubAPITransaction from '../models/ClubAPITransaction.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { requireRole } from '../middlewares/role.js';
 import { ok, fail } from '../utils/response.js';
-import { applyPaymentToSchedule, isScheduleFullyPaid } from '../utils/loanSettlement.js';
+import { applyPaymentToSchedule, isScheduleFullyPaid, outstandingAmount } from '../utils/loanSettlement.js';
 import {
   createRazorpayOrder,
   razorpayKeyId,
@@ -194,7 +194,17 @@ async function completeConfirmedPayment(p, gatewayPaymentId = '', { serviceWaitM
       applyPaymentToSchedule(loan.schedule, {
         type: p.type,
         installmentNo: p.installmentNo,
+        amount: p.amount,
         paymentId: p._id,
+      });
+
+      if (!Array.isArray(loan.transactions)) loan.transactions = [];
+      loan.transactions.push({
+        type: p.type,
+        amount: p.amount,
+        txnId: gatewayPaymentId || p.gateway?.paymentId || p.khatuPaymentId,
+        status: 'COMPLETED',
+        timestamp: new Date(),
       });
 
       // Close the loan as soon as every installment is settled, whichever
@@ -267,7 +277,7 @@ function paymentStatusPayload(payment) {
 // 1) Create Razorpay Order (loan repayment / bill payment / P2P payment / generic)
 router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) => {
   try {
-    const { amount, currency = 'INR', loanId = null, billId = null, installmentNo = null, isFullPayment = false, walletTopup = false, recharge = null, clubapiBill = null, service = null, notes = {}, payeeUserId = null, payeeVPA = null, payeeName = null, payeeMobile = null, payeeNote = null } =
+    const { amount, currency = 'INR', loanId = null, billId = null, installmentNo = null, isFullPayment = false, isPartPayment = false, walletTopup = false, recharge = null, clubapiBill = null, service = null, notes = {}, payeeUserId = null, payeeVPA = null, payeeName = null, payeeMobile = null, payeeNote = null } =
       await Joi.object({
         amount: Joi.number().min(1).max(100000).required(),
         currency: Joi.string().default('INR'),
@@ -275,6 +285,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
         billId: Joi.string().allow(null, '').default(null),
         installmentNo: Joi.number().integer().allow(null).default(null),
         isFullPayment: Joi.boolean().default(false),
+        isPartPayment: Joi.boolean().default(false),
         walletTopup: Joi.boolean().default(false),
         recharge: rechargeSchema.allow(null).default(null),
         clubapiBill: clubapiBillSchema.allow(null).default(null),
@@ -297,20 +308,34 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
     if (loanId) {
       const loan = await Loan.findOne({ _id: loanId, userId: req.user.uid });
       if (!loan) return fail(res, 'LOAN_NOT_FOUND', 'Loan not found', 404);
+      if (loan.status !== 'DISBURSED') {
+        return fail(res, 'LOAN_NOT_DISBURSED', 'Repayment is available after the loan is disbursed.', 400);
+      }
       const schedule = Array.isArray(loan.schedule) ? loan.schedule : [];
 
       if (isFullPayment) {
-        payableAmount = schedule.reduce(
-          (sum, item) => sum + (item.paid ? 0 : Number(item.total || 0)), 0);
+        payableAmount = outstandingAmount(schedule);
+      } else if (isPartPayment) {
+        if (installmentNo == null) {
+          return fail(res, 'INSTALLMENT_REQUIRED', 'Select an installment for part payment.', 400);
+        }
+        const sched = schedule.find((item) => item.installmentNo === installmentNo);
+        if (!sched) return fail(res, 'INSTALLMENT_NOT_FOUND', 'Installment not found', 404);
+        const remaining = outstandingAmount([sched]);
+        if (!(remaining > 0)) return fail(res, 'INSTALLMENT_ALREADY_PAID', 'This installment is already paid', 400);
+        if (!(amount > 0) || amount > remaining) {
+          return fail(res, 'PART_PAYMENT_INVALID', `Part payment must be between Rs. 1 and Rs. ${remaining}.`, 400);
+        }
+        payableAmount = amount;
       } else if (installmentNo != null) {
         const sched = schedule.find((item) => item.installmentNo === installmentNo);
         if (!sched) return fail(res, 'INSTALLMENT_NOT_FOUND', 'Installment not found', 404);
-        if (sched.paid) return fail(res, 'INSTALLMENT_ALREADY_PAID', 'This installment is already paid', 400);
-        payableAmount = Number(sched.total || 0);
+        payableAmount = outstandingAmount([sched]);
+        if (!(payableAmount > 0)) return fail(res, 'INSTALLMENT_ALREADY_PAID', 'This installment is already paid', 400);
       } else {
         const sched = schedule.find((item) => !item.paid);
         if (!sched) return fail(res, 'LOAN_ALREADY_PAID', 'This loan has no outstanding balance', 400);
-        payableAmount = Number(sched.total || 0);
+        payableAmount = outstandingAmount([sched]);
       }
 
       if (!(payableAmount > 0)) {
@@ -353,7 +378,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
       notes
     });
 
-    const type = serviceResolution ? serviceResolution.paymentType : (walletTopup ? 'WALLET_TOPUP' : (isFullPayment ? 'FULL_REPAYMENT' : (loanId ? 'REPAYMENT' : (billId ? 'BILL' : (payeeVPA ? 'P2P' : 'OTHER')))));
+    const type = serviceResolution ? serviceResolution.paymentType : (walletTopup ? 'WALLET_TOPUP' : (isFullPayment ? 'FULL_REPAYMENT' : (isPartPayment ? 'PART_PAYMENT' : (loanId ? 'REPAYMENT' : (billId ? 'BILL' : (payeeVPA ? 'P2P' : 'OTHER'))))));
     const payment = await Payment.create({
       userId: req.user.uid,
       loanId,
@@ -369,7 +394,7 @@ router.post('/razorpay/order', requireAuth, fraudCheck, async (req, res, next) =
       payeeDetails: payeeVPA ? { vpa: payeeVPA, name: payeeName, mobile: payeeMobile, note: payeeNote } : undefined,
       metadata: serviceResolution
         ? serviceResolution.metadata
-        : { notes: notes?.purpose || notes?.note || '' }
+        : { notes: notes?.purpose || notes?.note || '', isPartPayment }
     });
 
     ok(

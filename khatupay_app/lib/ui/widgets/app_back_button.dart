@@ -20,16 +20,12 @@ class AppBackButton extends StatelessWidget {
       icon: Icon(Icons.arrow_back, color: color),
       onPressed: () {
         final router = GoRouter.of(context);
-        if (context.canPop()) {
-          final current = router.routeInformationProvider.value.uri.toString();
-          AppNavigationHistory.prepareForNativePop(current);
-          context.pop();
-        } else {
-          AppNavigationHistory.goBack(
-            router,
-            fallback: fallbackRoute,
-          );
-        }
+        // App pages use both go() and push(). Going through the shared
+        // history keeps Android back behavior consistent for both styles.
+        AppNavigationHistory.goBack(
+          router,
+          fallback: fallbackRoute,
+        );
       },
     );
   }

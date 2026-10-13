@@ -161,6 +161,40 @@ test('outstanding amount tracks unpaid installments', () => {
   assert.equal(outstandingAmount(schedule), 0);
 });
 
+test('part payment reduces the EMI balance without marking it paid', () => {
+  const schedule = buildSchedule(1, 1500);
+  const result = applyPaymentToSchedule(schedule, {
+    type: 'PART_PAYMENT',
+    installmentNo: 1,
+    amount: 500,
+    paymentId: 'part_1',
+  });
+
+  assert.equal(result.appliedAmount, 500);
+  assert.deepEqual(result.settled, []);
+  assert.equal(schedule[0].paid, false);
+  assert.equal(schedule[0].partPayments[0].amount, 500);
+  assert.equal(outstandingAmount(schedule), 1000);
+});
+
+test('full repayment closes remaining balance after a part payment', () => {
+  const schedule = buildSchedule(2, 1500);
+  applyPaymentToSchedule(schedule, {
+    type: 'PART_PAYMENT',
+    installmentNo: 1,
+    amount: 500,
+    paymentId: 'part_1',
+  });
+  const result = applyPaymentToSchedule(schedule, {
+    type: 'FULL_REPAYMENT',
+    paymentId: 'full_1',
+  });
+
+  assert.equal(result.appliedAmount, 2500);
+  assert.equal(outstandingAmount(schedule), 0);
+  assert.equal(isScheduleFullyPaid(schedule), true);
+});
+
 test('null and malformed schedules do not throw', () => {
   assert.doesNotThrow(() => applyPaymentToSchedule(null, { type: 'REPAYMENT' }));
   assert.doesNotThrow(() => applyPaymentToSchedule(undefined, { type: 'REPAYMENT' }));

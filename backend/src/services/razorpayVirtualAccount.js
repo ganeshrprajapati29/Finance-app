@@ -46,7 +46,9 @@ export class RazorpayVirtualAccountService {
 
       return va;
     } catch (error) {
-      console.error('Error creating virtual account:', error);
+      // Virtual accounts are not enabled on this Razorpay account; the manual
+      // fallback below is the normal path, so keep the log to one line.
+      console.warn('[virtual-account] provider unavailable, using manual account:', error?.error?.description || error?.message || 'unknown');
       const user = await User.findById(userId);
       if (!user) throw error;
 

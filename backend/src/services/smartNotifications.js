@@ -98,6 +98,10 @@ function buildEmailHtml(template, user, context = {}) {
 }
 
 function shouldSendEmail(event, context = {}) {
+  // Unusual-login alerts are kept in the in-app security feed only. They are
+  // noisy for mobile networks and should never be emailed, even when a caller
+  // passes forceEmail accidentally.
+  if (event === 'login_suspicious') return false;
   if (context.email === false) return false;
   if (context.email === true || context.forceEmail === true) return true;
   return [
@@ -112,6 +116,7 @@ function shouldSendEmail(event, context = {}) {
     'loan_disbursed',
     'payment_confirmed',
     'payment_pending',
+    'payment_failed',
     'money_received',
     'service_refunded',
     'support_created',
@@ -173,6 +178,13 @@ function buildTemplate(event, user, context = {}) {
       priority: 'HIGH',
       route: '/payment-history',
     },
+    payment_failed: {
+      title: `${name}, ${paymentLabel(context.payment)} failed`,
+      message: `Your ${paymentLabel(context.payment)} of ${amount} could not be completed. If money was debited, it will be reversed by your bank as per its timelines.`,
+      type: 'payment',
+      priority: 'HIGH',
+      route: '/payment-history',
+    },
     service_refunded: {
       title: `${name}, ${paymentLabel(context.payment)} failed`,
       message: `Your ${paymentLabel(context.payment)} of ${amount} could not be completed. The amount has been refunded to your ${context.refundedToWallet ? 'KhatuPay wallet' : 'payment method'}.`,
@@ -224,7 +236,7 @@ function buildTemplate(event, user, context = {}) {
     },
     business_qr_approved: {
       title: `${name}, your Business QR is approved`,
-      message: `Congratulations. ${context.businessName || 'Your business'} is approved for Khatu Pay Business QR collections. Customers can scan your QR and payments will be processed securely through VelxaPay.`,
+      message: `Congratulations. ${context.businessName || 'Your business'} is approved for Khatu Pay Business QR collections. Customers can scan your QR and payments will be processed securely through Razorpay.`,
       type: 'business',
       priority: 'HIGH',
       route: '/business/qr',

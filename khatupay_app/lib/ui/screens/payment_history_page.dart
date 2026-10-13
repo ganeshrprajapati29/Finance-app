@@ -183,18 +183,37 @@ class _PaymentHistoryPageState extends ConsumerState<PaymentHistoryPage> {
     List<MerchantSettlement> settlements,
   ) {
     final values = <_HistoryItem>[];
+    final loansById = {
+      for (final loan in loans) loan.id: loan,
+    };
     for (final payment in payments) {
       final type = (payment['type'] ?? 'Payment').toString();
+      final linkedLoan = loansById[payment['loanId']?.toString()];
+      final loanPayment = linkedLoan != null;
+      final installmentNo = payment['installmentNo']?.toString();
       values.add(_HistoryItem(
-        category: 'Payments',
-        title: _pretty(type),
-        subtitle: (payment['method'] ?? 'Online payment').toString(),
+        category: loanPayment ? 'Loans' : 'Payments',
+        title: loanPayment
+            ? (type == 'FULL_REPAYMENT'
+                ? 'Full loan repayment'
+                : type == 'PART_PAYMENT'
+                    ? 'Part EMI payment'
+                    : 'EMI payment')
+            : _pretty(type),
+        subtitle: loanPayment
+            ? 'A/c ${linkedLoan.loanAccountNumber.isEmpty ? linkedLoan.id : linkedLoan.loanAccountNumber}${installmentNo == null ? '' : ' • EMI $installmentNo'}'
+            : (payment['method'] ?? 'Online payment').toString(),
         reference: (payment['reference'] ?? payment['_id'] ?? '').toString(),
         status: (payment['status'] ?? 'PENDING').toString(),
         amount: _number(payment['amount']),
         date: DateTime.tryParse((payment['createdAt'] ?? '').toString()),
-        icon: Icons.payments_outlined,
-        details: payment,
+        icon: loanPayment ? Icons.account_balance_wallet_outlined : Icons.payments_outlined,
+        details: {
+          ...payment,
+          if (loanPayment) 'Loan account': linkedLoan.loanAccountNumber,
+          if (payment['gateway'] is Map)
+            'Gateway reference': payment['gateway']['paymentId'] ?? payment['gateway']['orderId'],
+        },
       ));
     }
     for (final service in services) {
@@ -232,7 +251,9 @@ class _PaymentHistoryPageState extends ConsumerState<PaymentHistoryPage> {
         date: loan.updatedAt ?? loan.createdAt,
         icon: Icons.description_outlined,
         details: {
-          'Application ID': loan.id,
+            'Application ID': loan.loanAccountNumber.isEmpty
+              ? loan.id
+              : loan.loanAccountNumber,
           'Purpose': loan.application.purpose,
           'Requested amount': loan.application.amountRequested,
           'Tenure': '${loan.application.tenureMonths} months',

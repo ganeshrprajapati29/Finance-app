@@ -10,6 +10,8 @@ class KhatuPayQrCard extends StatelessWidget {
   final String upi;
   final String note;
   final double width;
+  final String scanLabel;
+  final bool showCenterMark;
 
   const KhatuPayQrCard({
     super.key,
@@ -21,6 +23,8 @@ class KhatuPayQrCard extends StatelessWidget {
     this.amount,
     this.note = 'Secure payment powered by KhatuPay',
     this.width = 330,
+    this.scanLabel = 'SCAN FROM ANY UPI APP',
+    this.showCenterMark = true,
   });
 
   @override
@@ -43,7 +47,7 @@ class KhatuPayQrCard extends StatelessWidget {
             border: Border.all(color: const Color(0xFFD7EEEA)),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF0F766E).withOpacity(0.16),
+                color: const Color(0xFF0F766E).withValues(alpha: 0.16),
                 blurRadius: 34,
                 offset: const Offset(0, 16),
               ),
@@ -59,7 +63,11 @@ class KhatuPayQrCard extends StatelessWidget {
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFF053C3B), Color(0xFF0F766E), Color(0xFF14B8A6)],
+                    colors: [
+                      Color(0xFF053C3B),
+                      Color(0xFF0F766E),
+                      Color(0xFF14B8A6)
+                    ],
                   ),
                 ),
                 child: Column(
@@ -73,13 +81,14 @@ class KhatuPayQrCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(24),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.16),
+                            color: Colors.black.withValues(alpha: 0.16),
                             blurRadius: 22,
                             offset: const Offset(0, 10),
                           ),
                         ],
                       ),
-                      child: Image.asset('assets/khatulogo-removebg-preview.png'),
+                      child:
+                          Image.asset('assets/khatulogo-removebg-preview.png'),
                     ),
                     const SizedBox(height: 10),
                     const Text(
@@ -118,7 +127,8 @@ class KhatuPayQrCard extends StatelessWidget {
                           border: Border.all(color: const Color(0xFFD7EEEA)),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(0xFF0F766E).withOpacity(0.14),
+                              color: const Color(0xFF0F766E)
+                                  .withValues(alpha: 0.14),
                               blurRadius: 28,
                               offset: const Offset(0, 12),
                             ),
@@ -133,20 +143,24 @@ class KhatuPayQrCard extends StatelessWidget {
                                   : Image.network(
                                       imageUrl!,
                                       fit: BoxFit.contain,
-                                      errorBuilder: (_, __, ___) => _GeneratedQr(data: effectiveQrData),
+                                      errorBuilder: (_, __, ___) =>
+                                          const _ProviderQrUnavailable(),
                                     ),
                             ),
-                            Container(
-                              width: 48,
-                              height: 48,
-                              padding: const EdgeInsets.all(5),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: const Color(0xFFE5E7EB)),
+                            if (showCenterMark)
+                              Container(
+                                width: 48,
+                                height: 48,
+                                padding: const EdgeInsets.all(5),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                      color: const Color(0xFFE5E7EB)),
+                                ),
+                                child: Image.asset(
+                                    'assets/khatulogo-removebg-preview.png'),
                               ),
-                              child: Image.asset('assets/khatulogo-removebg-preview.png'),
-                            ),
                           ],
                         ),
                       ),
@@ -161,14 +175,16 @@ class KhatuPayQrCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 10),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
                         decoration: BoxDecoration(
                           color: const Color(0xFFECFDF5),
                           borderRadius: BorderRadius.circular(999),
                         ),
-                        child: const Text(
-                          'SCAN FROM ANY UPI APP',
-                          style: TextStyle(
+                        child: Text(
+                          scanLabel,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
                             color: Color(0xFF047857),
                             fontSize: 12,
                             fontWeight: FontWeight.w900,
@@ -197,7 +213,8 @@ class KhatuPayQrCard extends StatelessWidget {
                       Text(
                         note,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                        style: const TextStyle(
+                            color: Color(0xFF64748B), fontSize: 12),
                       ),
                     ],
                   ),
@@ -209,6 +226,23 @@ class KhatuPayQrCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ProviderQrUnavailable extends StatelessWidget {
+  const _ProviderQrUnavailable();
+
+  @override
+  Widget build(BuildContext context) => const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.qr_code_2_outlined, size: 76, color: Color(0xFF0F766E)),
+            SizedBox(height: 10),
+            Text('QR unavailable. Refresh and try again.',
+                textAlign: TextAlign.center),
+          ],
+        ),
+      );
 }
 
 class _GeneratedQr extends StatelessWidget {

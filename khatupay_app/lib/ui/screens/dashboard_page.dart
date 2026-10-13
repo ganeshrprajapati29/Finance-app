@@ -83,7 +83,11 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     ref.invalidate(merchantDashboardProvider);
     ref.invalidate(merchantBalanceProvider);
     ref.invalidate(merchantPaymentsProvider);
-    await Future.wait([_activity, _unread]).catchError((_) => <dynamic>[]);
+    // Refresh must finish even when a section fails; each section renders its
+    // own error state. (A typed catchError here used to throw at runtime.)
+    try {
+      await Future.wait([_activity, _unread]);
+    } catch (_) {}
   }
 
   @override
@@ -320,10 +324,10 @@ class _MerchantCard extends ConsumerWidget {
             Row(children: [
               Expanded(
                   child: _Metric(
-                      'Available', kpMoney(number('availableBalance')))),
+                      'Available', kpMoney(number('available')))),
               const SizedBox(width: 8),
               Expanded(
-                  child: _Metric('Pending', kpMoney(number('pendingBalance')))),
+                  child: _Metric('Pending', kpMoney(number('pending')))),
             ]),
           ],
           const SizedBox(height: 12),

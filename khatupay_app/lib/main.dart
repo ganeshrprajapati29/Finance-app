@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter/services.dart';
 import 'core/app_navigation_history.dart';
+import 'core/auth_storage.dart';
 import 'core/app_theme.dart';
 import 'core/fcm.dart';
 import 'routes/app_router.dart';
@@ -33,9 +34,10 @@ Future<void> main() async {
   // ✅ Start listening for foreground messages after app is built
   WidgetsBinding.instance.addPostFrameCallback((_) {
     () async {
+      // No timeout here: init() waits on the notification permission prompt,
+      // and its listeners are registered before that wait.
       try {
-        await FCM.init().timeout(const Duration(seconds: 5));
-        FCM.listenForeground();
+        await FCM.init();
       } catch (e) {
         debugPrint('Firebase initialization skipped: $e');
       }
@@ -50,10 +52,13 @@ class MyApp extends ConsumerStatefulWidget {
   ConsumerState<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends ConsumerState<MyApp> {
+class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   late SessionTimeoutService _sessionTimeoutService;
   late AppBackButtonDispatcher _backButtonDispatcher;
   String _lastLocation = '';
+  DateTime? _backgroundedAt;
+  bool _lockingOnResume = false;
+  static const _backgroundLockDelay = Duration(minutes: 2);
 
   @override
   void initState() {
@@ -61,13 +66,15 @@ class _MyAppState extends ConsumerState<MyApp> {
     _sessionTimeoutService = SessionTimeoutService(router);
     _backButtonDispatcher = AppBackButtonDispatcher();
     _lastLocation = router.routeInformationProvider.value.uri.toString();
-    AppNavigationHistory.seed('/');
+    AppNavigationHistory.seed(_lastLocation);
     router.routeInformationProvider.addListener(_trackRouteChange);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
     router.routeInformationProvider.removeListener(_trackRouteChange);
+    WidgetsBinding.instance.removeObserver(this);
     _sessionTimeoutService.dispose();
     super.dispose();
   }
@@ -77,6 +84,66 @@ class _MyAppState extends ConsumerState<MyApp> {
     if (location == _lastLocation) return;
     AppNavigationHistory.record(location);
     _lastLocation = location;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _backgroundedAt ??= DateTime.now();
+      _saveResumeRoute();
+      return;
+    }
+    if (state == AppLifecycleState.resumed && _backgroundedAt != null) {
+      final elapsed = DateTime.now().difference(_backgroundedAt!);
+      _backgroundedAt = null;
+      if (elapsed >= _backgroundLockDelay) _lockAfterBackground();
+    }
+  }
+
+  Future<void> _saveResumeRoute() async {
+    final route = router.routeInformationProvider.value.uri.toString();
+    final path = Uri.tryParse(route)?.path ?? '';
+    const blocked = {
+      '/splash',
+      '/login',
+      '/unlock',
+      '/forgot',
+      '/forgot-pin',
+      '/recharge-result',
+    };
+    if (route.startsWith('/') && !route.startsWith('//') && !blocked.contains(path)) {
+      await AuthStorage.saveResumeRoute(route);
+    }
+  }
+
+  Future<void> _lockAfterBackground() async {
+    if (_lockingOnResume || !(await AuthStorage.isAppLockEnabled())) return;
+    _lockingOnResume = true;
+    try {
+      final token = await AuthStorage.getAccessToken();
+      final identifier = await AuthStorage.getLastIdentifier();
+      final path = router.routeInformationProvider.value.uri.path;
+      const unlockedRoutes = {
+        '/splash',
+        '/login',
+        '/unlock',
+        '/forgot',
+        '/forgot-pin',
+      };
+      if (token != null &&
+          identifier?.isNotEmpty == true &&
+          !unlockedRoutes.contains(path)) {
+        await _saveResumeRoute();
+        final target = Uri(
+          path: '/unlock',
+          queryParameters: {'returnTo': path == '/' ? '/' : router.routeInformationProvider.value.uri.toString()},
+        ).toString();
+        AppNavigationHistory.reset(target);
+        router.go(target);
+      }
+    } finally {
+      _lockingOnResume = false;
+    }
   }
 
   @override
@@ -108,6 +175,19 @@ class _MyAppState extends ConsumerState<MyApp> {
               routeInformationProvider: router.routeInformationProvider,
               backButtonDispatcher: _backButtonDispatcher,
 
+              // Some Android devices dispatch the system navigation key before
+              // GoRouter's stack has settled after a `go()` navigation. Keep
+              // that event inside the app and route it through our history.
+              builder: (context, child) => PopScope<Object?>(
+                canPop: false,
+                onPopInvokedWithResult: (didPop, _) {
+                  if (!didPop) {
+                    _backButtonDispatcher.handleSystemBack();
+                  }
+                },
+                child: child ?? const SizedBox.shrink(),
+              ),
+
               debugShowCheckedModeBanner: false,
             ),
           );
@@ -118,6 +198,12 @@ class _MyAppState extends ConsumerState<MyApp> {
 }
 
 class AppBackButtonDispatcher extends RootBackButtonDispatcher {
+  bool _handlingBack = false;
+
+  Future<void> handleSystemBack() async {
+    await _handleBack();
+  }
+
   Future<bool> _confirmExit(BuildContext context) async {
     final shouldExit = await showDialog<bool>(
       context: context,
@@ -140,26 +226,37 @@ class AppBackButtonDispatcher extends RootBackButtonDispatcher {
   }
 
   Future<bool> _handleBack() async {
-    final current = router.routeInformationProvider.value.uri.toString();
-    if (router.canPop()) {
-      AppNavigationHistory.prepareForNativePop(current);
-      router.pop();
-      return true;
-    }
+    if (_handlingBack) return true;
+    _handlingBack = true;
+    try {
+      final current = router.routeInformationProvider.value.uri.toString();
+      final path = Uri.tryParse(current)?.path ?? '/';
+      const authRoots = {'/login', '/unlock'};
+      if (path != '/' && !authRoots.contains(path)) {
+        AppNavigationHistory.goBack(router);
+        return true;
+      }
 
-    final path = Uri.tryParse(current)?.path ?? '/';
-    if (path != '/') {
-      AppNavigationHistory.goBack(router);
-      return true;
-    }
+      // Dashboard and auth roots need explicit confirmation before Android
+      // closes the task. Every other page is routed to its prior screen.
+      if (path == '/') {
+        final context = navigatorKey.currentContext;
+        if (context == null) return true;
+        final shouldExit = await _confirmExit(context);
+        if (shouldExit) await SystemNavigator.pop();
+        return true;
+      }
 
-    final context = navigatorKey.currentContext;
-    if (context == null) return true;
-    final shouldExit = await _confirmExit(context);
-    if (shouldExit) {
-      await SystemNavigator.pop();
+      final context = navigatorKey.currentContext;
+      if (context == null) return true;
+      final shouldExit = await _confirmExit(context);
+      if (shouldExit) {
+        await SystemNavigator.pop();
+      }
+      return true;
+    } finally {
+      _handlingBack = false;
     }
-    return true;
   }
 
   @override

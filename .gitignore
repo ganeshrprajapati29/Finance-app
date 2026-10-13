@@ -1,0 +1,37 @@
+# Dependencies and build output
+node_modules/
+dist-ssr/
+*.local
+
+# Local scratch / release bundles (never part of the source)
+tmp/
+output/
+.codex_tmp/
+
+# Server maintenance scripts hold credentials - keep them out of git
+scripts/
+backend/check_ip.cjs
+backend/deploy_*.cjs
+backend/fix_ipv6_hosts.cjs
+backend/test_clubapi_bank.cjs
+
+# Secrets
+.env
+.env.*
+!.env.example
+!admin_panel/.env
+*service-account*.json
+*.jks
+key.properties
+
+# Rendered UI review images
+khatupay_app/tool/visual/out/
+
+# Archives
+*.zip
+*.tgz
+*.tar.gz
+*.docx
+
+# Brand source artwork (large; app-ready copies live in khatupay_app/assets)
+/assets/

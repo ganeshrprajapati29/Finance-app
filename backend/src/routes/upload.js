@@ -4,6 +4,8 @@ import { uploadSingle, uploadMany } from '../middlewares/upload.js';
 import { uploadToCloudinary } from '../services/cloudinary.js';
 import { ok, fail } from '../utils/response.js';
 import multer from 'multer';
+import path from 'path';
+import { privateBusinessDocumentRef } from '../services/cloudinary.js';
 
 const router = Router();
 
@@ -24,6 +26,16 @@ router.post('/cloudinary/single', requireAuth, uploadSingle('file'), async (req,
   } catch (e) {
     fail(res, 'UPLOAD_FAILED', e.message, 500);
   }
+});
+
+router.post('/cloudinary/business-document', requireAuth, uploadSingle('file'), async (req, res) => {
+  try {
+    if (!req.file) return fail(res, 'NO_FILE', 'Select a document to upload.', 400);
+    const extension = path.extname(req.file.originalname || '').slice(1).toLowerCase();
+    if (!['pdf', 'jpg', 'jpeg', 'png'].includes(extension)) return fail(res, 'DOCUMENT_TYPE_INVALID', 'Use a PDF, JPG, JPEG, or PNG document.', 400);
+    const result = await uploadToCloudinary(req.file.buffer, 'khatupay/private-business-documents', { resource_type: 'raw', type: 'private', format: extension, use_filename: true, unique_filename: true, overwrite: false });
+    ok(res, { url: privateBusinessDocumentRef(result.public_id, extension) }, 'Business document uploaded securely.');
+  } catch (_) { fail(res, 'UPLOAD_FAILED', 'Business document could not be uploaded securely.', 500); }
 });
 
 router.post('/cloudinary/many', requireAuth, uploadManyMemory('files', 8), async (req, res) => {

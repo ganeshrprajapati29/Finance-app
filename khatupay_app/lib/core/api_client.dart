@@ -85,9 +85,12 @@ class ApiClient {
           }
 
           try {
-            final req = e.requestOptions
-              ..headers['Authorization'] = 'Bearer $newAccess'
-              ..extra['kp_retried'] = true;
+            final req = e.requestOptions;
+            if (req.data is FormData) {
+              req.data = (req.data as FormData).clone();
+            }
+            req.headers['Authorization'] = 'Bearer $newAccess';
+            req.extra['kp_retried'] = true;
             final retry = await _dio.fetch(req);
             return handler.resolve(retry);
           } catch (_) {

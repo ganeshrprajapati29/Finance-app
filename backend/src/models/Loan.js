@@ -14,7 +14,10 @@ const docSchema = new mongoose.Schema({
   incomeProofUrl: String,
   incomeProofType: String,
   aadhaarEkyc: mongoose.Schema.Types.Mixed,
-  panVerification: mongoose.Schema.Types.Mixed
+  panVerification: mongoose.Schema.Types.Mixed,
+  // Per-document Cloudinary result: { [field]: { status, filename, message, attempts, updatedAt } }
+  uploadStatus: mongoose.Schema.Types.Mixed,
+  uploadReview: mongoose.Schema.Types.Mixed
 }, { _id:false });
 
 const bankSchema = new mongoose.Schema({
@@ -83,6 +86,8 @@ const scheduleSchema = new mongoose.Schema({
   principal: Number,
   interest: Number,
   total: Number,
+  openingBalance: Number,
+  closingBalance: Number,
   paid: { type: Boolean, default: false },
   paidAt: Date,
   paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
@@ -120,15 +125,43 @@ const statusHistorySchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 }, { _id: false });
 
+// Borrower agreement + Aadhaar eSign lifecycle for this loan. decision.agreement*
+// fields are kept in sync for older app/admin builds that still read them.
+const agreementSchema = new mongoose.Schema({
+  status: { type: String, enum: ['NOT_AVAILABLE', 'PENDING_SIGNATURE', 'SIGNING', 'SIGNED', 'FAILED'], default: 'NOT_AVAILABLE' },
+  agreementUrl: String,
+  agreementSha256: String,
+  generatedAt: Date,
+  documentId: String,
+  documentReferenceId: String,
+  referenceId: String,
+  attempts: { type: Number, default: 0 },
+  signingUrl: String,
+  signingStartedAt: Date,
+  signerStatus: String,
+  providerStatus: String,
+  lastError: String,
+  lastSyncedAt: Date,
+  signedAgreementUrl: String,
+  signedAt: Date,
+  auditTrailStatus: { type: String, default: 'NOT_STARTED' },
+  auditTrail: mongoose.Schema.Types.Mixed,
+  // Short claim so two taps on "Sign" cannot create two SignCare documents.
+  lockUntil: Date,
+}, { _id: false });
+
 const loanSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref:'User', required: true },
   loanAccountNumber: { type: String, unique: true },
+  // Client-generated key per application draft; a resubmit returns the same loan.
+  idempotencyKey: String,
   application: applicationSchema,
   status: { type: String, enum: ['PENDING','UNDER_REVIEW','DOCUMENTS_REQUIRED','APPROVED','REJECTED','DISBURSEMENT_PROCESSING','DISBURSED','OVERDUE','CLOSED'], default: 'PENDING' },
   decision: {
     amountApproved: Number, rateAPR: Number, tenureMonths: Number,
     processingFee: Number, taxAmount: Number, netDisbursalAmount: Number,
-    totalRepaymentAmount: Number, rejectionReason: String,
+    totalRepaymentAmount: Number, totalInterest: Number, emi: Number, allInclusiveApr: Number,
+    rejectionReason: String,
     lenderName: String, offerExpiresAt: Date, kfsUrl: String, agreementUrl: String,
     signedAgreementUrl: String, agreementStatus: String,
     agreementDocumentId: String, agreementSignedAt: Date,
@@ -151,6 +184,7 @@ const loanSchema = new mongoose.Schema({
     snapshot: mongoose.Schema.Types.Mixed,
     capturedAt: Date,
   },
+  agreement: { type: agreementSchema, default: undefined },
   statusHistory: [statusHistorySchema],
   transactions: [transactionSchema],
   schedule: [scheduleSchema],
@@ -162,4 +196,11 @@ const loanSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-export default mongoose.model('Loan', loanSchema);
+loanSchema.index(
+  { userId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+);
+loanSchema.index({ 'agreement.status': 1, 'agreement.signingStartedAt': 1 });
+loanSchema.index({ 'agreement.documentId': 1 });
+
+export default mongoose.models.Loan || mongoose.model('Loan', loanSchema);

@@ -1,18 +1,21 @@
 import 'package:go_router/go_router.dart';
 import 'package:khatupay_app/ui/screens/loan_dashboard_page.dart';
-import '../ui/screens/auth/login_page.dart';
 import '../ui/screens/auth/register_page.dart';
 import '../ui/screens/auth/verify_email_page.dart';
+import '../ui/screens/auth/verify_mobile_page.dart';
+import '../ui/screens/auth/mobile_otp_login_page.dart';
 import '../ui/screens/auth/forgot_password_page.dart';
+import '../ui/screens/auth/app_unlock_page.dart';
+import '../ui/screens/auth/forgot_mpin_page.dart';
 import '../ui/screens/splash_screen.dart';
 import '../ui/screens/dashboard_page.dart';
 import '../ui/screens/coming_soon_page.dart';
 import '../ui/screens/loan_apply_wizard_page.dart';
+import '../ui/screens/loan_aadhaar_verification_page.dart';
 import '../ui/screens/loan_apply_success_page.dart';
 import '../ui/screens/loan_detail_page.dart';
 import '../ui/screens/payments_page.dart';
 import '../ui/screens/bills_page.dart';
-import '../ui/screens/qr_page.dart';
 import '../ui/screens/qr_sticker_order_page.dart';
 import '../ui/screens/faq_page.dart';
 import '../ui/screens/support_page.dart';
@@ -32,11 +35,14 @@ import '../clubapi/ui/clubapi_recharge_result_page.dart';
 import '../clubapi/ui/service_status_page.dart';
 import '../clubapi/ui/service_ui.dart' show ServiceStatusArgs;
 import '../core/fcm.dart';
+import '../ui/screens/business/business_bank_page.dart';
 import '../ui/screens/business/business_home_page.dart';
 import '../ui/screens/business/business_registration_page.dart';
 import '../ui/screens/business/business_verification_page.dart';
+import '../ui/screens/business/razorpay_business_onboarding_page.dart';
 import '../ui/screens/business/merchant_qr_page.dart';
 import '../ui/screens/business/merchant_settlements_page.dart';
+import '../ui/screens/business/merchant_transactions_page.dart';
 
 final router = GoRouter(
   initialLocation: '/splash',
@@ -44,17 +50,41 @@ final router = GoRouter(
   routes: [
     // Authentication routes
     GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
-    GoRoute(path: '/login', builder: (_, __) => const LoginPage()),
+    GoRoute(path: '/login', builder: (_, __) => const MobileOtpLoginPage()),
+    GoRoute(
+        path: '/login-mobile-otp',
+        builder: (_, __) => const MobileOtpLoginPage()),
     GoRoute(path: '/register', builder: (_, __) => const RegisterPage()),
     GoRoute(
       path: '/verify',
+      builder: (_, state) => VerifyEmailPage(
+        email: state.uri.queryParameters['email'],
+        mobile: state.uri.queryParameters['mobile'],
+      ),
+    ),
+    GoRoute(
+      path: '/verify-mobile',
       builder: (_, state) =>
-          VerifyEmailPage(email: state.uri.queryParameters['email']),
+          VerifyMobilePage(mobile: state.uri.queryParameters['mobile']),
     ),
     GoRoute(path: '/forgot', builder: (_, __) => const ForgotPasswordPage()),
+    GoRoute(
+      path: '/unlock',
+      builder: (_, state) => AppUnlockPage(
+        returnTo: state.uri.queryParameters['returnTo'],
+      ),
+    ),
+    GoRoute(path: '/forgot-pin', builder: (_, __) => const ForgotMpinPage()),
     // Main app routes
     GoRoute(path: '/', builder: (_, __) => const DashboardPage()),
     GoRoute(path: '/apply', builder: (_, __) => const LoanApplyWizardPage()),
+    GoRoute(
+      path: '/loan-aadhaar-verification',
+      builder: (_, state) => LoanAadhaarVerificationPage(
+        verificationUrl: state.uri.queryParameters['url'] ?? '',
+        title: state.uri.queryParameters['title'],
+      ),
+    ),
     // '/loan-apply' (old LoanApplyPage, no KYC/eligibility checks) and
     // '/pay-loan' (pays off any stranger's loan by ID + mobile, no consent
     // check) are intentionally not routed - real loan applications go
@@ -76,10 +106,16 @@ final router = GoRouter(
     GoRoute(
         path: '/business/verification',
         builder: (_, __) => const BusinessVerificationPage()),
+    GoRoute(
+        path: '/business/bank',
+        builder: (_, __) => const BusinessBankPage()),
+    GoRoute(
+        path: '/business/onboarding',
+        builder: (_, __) => const RazorpayBusinessOnboardingPage()),
     GoRoute(path: '/business/qr', builder: (_, __) => const MerchantQrPage()),
     GoRoute(
         path: '/business/transactions',
-        builder: (_, __) => const PaymentHistoryPage()),
+        builder: (_, __) => const MerchantTransactionsPage()),
     GoRoute(
         path: '/business/settlements',
         builder: (_, __) => const MerchantSettlementsPage()),
@@ -101,7 +137,7 @@ final router = GoRouter(
         path: '/virtual-card/apply',
         builder: (_, __) => const VirtualCardApplyPage()),
     GoRoute(path: '/bills', builder: (_, __) => const BillsPage()),
-    GoRoute(path: '/qr', builder: (_, __) => const QRPage()),
+    GoRoute(path: '/qr', builder: (_, __) => const MerchantQrPage()),
     GoRoute(
         path: '/qr-scan',
         builder: (_, __) => const ComingSoonPage(title: 'Scan & Pay')),
@@ -125,7 +161,6 @@ final router = GoRouter(
       ),
     ),
     GoRoute(path: '/profile', builder: (_, __) => const ProfilePage()),
-    GoRoute(path: '/kyc', builder: (_, __) => const KycPage()),
     GoRoute(path: '/settings', builder: (_, __) => const SettingsPage()),
     GoRoute(
         path: '/change-password',
@@ -139,6 +174,7 @@ final router = GoRouter(
         builder: (_, state) =>
             OfferDetailPage(id: state.pathParameters['id']!)),
     GoRoute(path: '/rewards', builder: (_, __) => const RewardsPage()),
+    GoRoute(path: '/kyc', builder: (_, __) => const KycPage()),
 
     // Service routes
     // '/services' and '/clubapi/dashboard' were a merchant/agent-onboarding
@@ -172,8 +208,14 @@ final router = GoRouter(
         }),
     GoRoute(
         path: '/recharge-result',
-        builder: (_, state) =>
-            RechargeResultPage(data: state.extra as RechargeResultData)),
+        builder: (_, state) {
+          final result = state.extra;
+          // Route extras are lost when Android restores an app task. Do not
+          // crash on a reopened result URL; let the customer start a new flow.
+          return result is RechargeResultData
+              ? RechargeResultPage(data: result)
+              : const ClubAPIRechargePage();
+        }),
     GoRoute(
         path: '/service-history',
         builder: (_, __) => const PaymentHistoryPage()),

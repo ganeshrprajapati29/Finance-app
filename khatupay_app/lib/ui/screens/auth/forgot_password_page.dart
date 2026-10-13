@@ -32,14 +32,21 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     setState(() { _loading = true; _message = null; });
     try {
       await AuthService().forgotPassword(_email.text.trim().toLowerCase());
-      if (mounted) { _countdown(); setState(() { _stage = 2; _message = 'If an account exists for this email, a verification code has been sent.'; }); }
+      if (mounted) { _otp.clear(); _countdown(); setState(() { _stage = 2; _message = 'If an account exists for this email, a verification code has been sent.'; }); }
     } catch (error) {
       if (mounted) setState(() => _message = friendlyAuthError(error, fallback: 'Unable to send a code right now. Please try again.'));
     } finally { if (mounted) setState(() => _loading = false); }
   }
-  void _continueOtp() {
+  Future<void> _continueOtp() async {
+    if (_loading) return;
     if (_otp.text.length != 6) { setState(() => _message = 'Enter the complete 6-digit verification code.'); return; }
-    setState(() { _stage = 3; _message = null; });
+    setState(() { _loading = true; _message = null; });
+    try {
+      await AuthService().checkResetOtp(_email.text.trim().toLowerCase(), _otp.text);
+      if (mounted) setState(() { _stage = 3; _message = null; });
+    } catch (error) {
+      if (mounted) { setState(() { _otp.clear(); _message = friendlyAuthError(error, fallback: 'Incorrect OTP. Please try again.'); }); }
+    } finally { if (mounted) setState(() => _loading = false); }
   }
   Future<void> _reset() async {
     if (_loading) return;
@@ -61,12 +68,14 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     final title = _stage == 1 ? 'Reset your password' : _stage == 2 ? 'Verify your email' : 'Create a new password';
     final subtitle = _stage == 1 ? 'We will send a secure verification code to your registered email.' : _stage == 2 ? 'Enter the 6-digit code sent to your email.' : 'Choose a strong password you have not used before.';
     return AuthShell(
-      title: title, subtitle: subtitle, icon: Icons.lock_outline_rounded, illustrationAsset: 'assets/auth/password_recovery.png', compactIllustration: true, showBack: true,
+      title: title, subtitle: subtitle, icon: Icons.lock_outline_rounded,
+      illustrationAsset: _stage == 2 ? 'assets/auth/email_verification.png' : 'assets/auth/password_recovery.png',
+      compactIllustration: true, showBack: true,
       footerText: 'Back to login', onFooterTap: () => router.go('/login'),
       child: Column(children: [
         if (_stage == 1) AuthTextField(controller: _email, label: 'Registered email', icon: Icons.email_outlined, keyboardType: TextInputType.emailAddress, validator: (_) => null),
         if (_stage == 2) ...[
-          AuthOtpInput(controller: _otp),
+          AuthOtpInput(controller: _otp, onCompleted: (_) => _continueOtp()),
           TextButton.icon(onPressed: _seconds == 0 && !_loading ? _send : null, icon: const Icon(Icons.refresh_rounded), label: Text(_seconds == 0 ? 'Resend code' : 'Resend code in ${_seconds}s')),
         ],
         if (_stage == 3) ...[
@@ -81,4 +90,3 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 }
-

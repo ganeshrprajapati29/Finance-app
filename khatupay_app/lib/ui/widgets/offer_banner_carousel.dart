@@ -64,14 +64,7 @@ class _OfferBannerCarouselState extends State<OfferBannerCarousel> {
           },
         ];
       case 'KYC_BANNER':
-        return [
-          {
-            'assetImage': 'assets/banners/kyc_banner.png',
-            'title': 'Complete KYC Verification',
-            'subtitle': 'Unlock trusted account features after approval',
-            'route': '/kyc',
-          },
-        ];
+        return const [];
       case 'QR_UPI_BANNER':
         return [
           {

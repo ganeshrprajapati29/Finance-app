@@ -1,45 +1,434 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../core/app_theme.dart';
+import '../../../models/business/merchant_business.dart';
 import '../../../providers/business/merchant_business_provider.dart';
 import '../../../routes/app_router.dart';
 import '../../widgets/kp_widgets.dart';
+import 'business_widgets.dart';
 
+/// Business hub. Until the QR is live it is a guided checklist with exactly
+/// one thing to do next; after that it becomes the collections dashboard.
 class BusinessHomePage extends ConsumerWidget {
   const BusinessHomePage({super.key});
-  @override Widget build(BuildContext context, WidgetRef ref) {
+
+  Future<void> _open(WidgetRef ref, String route) async {
+    await router.push(route);
+    // Any setup screen may have changed the checklist.
+    ref.invalidate(merchantDashboardProvider);
+    ref.invalidate(merchantBalanceProvider);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final profile = ref.watch(merchantDashboardProvider);
-    final balance = ref.watch(merchantBalanceProvider);
-    return KpAppShell(title: 'Khatu Pay Business', onRefresh: () async { ref.invalidate(merchantDashboardProvider); ref.invalidate(merchantBalanceProvider); }, children: [
-      profile.when(
-        loading: () => const KpCard(child: Center(child: CircularProgressIndicator())),
-        error: (e, _) => KpErrorState.fromError(e, onRetry: () => ref.invalidate(merchantDashboardProvider)),
-        data: (data) {
-          if (data.business == null) return _Welcome(onStart: () => router.push('/business/register'));
-          final approved = data.business!.status == 'APPROVED';
-          return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            KpCard(child: Row(children: [
-              Container(width: 76, height: 76, decoration: BoxDecoration(color: KhatuColors.softTeal, borderRadius: BorderRadius.circular(12)), child: Image.asset('assets/business/business_payments.png', fit: BoxFit.cover)),
-              const SizedBox(width: 14), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(data.business!.businessName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)), const SizedBox(height: 5), KpStatusBadge(status: data.business!.status), const SizedBox(height: 4), Text(data.business!.publicId, style: const TextStyle(color: KhatuColors.muted))]))
-            ])),
-            if (!approved) KpNoticeBanner(icon: Icons.fact_check_outlined, color: KhatuColors.warning, title: 'Complete business verification', message: 'Submit KYC and a settlement bank account. QR collections activate after approval.', actionLabel: 'Continue', onAction: () => router.push('/business/verification')),
-            const KpSectionHeader(title: 'Business balance', subtitle: 'Collections become available after the settlement hold period'),
-            balance.when(loading: () => const LinearProgressIndicator(), error: (_, __) => const KpErrorBanner(message: 'Balance is temporarily unavailable.'), data: (b) => Row(children: [
-              Expanded(child: _Balance(label: 'Available', value: b['available'])), const SizedBox(width: 10),
-              Expanded(child: _Balance(label: 'Pending', value: b['pending'])), const SizedBox(width: 10),
-              Expanded(child: _Balance(label: 'Settled', value: b['settled'])),
-            ])),
-            const KpSectionHeader(title: 'Manage business'),
-            KpServiceGrid(items: [
-              KpServiceItem(icon: Icons.qr_code_2_rounded, label: 'Business QR', color: KhatuColors.teal, onTap: approved ? () => router.push('/business/qr') : null),
-              KpServiceItem(icon: Icons.receipt_long_outlined, label: 'Transactions', color: KhatuColors.info, onTap: () => router.push('/business/transactions')),
-              KpServiceItem(icon: Icons.account_balance_outlined, label: 'Settlements', color: KhatuColors.gold, onTap: () => router.push('/business/settlements')),
-              KpServiceItem(icon: Icons.support_agent_rounded, label: 'Support', color: KhatuColors.deepTeal, onTap: () => router.push('/support?subject=Business%20payments')),
-            ]),
-          ]);
-        }),
-    ]);
+    return KpAppShell(
+      title: 'KhatuPay Business',
+      onRefresh: () async {
+        ref.invalidate(merchantDashboardProvider);
+        ref.invalidate(merchantBalanceProvider);
+        await ref.read(merchantDashboardProvider.future).catchError((_) => const MerchantDashboard());
+      },
+      children: [
+        profile.when(
+          loading: () => const _HomeSkeleton(),
+          error: (e, _) => KpErrorState.fromError(e,
+              onRetry: () => ref.invalidate(merchantDashboardProvider)),
+          data: (data) {
+            final business = data.business;
+            if (business == null) {
+              return _Welcome(onStart: () => _open(ref, '/business/register'));
+            }
+            final onboarding = data.onboarding;
+            final live = onboarding.qrActive;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _BusinessHero(business: business, onboarding: onboarding),
+                if (!live) ...[
+                  const KpSectionHeader(
+                      title: 'Finish setup to accept payments',
+                      subtitle: 'Complete the steps in order. Your progress is saved.'),
+                  KpCard(
+                    radius: KhatuRadius.lg,
+                    child: Column(children: [
+                      for (var i = 0; i < onboarding.steps.length; i++)
+                        BusinessStepTile(
+                          index: i,
+                          step: onboarding.steps[i],
+                          isLast: i == onboarding.steps.length - 1,
+                          highlight: onboarding.steps[i].key == onboarding.nextStep,
+                          onAction: () => _open(
+                              ref, businessStepRoute(onboarding.steps[i].key)),
+                        ),
+                    ]),
+                  ),
+                  if (onboarding.nextStep == null) ...[
+                    const SizedBox(height: 12),
+                    KpNoticeBanner(
+                      icon: Icons.schedule_rounded,
+                      color: KhatuColors.warning,
+                      title: 'Nothing more is needed from you',
+                      message:
+                          'We are verifying your business. You will get a notification as soon as your QR is ready.',
+                      actionLabel: 'View status',
+                      onAction: () => _open(ref, '/business/verification'),
+                    ),
+                  ],
+                ] else ...[
+                  const SizedBox(height: 14),
+                  _QrReadyCard(onOpen: () => _open(ref, '/business/qr')),
+                  const KpSectionHeader(
+                      title: 'Collections',
+                      subtitle: 'Money received on your business QR'),
+                  ref.watch(merchantBalanceProvider).when(
+                        loading: () => const LinearProgressIndicator(minHeight: 2),
+                        error: (_, __) => const KpErrorBanner(
+                            message: 'Balance is temporarily unavailable. Pull down to refresh.'),
+                        data: (b) => Row(children: [
+                          Expanded(child: _Balance(label: 'Available', value: b['available'], accent: KhatuColors.success)),
+                          const SizedBox(width: 10),
+                          Expanded(child: _Balance(label: 'Pending', value: b['pending'], accent: KhatuColors.warning)),
+                          const SizedBox(width: 10),
+                          Expanded(child: _Balance(label: 'Settled', value: b['settled'], accent: KhatuColors.info)),
+                        ]),
+                      ),
+                ],
+                const KpSectionHeader(title: 'Manage business'),
+                KpServiceGrid(items: [
+                  KpServiceItem(
+                      icon: Icons.qr_code_2_rounded,
+                      label: 'Business QR',
+                      color: KhatuColors.teal,
+                      onTap: () => _open(ref, '/business/qr')),
+                  KpServiceItem(
+                      icon: Icons.receipt_long_outlined,
+                      label: 'Transactions',
+                      color: KhatuColors.info,
+                      onTap: () => _open(ref, '/business/transactions')),
+                  KpServiceItem(
+                      icon: Icons.account_balance_outlined,
+                      label: 'Settlements',
+                      color: KhatuColors.gold,
+                      onTap: () => _open(ref, '/business/settlements')),
+                  KpServiceItem(
+                      icon: Icons.support_agent_rounded,
+                      label: 'Support',
+                      color: KhatuColors.deepTeal,
+                      onTap: () => _open(ref, '/support?subject=Business%20payments')),
+                ]),
+              ],
+            );
+          },
+        ),
+      ],
+    );
   }
 }
-class _Welcome extends StatelessWidget { const _Welcome({required this.onStart}); final VoidCallback onStart; @override Widget build(BuildContext context) => KpCard(child: Column(children: [Image.asset('assets/business/business_payments.png', height: 210), const Text('Accept payments for your business', style: TextStyle(fontSize: 21, fontWeight: FontWeight.w900)), const SizedBox(height: 8), const Text('Create a verified business profile, display your QR and track collections and bank settlements.', textAlign: TextAlign.center, style: TextStyle(color: KhatuColors.muted)), const SizedBox(height: 18), SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: onStart, icon: const Icon(Icons.storefront_outlined), label: const Text('Create business profile')))])); }
-class _Balance extends StatelessWidget { const _Balance({required this.label, required this.value}); final String label; final dynamic value; @override Widget build(BuildContext context) => Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.white, border: Border.all(color: KhatuColors.line), borderRadius: BorderRadius.circular(8)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: const TextStyle(color: KhatuColors.muted, fontSize: 11)), const SizedBox(height: 5), FittedBox(child: Text(kpMoney(value), style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17)))])); }
+
+class _BusinessHero extends StatelessWidget {
+  const _BusinessHero({required this.business, required this.onboarding});
+  final MerchantBusiness business;
+  final MerchantOnboarding onboarding;
+
+  @override
+  Widget build(BuildContext context) {
+    final live = onboarding.qrActive;
+    final done = onboarding.steps.where((s) => s.isDone).length;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: KhatuColors.heroGradient,
+        borderRadius: BorderRadius.circular(KhatuRadius.xl),
+        boxShadow: KhatuShadow.raised,
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            width: 52,
+            height: 52,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(16)),
+            child: Text(
+                business.businessName.trim().isEmpty
+                    ? 'B'
+                    : business.businessName.trim()[0].toUpperCase(),
+                style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900)),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(business.businessName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          color: Colors.white,
+                          fontSize: 19,
+                          height: 1.2,
+                          fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 4),
+                  Text('${business.category}  •  ID ${business.publicId}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          color: Colors.white70,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600)),
+                ]),
+          ),
+        ]),
+        const SizedBox(height: 18),
+        Row(children: [
+          Icon(live ? Icons.verified_rounded : Icons.flag_outlined,
+              color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+                live
+                    ? 'Live - accepting payments'
+                    : 'Setup $done of ${onboarding.steps.length} steps complete',
+                style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w800)),
+          ),
+          Text('${onboarding.progress}%',
+              style: const TextStyle(
+                  fontFamily: 'Roboto',
+                  color: Colors.white,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w900)),
+        ]),
+        const SizedBox(height: 10),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: LinearProgressIndicator(
+            value: (onboarding.progress / 100).clamp(0.0, 1.0),
+            minHeight: 8,
+            backgroundColor: Colors.white.withValues(alpha: 0.22),
+            valueColor: const AlwaysStoppedAnimation(Colors.white),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+class _QrReadyCard extends StatelessWidget {
+  const _QrReadyCard({required this.onOpen});
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => KpCard(
+        radius: KhatuRadius.lg,
+        color: KhatuColors.softTeal,
+        borderColor: KhatuColors.teal.withValues(alpha: 0.3),
+        onTap: onOpen,
+        child: Row(children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(14)),
+            child: const Icon(Icons.qr_code_2_rounded,
+                color: KhatuColors.deepTeal, size: 30),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Your business QR is live',
+                      style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w900)),
+                  SizedBox(height: 3),
+                  Text('Show, share or print it to collect payments.',
+                      style: TextStyle(
+                          fontFamily: 'Roboto',
+                          color: KhatuColors.muted,
+                          fontSize: 12.5)),
+                ]),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: KhatuColors.deepTeal),
+        ]),
+      );
+}
+
+class _Welcome extends StatelessWidget {
+  const _Welcome({required this.onStart});
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
+          decoration: BoxDecoration(
+            gradient: KhatuColors.heroGradient,
+            borderRadius: BorderRadius.circular(KhatuRadius.xl),
+            boxShadow: KhatuShadow.raised,
+          ),
+          child: Column(children: [
+            Image.asset('assets/business/business_payments.png',
+                height: 150,
+                errorBuilder: (_, __, ___) => const Icon(
+                    Icons.storefront_rounded,
+                    size: 84,
+                    color: Colors.white)),
+            const SizedBox(height: 14),
+            const Text('Accept payments at your shop',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            const Text(
+                'Get one QR for all UPI apps and receive money directly in your bank account.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white70,
+                    fontSize: 13.5,
+                    height: 1.45)),
+          ]),
+        ),
+        const SizedBox(height: 14),
+        KpCard(
+          radius: KhatuRadius.lg,
+          child: Column(children: [
+            const _Benefit(
+                icon: Icons.qr_code_2_rounded,
+                title: 'One QR, every UPI app',
+                text: 'PhonePe, Google Pay, Paytm, BHIM and more.'),
+            const _Benefit(
+                icon: Icons.account_balance_rounded,
+                title: 'Settled to your bank',
+                text: 'Collections go to your verified bank account.'),
+            const _Benefit(
+                icon: Icons.timer_outlined,
+                title: 'Setup in about 5 minutes',
+                text: 'Keep your PAN, Aadhaar and bank details ready.',
+                last: true),
+            const SizedBox(height: 16),
+            BusinessPrimaryButton(
+                label: 'Start business setup',
+                icon: Icons.storefront_rounded,
+                onPressed: onStart),
+          ]),
+        ),
+      ]);
+}
+
+class _Benefit extends StatelessWidget {
+  const _Benefit(
+      {required this.icon, required this.title, required this.text, this.last = false});
+  final IconData icon;
+  final String title, text;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.only(bottom: last ? 0 : 14),
+        child: Row(children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+                color: KhatuColors.softTeal,
+                borderRadius: BorderRadius.circular(12)),
+            child: Icon(icon, color: KhatuColors.deepTeal, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 2),
+                  Text(text,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          color: KhatuColors.muted,
+                          fontSize: 12.5)),
+                ]),
+          ),
+        ]),
+      );
+}
+
+class _Balance extends StatelessWidget {
+  const _Balance({required this.label, required this.value, required this.accent});
+  final String label;
+  final dynamic value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: KhatuColors.line),
+            borderRadius: BorderRadius.circular(KhatuRadius.md)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Container(
+                width: 7,
+                height: 7,
+                decoration:
+                    BoxDecoration(color: accent, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text(label,
+                style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: KhatuColors.muted,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700)),
+          ]),
+          const SizedBox(height: 8),
+          FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(kpMoney(value is num ? value : num.tryParse('$value') ?? 0),
+                  style: const TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 17))),
+        ]),
+      );
+}
+
+class _HomeSkeleton extends StatelessWidget {
+  const _HomeSkeleton();
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        for (final height in const [150.0, 280.0, 110.0])
+          Container(
+            height: height,
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+                color: KhatuColors.surfaceAlt,
+                borderRadius: BorderRadius.circular(KhatuRadius.lg)),
+          ),
+      ]);
+}

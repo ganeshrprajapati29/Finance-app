@@ -34,6 +34,14 @@ function providerAccepted(body = {}) {
   const status = firstText(body.status, body.verificationStatus, body.result).toUpperCase();
   const message = firstText(body.message, body.statusMessage, body.bankResponse).toLowerCase();
   const statusCode = Number(body.statusCode ?? body.code);
+  const isExplicitlyLive = body.isLive === true || body.live === true || body.liveness === true;
+  const isExplicitlyNotLive = body.isLive === false || body.live === false || body.liveness === false || falseFlag(body.isLive) || falseFlag(body.live) || falseFlag(body.liveness);
+  const score = numberValue(body.livenessScore, body.liveScore, body.score, body.confidence);
+  const reviewNeeded = truthyFlag(body.reviewNeeded) || truthyFlag(body.needsReview);
+
+  if (isExplicitlyNotLive || reviewNeeded) return false;
+  if (isExplicitlyLive || (score !== null && score >= 70)) return true;
+
   return body.success === true ||
     statusCode === 100 ||
     ['SUCCESS', 'VERIFIED', 'COMPLETED', 'LIVE', 'MATCHED', 'VALID'].includes(status) ||
@@ -91,12 +99,21 @@ export function livenessPassed(data = {}) {
     const multipleFaces = truthyFlag(body.multipleFacesDetected) || truthyFlag(body.multipleFaces);
     const reviewNeeded = truthyFlag(body.reviewNeeded) || truthyFlag(body.needsReview);
     const explicitNotLive = falseFlag(body.isLive) || falseFlag(body.live) || falseFlag(body.liveness);
-    return !multipleFaces && !reviewNeeded && (
-      body.isLive === true || body.live === true || body.liveness === true ||
+
+    if (multipleFaces || reviewNeeded || explicitNotLive) return false;
+
+    return body.isLive === true || body.live === true || body.liveness === true ||
       body.faceDetected === true || ['SUCCESS', 'VERIFIED', 'COMPLETED', 'LIVE'].includes(status) ||
-      (score !== null && score >= 70) || (!explicitNotLive && providerAccepted(body))
-    );
+      (score !== null && score >= 70) || providerAccepted(body);
   });
+}
+
+export function livenessRejected(data = {}) {
+  return candidateBodies(data).some((body) =>
+    falseFlag(body.isLive) || falseFlag(body.live) || falseFlag(body.liveness) ||
+    truthyFlag(body.multipleFacesDetected) || truthyFlag(body.multipleFaces) ||
+    falseFlag(body.faceDetected)
+  );
 }
 
 export function faceMatchPassed(data = {}) {

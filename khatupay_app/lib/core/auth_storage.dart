@@ -10,6 +10,9 @@ class AuthStorage {
   static const String _kRefresh = 'refreshToken';
   static const String _kLastIdentifier = 'lastIdentifier';
   static const String _kBiometricEnabled = 'biometricEnabled';
+  static const String _kDisplayName = 'displayName';
+  static const String _kAppLockEnabled = 'appLockEnabled';
+  static const String _kResumeRoute = 'resumeRoute';
 
   /// ✅ Save tokens
   static Future<void> saveTokens(String access, String refresh) async {
@@ -27,6 +30,29 @@ class AuthStorage {
   static Future<String?> getLastIdentifier() async {
     return await _storage.read(key: _kLastIdentifier);
   }
+
+  static Future<void> saveDisplayName(String name) async {
+    await _storage.write(key: _kDisplayName, value: name.trim());
+  }
+
+  static Future<String?> getDisplayName() async => _storage.read(key: _kDisplayName);
+
+  static Future<void> setAppLockEnabled(bool enabled) async {
+    await _storage.write(key: _kAppLockEnabled, value: enabled ? 'true' : 'false');
+  }
+
+  static Future<bool> isAppLockEnabled() async =>
+      await _storage.read(key: _kAppLockEnabled) == 'true';
+
+  /// Last safe in-app destination. This lets a user continue after an app
+  /// background/restore cycle without persisting any form values or secrets.
+  static Future<void> saveResumeRoute(String route) async {
+    await _storage.write(key: _kResumeRoute, value: route);
+  }
+
+  static Future<String?> getResumeRoute() => _storage.read(key: _kResumeRoute);
+
+  static Future<void> clearResumeRoute() => _storage.delete(key: _kResumeRoute);
 
   static Future<void> setBiometricEnabled(bool enabled) async {
     await _storage.write(key: _kBiometricEnabled, value: enabled ? 'true' : 'false');
@@ -55,8 +81,10 @@ class AuthStorage {
       final dio = Dio(BaseOptions(baseUrl: AppConfig.baseUrl));
       final res = await dio.post('/auth/refresh', data: {'refreshToken': refresh});
 
-      final newAccess = res.data['data']['accessToken'];
-      if (newAccess != null) {
+      final body = res.data;
+      final data = body is Map && body['data'] is Map ? body['data'] as Map : body;
+      final newAccess = data is Map ? data['accessToken']?.toString().trim() : null;
+      if (newAccess != null && newAccess.isNotEmpty) {
         await saveTokens(newAccess, refresh);
         return newAccess;
       }
@@ -71,6 +99,9 @@ class AuthStorage {
   static Future<void> clear() async {
     await _storage.delete(key: _kAccess);
     await _storage.delete(key: _kRefresh);
+    await _storage.delete(key: _kAppLockEnabled);
+    await _storage.delete(key: _kDisplayName);
+    await _storage.delete(key: _kResumeRoute);
   }
 
   /// ✅ Helpers for quick access

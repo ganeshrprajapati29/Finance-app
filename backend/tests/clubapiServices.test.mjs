@@ -119,6 +119,21 @@ test('explicit statuses map to completed / processing / failed', () => {
   );
 });
 
+test('bank validation normalizer extracts beneficiary and bank names', async () => {
+  const { normalizeClubapiBankValidation } = await import('../src/utils/clubapiVerification.js');
+  const parsed = normalizeClubapiBankValidation({
+    status: 'SUCCESS',
+    data: {
+      accountName: 'GANESH PRAJAPATI',
+      bankName: 'STATE BANK OF INDIA',
+    },
+  }, { accountNumber: '1234567890', ifscCode: 'SBIN0001234' });
+
+  assert.equal(parsed.isValid, true);
+  assert.equal(parsed.accountName, 'GANESH PRAJAPATI');
+  assert.equal(parsed.bankName, 'STATE BANK OF INDIA');
+});
+
 test('a rejection with an error and no orderId is a definitive failure', () => {
   const decision = decideTransactionOutcome({
     delivery: 'received',

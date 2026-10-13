@@ -1,7 +1,7 @@
 name: khatupay_app
 description: Khatu Pay mobile app
 publish_to: "none"
-version: 1.0.1+33
+version: 1.0.2+47
 environment:
   sdk: ">=3.3.0 <4.0.0"
 
@@ -37,6 +37,7 @@ dependencies:
   pin_code_fields: ^8.0.1
   package_info_plus: ^8.0.2
   in_app_update: ^4.2.5
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0
@@ -58,10 +59,13 @@ flutter:
 flutter_icons:
   android: true
   ios: true
-  image_path: "assets/playstore-icon.png"
+  image_path: "assets/brand/khatupay_app_icon_v2.png"
+  # Adaptive icon (Android 8+): artwork sits inside the launcher mask.
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/brand/khatupay_app_icon_foreground.png"
   web:
     generate: true
-    image_path: "assets/playstore-icon.png"
+    image_path: "assets/brand/khatupay_app_icon_v2.png"
     background_color: "#ffffff"
     theme_color: "#0F766E"
 

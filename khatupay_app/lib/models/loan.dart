@@ -22,15 +22,15 @@ class LoanApplication {
   });
 
   factory LoanApplication.fromJson(Map<String, dynamic> json) => LoanApplication(
-        amountRequested: json['amountRequested'] ?? 0,
-        tenureMonths: json['tenureMonths'] ?? 0,
-        purpose: json['purpose'] ?? '',
-        personal: json['personal'],
-        qualification: json['qualification'],
-        employment: json['employment'],
-        documents: json['documents'],
-        bankDetails: json['bankDetails'],
-        references: json['references'],
+        amountRequested: _numValue(json['amountRequested']),
+        tenureMonths: _numValue(json['tenureMonths']).toInt(),
+        purpose: json['purpose']?.toString() ?? '',
+        personal: _mapValue(json['personal']),
+        qualification: _mapValue(json['qualification']),
+        employment: _mapValue(json['employment']),
+        documents: _mapValue(json['documents']),
+        bankDetails: _mapValue(json['bankDetails']),
+        references: json['references'] is List ? json['references'] as List : const [],
       );
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +44,13 @@ class LoanApplication {
         'bankDetails': bankDetails,
         'references': references,
       };
+
+  static num _numValue(dynamic value) =>
+      value is num ? value : num.tryParse(value?.toString() ?? '') ?? 0;
+
+  static Map<String, dynamic>? _mapValue(dynamic value) => value is Map
+      ? Map<String, dynamic>.from(value)
+      : null;
 }
 
 class LoanDecision {
@@ -68,12 +75,12 @@ class LoanDecision {
     this.agreementStatus, this.agreementDocumentId, this.agreementSignedAt});
 
   factory LoanDecision.fromJson(Map<String, dynamic>? json) => LoanDecision(
-        amountApproved: json?['amountApproved'],
-        rateAPR: json?['rateAPR'],
-        tenureMonths: json?['tenureMonths'],
-        processingFee: json?['processingFee'],
-        taxAmount: json?['taxAmount'],
-        netDisbursalAmount: json?['netDisbursalAmount'],
+        amountApproved: _numValue(json?['amountApproved']),
+        rateAPR: _numValue(json?['rateAPR']),
+        tenureMonths: _intValue(json?['tenureMonths']),
+        processingFee: _numValue(json?['processingFee']),
+        taxAmount: _numValue(json?['taxAmount']),
+        netDisbursalAmount: _numValue(json?['netDisbursalAmount']),
         rejectionReason: json?['rejectionReason']?.toString(),
         lenderName: json?['lenderName']?.toString(),
         kfsUrl: json?['kfsUrl']?.toString(),
@@ -81,10 +88,19 @@ class LoanDecision {
         signedAgreementUrl: json?['signedAgreementUrl']?.toString(),
         agreementStatus: json?['agreementStatus']?.toString(),
         agreementDocumentId: json?['agreementDocumentId']?.toString(),
-        agreementSignedAt: json?['agreementSignedAt'] != null
-            ? DateTime.tryParse(json!['agreementSignedAt'].toString())
-            : null,
+        agreementSignedAt: _dateValue(json?['agreementSignedAt']),
       );
+
+  static num? _numValue(dynamic value) {
+    if (value == null) return null;
+    return value is num ? value : num.tryParse(value.toString());
+  }
+
+  static int? _intValue(dynamic value) => _numValue(value)?.toInt();
+
+  static DateTime? _dateValue(dynamic value) => value is DateTime
+      ? value
+      : DateTime.tryParse(value?.toString() ?? '');
 }
 
 class Loan {
@@ -116,28 +132,45 @@ class Loan {
     this.updatedAt,
   });
 
+  /// Agreement state as the server mirrors it on the decision
+  /// (PENDING_SIGNATURE / SIGNED / FAILED). The detail screen refines it with
+  /// GET /loans/:id/agreement, which also reports SIGNING.
+  String? get agreementStatus => decision?.agreementStatus;
+
   factory Loan.fromJson(Map<String, dynamic> json) => Loan(
-        id: json['_id'] ?? json['id'] ?? '',
+        id: (json['_id'] ?? json['id'] ?? '').toString(),
         loanAccountNumber: json['loanAccountNumber']?.toString() ?? '',
-        status: json['status'] ?? 'PENDING',
-        application: LoanApplication.fromJson(json['application'] ?? {}),
-        decision:
-            json['decision'] != null ? LoanDecision.fromJson(json['decision']) : null,
-        schedule: (json['schedule'] as List<dynamic>?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-        transactions: (json['transactions'] as List<dynamic>?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-        statusHistory: (json['statusHistory'] as List<dynamic>?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-        disbursement: json['disbursement'] is Map
-            ? Map<String, dynamic>.from(json['disbursement']) : null,
-        disbursementDate: json['disbursementDate'] != null
-            ? DateTime.tryParse(json['disbursementDate'])
+        status: json['status']?.toString() ?? 'PENDING',
+        application: LoanApplication.fromJson(_map(json['application'])),
+        decision: json['decision'] is Map
+            ? LoanDecision.fromJson(Map<String, dynamic>.from(json['decision']))
             : null,
-        createdAt: json['createdAt'] != null
-            ? DateTime.tryParse(json['createdAt'])
-            : null,
-        updatedAt: json['updatedAt'] != null
-            ? DateTime.tryParse(json['updatedAt'])
-            : null,
+        schedule: _mapList(json['schedule']),
+        transactions: _mapList(json['transactions']),
+        statusHistory: _mapList(json['statusHistory']),
+        disbursement: _mapOrNull(json['disbursement']),
+        disbursementDate: _date(json['disbursementDate']),
+        createdAt: _date(json['createdAt']),
+        updatedAt: _date(json['updatedAt']),
       );
+
+  static Map<String, dynamic> _map(dynamic value) => value is Map
+      ? Map<String, dynamic>.from(value)
+      : const <String, dynamic>{};
+
+  static Map<String, dynamic>? _mapOrNull(dynamic value) =>
+      value is Map ? Map<String, dynamic>.from(value) : null;
+
+  static List<Map<String, dynamic>> _mapList(dynamic value) => value is List
+      ? value
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList()
+      : const <Map<String, dynamic>>[];
+
+  static DateTime? _date(dynamic value) => value is DateTime
+      ? value
+      : DateTime.tryParse(value?.toString() ?? '');
 
   Map<String, dynamic> toJson() => {
         '_id': id,

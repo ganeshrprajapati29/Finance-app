@@ -61,12 +61,16 @@ class PaymentService {
 
   /* ------------------------------------------------------------- orders */
 
-  Future<Map<String, dynamic>> createRazorpayOrder(double amount,
-      {String? loanId, bool isFullPayment = false, int? installmentNo}) async {
+    Future<Map<String, dynamic>> createRazorpayOrder(double amount,
+      {String? loanId,
+      bool isFullPayment = false,
+      bool isPartPayment = false,
+      int? installmentNo}) async {
     final r = await _dio.post('/payments/razorpay/order', data: {
       'amount': amount,
       'loanId': loanId,
       'isFullPayment': isFullPayment,
+      'isPartPayment': isPartPayment,
       'installmentNo': installmentNo,
     });
     return _normalizeGatewayData(r.data['data']);

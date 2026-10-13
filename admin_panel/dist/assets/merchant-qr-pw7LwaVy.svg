@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400" role="img" aria-label="Shopkeeper accepting a UPI QR payment at a counter">
+  <title>Merchant accepting a UPI QR payment</title>
+
+  <defs>
+    <linearGradient id="mq-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8F8F4"/>
+      <stop offset="1" stop-color="#F7FAF9"/>
+    </linearGradient>
+    <linearGradient id="mq-counter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#075E54"/>
+    </linearGradient>
+    <linearGradient id="mq-phone" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#00A884"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="400" fill="url(#mq-bg)"/>
+
+  <!-- Ambient brand blooms -->
+  <circle cx="86" cy="70" r="58" fill="#00A884" opacity="0.10"/>
+  <circle cx="566" cy="336" r="74" fill="#F59E0B" opacity="0.12"/>
+
+  <!-- Shop awning -->
+  <path d="M96 74h288l-18 40H114z" fill="#F59E0B"/>
+  <path d="M114 114h252l-10 16H124z" fill="#EA580C" opacity="0.55"/>
+  <rect x="96" y="62" width="288" height="14" rx="7" fill="#B45309"/>
+
+  <!-- Shop board -->
+  <rect x="150" y="140" width="180" height="34" rx="8" fill="#FFFFFF" stroke="#E5ECEA" stroke-width="2"/>
+  <rect x="164" y="152" width="70" height="10" rx="5" fill="#0F766E"/>
+  <rect x="242" y="152" width="46" height="10" rx="5" fill="#D3DEDB"/>
+
+  <!-- Counter -->
+  <rect x="70" y="252" width="360" height="96" rx="12" fill="url(#mq-counter)"/>
+  <rect x="70" y="252" width="360" height="16" rx="8" fill="#14B8A6" opacity="0.55"/>
+
+  <!-- Shopkeeper behind the counter -->
+  <circle cx="192" cy="206" r="30" fill="#F59E0B"/>
+  <path d="M162 252c0-18 14-30 30-30s30 12 30 30z" fill="#FFFFFF"/>
+  <path d="M170 196c4-16 16-24 22-24s18 8 22 24c-14-8-30-8-44 0z" fill="#0F172A" opacity="0.75"/>
+
+  <!-- QR stand on the counter -->
+  <rect x="292" y="176" width="116" height="128" rx="12" fill="#FFFFFF" stroke="#E5ECEA" stroke-width="2"/>
+  <rect x="292" y="176" width="116" height="24" rx="12" fill="#0F766E"/>
+  <rect x="308" y="184" width="52" height="8" rx="4" fill="#FFFFFF" opacity="0.85"/>
+
+  <!-- QR code glyph -->
+  <g fill="#08201E">
+    <rect x="308" y="212" width="24" height="24" rx="4"/>
+    <rect x="368" y="212" width="24" height="24" rx="4"/>
+    <rect x="308" y="264" width="24" height="24" rx="4"/>
+    <rect x="342" y="212" width="8" height="8"/>
+    <rect x="342" y="228" width="8" height="8"/>
+    <rect x="342" y="248" width="8" height="8"/>
+    <rect x="358" y="248" width="8" height="8"/>
+    <rect x="374" y="248" width="8" height="8"/>
+    <rect x="374" y="264" width="8" height="8"/>
+    <rect x="358" y="280" width="8" height="8"/>
+    <rect x="384" y="280" width="8" height="8"/>
+  </g>
+  <g fill="#FFFFFF">
+    <rect x="314" y="218" width="12" height="12" rx="2"/>
+    <rect x="374" y="218" width="12" height="12" rx="2"/>
+    <rect x="314" y="270" width="12" height="12" rx="2"/>
+  </g>
+
+  <!-- Customer phone scanning -->
+  <rect x="462" y="120" width="112" height="196" rx="20" fill="url(#mq-phone)"/>
+  <rect x="474" y="136" width="88" height="164" rx="12" fill="#FFFFFF"/>
+  <rect x="500" y="126" width="36" height="6" rx="3" fill="#FFFFFF" opacity="0.6"/>
+
+  <!-- Scan frame on the phone screen -->
+  <g stroke="#00A884" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M492 172v-12a6 6 0 0 1 6-6h12"/>
+    <path d="M544 154h12a6 6 0 0 1 6 6v12"/>
+    <path d="M562 250v12a6 6 0 0 1-6 6h-12"/>
+    <path d="M510 268h-12a6 6 0 0 1-6-6v-12"/>
+  </g>
+  <rect x="504" y="188" width="46" height="46" rx="6" fill="#0F766E" opacity="0.18"/>
+
+  <!-- Success tick -->
+  <circle cx="518" cy="284" r="17" fill="#16A34A"/>
+  <path d="M510 284l6 6 11-12" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- Payment received chip -->
+  <g>
+    <rect x="404" y="72" width="176" height="44" rx="22" fill="#FFFFFF" stroke="#E5ECEA" stroke-width="2"/>
+    <circle cx="428" cy="94" r="13" fill="#ECFDF5"/>
+    <path d="M422 94l4 4 8-8" stroke="#16A34A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <rect x="450" y="82" width="82" height="9" rx="4.5" fill="#0F172A" opacity="0.8"/>
+    <rect x="450" y="98" width="56" height="8" rx="4" fill="#64748B" opacity="0.55"/>
+  </g>
+
+  <!-- Rupee coins -->
+  <g>
+    <circle cx="118" cy="300" r="20" fill="#F59E0B"/>
+    <text x="118" y="308" font-family="Inter, Segoe UI, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF" text-anchor="middle">₹</text>
+  </g>
+  <circle cx="160" cy="316" r="12" fill="#FCD34D"/>
+</svg>

@@ -116,6 +116,19 @@ export default function BusinessQR() {
       setSaving(false)
     }
   }
+  const syncProvider = async () => {
+    if (!selected) return
+    setSaving(true)
+    try {
+      // An application that has not reached Razorpay yet (queued) is sent;
+      // one that is already there is only refreshed.
+      const action = selected.business?.razorpay?.productId ? 'provider-sync' : 'provider-onboard'
+      const response = await api.post(`/admin/merchant-businesses/${selected.business._id}/${action}`)
+      setNotice(response.data?.message || 'Razorpay status updated.')
+      replaceRow(response.data?.data?.row)
+    } catch (requestError) { setError(requestError.response?.data?.message || 'Razorpay status could not be updated.') }
+    finally { setSaving(false) }
+  }
 
   return (
     <div className="container-fluid py-3">
@@ -155,7 +168,7 @@ export default function BusinessQR() {
           </div>
         </Card.Body>
       </Card>
-      <BusinessModal row={selected} onHide={() => setSelected(null)} onDecision={decide} onBankStatus={updateBankStatus} onQrStatus={updateQrStatus} saving={saving} />
+      <BusinessModal row={selected} onHide={() => setSelected(null)} onDecision={decide} onBankStatus={updateBankStatus} onQrStatus={updateQrStatus} onProviderSync={syncProvider} saving={saving} />
     </div>
   )
 }
@@ -170,17 +183,13 @@ function BusinessRow({ row, onView }) {
   return <tr><td><strong>{business.businessName || 'Unnamed business'}</strong><small className="d-block text-muted">{business.ownerName || 'N/A'} | {business.mobile || 'N/A'}</small><small className="d-block text-muted">{business.publicId || 'N/A'}</small></td><td><Badge bg={statusTone(row.kyc?.status)} className="me-1">KYC {row.kyc?.status || 'PENDING'}</Badge><Badge bg={statusTone(row.bank?.status)}>Bank {row.bank?.status || 'PENDING'}</Badge></td><td><Badge bg={statusTone(qrStatus)}>{String(qrStatus).replaceAll('_', ' ')}</Badge>{row.qr?.qrReference && <small className="d-block text-muted">{row.qr.qrReference}</small>}</td><td><strong>{money(row.payments?.collectedAmount)}</strong><small className="d-block text-muted">{row.payments?.successful || 0} successful / {row.payments?.total || 0} total</small></td><td><strong>{money(row.settlements?.settledAmount)}</strong><small className="d-block text-muted">Pending {money(row.settlements?.pendingAmount)}</small></td><td><Badge bg={statusTone(business.status)}>{String(business.status || 'DRAFT').replaceAll('_', ' ')}</Badge></td><td className="text-end"><Button size="sm" variant="outline-primary" title="View business" onClick={onView}><Eye size={16} /></Button></td></tr>
 }
 
-function BusinessModal({ row, onHide, onDecision, onBankStatus, onQrStatus, saving }) {
+function BusinessModal({ row, onHide, onDecision, onBankStatus, onQrStatus, onProviderSync, saving }) {
   if (!row) return null
   const business = row.business || {}
   const bank = row.bank || {}
   const verification = bank.verificationData || {}
-  const businessApproved = String(business.status || '').toUpperCase() === 'APPROVED'
   const qrStatus = String(row.qr?.status || '').toUpperCase()
   const qrActive = qrStatus === 'ACTIVE'
-  const qrDisabled = qrStatus === 'DISABLED'
-  const approvalBlocked = !canActivateQr(row)
-  const primaryLabel = businessApproved && !qrActive ? 'Activate QR' : 'Approve & activate QR'
 
   return (
     <Modal show onHide={onHide} size="xl" centered>
@@ -202,24 +211,23 @@ function BusinessModal({ row, onHide, onDecision, onBankStatus, onQrStatus, savi
               {row.qr?.payload && <Button size="sm" variant="outline-primary" onClick={() => navigator.clipboard?.writeText(row.qr.payload)}><Copy size={15} className="me-1" />Copy QR payment link</Button>}
               {row.qr?.paymentUrl && <Button size="sm" variant="outline-secondary" onClick={() => window.open(row.qr.paymentUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15} className="me-1" />Open payment page</Button>}
               {qrActive && <Button size="sm" variant="outline-danger" disabled={saving} onClick={() => onQrStatus('DISABLED')}><Ban size={15} className="me-1" />Disable QR</Button>}
-              {qrDisabled && <Button size="sm" variant="outline-success" disabled={saving || approvalBlocked} onClick={() => onQrStatus('ACTIVE')}><Power size={15} className="me-1" />Enable QR</Button>}
             </div>
           </Col>
           <Col xl={7}>
-            <Detail title="KYC and bank verification" items={[['KYC', row.kyc?.status || 'PENDING'], ['Business type', row.kyc?.businessType || 'N/A'], ['GST', row.kyc?.gstNumber || 'Not provided'], ['Business proof', row.kyc?.documents?.businessProofUrl || 'N/A'], ['Bank', bank.bankName || 'N/A'], ['Account holder', bank.accountHolderName || 'N/A'], ['Account', bank.accountNumberMasked || 'N/A'], ['IFSC', bank.ifscCode || 'N/A'], ['Bank status', bank.status || 'PENDING'], ['Bank provider', bank.verificationProvider || 'N/A'], ['Verification ref', bank.verificationReference || 'N/A'], ['Verification message', bank.verificationMessage || verification.message || 'N/A'], ['Provider response', verification.bankResponse || verification.signcare?.message || 'N/A'], ['Review reason', verification.reviewReason || 'N/A']]} />
+            <Detail title="KYC and bank verification" items={[['KYC', row.kyc?.status || 'PENDING'], ['Business type', row.kyc?.businessType || 'N/A'], ['GST', row.kyc?.gstNumber || 'Not provided'], ['Business proof', row.kyc?.documents?.businessProofUrl || 'Not uploaded'], ['Address proof', row.kyc?.documents?.addressProofUrl || 'Not uploaded'], ['GST certificate', row.kyc?.documents?.gstCertificateUrl || 'Not uploaded'], ['Certificate of incorporation', row.kyc?.documents?.incorporationCertificateUrl || 'Not uploaded'], ['Stakeholder proof', row.kyc?.documents?.stakeholderProofUrl || 'Not uploaded'], ['Bank', bank.bankName || 'N/A'], ['Account holder', bank.accountHolderName || 'N/A'], ['Account', bank.accountNumberMasked || 'N/A'], ['IFSC', bank.ifscCode || 'N/A'], ['Bank status', bank.status || 'PENDING'], ['Bank provider', bank.verificationProvider || 'N/A'], ['Verification ref', bank.verificationReference || 'N/A'], ['Verification message', bank.verificationMessage || verification.message || 'N/A'], ['Provider response', verification.bankResponse || verification.signcare?.message || 'N/A'], ['Review reason', verification.reviewReason || 'N/A']]} />
             {bank._id && <div className="d-flex flex-wrap gap-2 mb-3"><Button size="sm" variant="outline-warning" disabled={saving || String(bank.status || '').toUpperCase() === 'REVIEW'} onClick={() => onBankStatus('REVIEW')}>Mark bank REVIEW</Button><Button size="sm" variant="outline-success" disabled={saving || String(bank.status || '').toUpperCase() === 'VERIFIED'} onClick={() => onBankStatus('VERIFIED')}>Mark bank VERIFIED</Button></div>}
-            <Detail title="Business QR and collections" items={[['QR status', row.qr?.status || 'Not generated'], ['QR reference', row.qr?.qrReference || business.publicId || 'N/A'], ['Provider', row.qr?.provider || 'VELXAPAY'], ['Collection mode', row.qr?.collectionMode || 'VELXAPAY_CHECKOUT'], ['Payment page', row.qr?.paymentUrl || 'N/A'], ['QR payload', row.qr?.payload || 'N/A'], ['Disabled reason', row.qr?.disabledReason || 'N/A'], ['Successful collections', `${row.payments?.successful || 0} of ${row.payments?.total || 0}`], ['Amount received', money(row.payments?.collectedAmount)], ['Settlement pending', money(row.settlements?.pendingAmount)], ['Settlement completed', money(row.settlements?.settledAmount)]]} />
+            <Detail title="Razorpay onboarding" items={[['Account ID', business.razorpay?.accountId || 'Not submitted'], ['Stakeholder ID', business.razorpay?.stakeholderId || 'Not submitted'], ['Product ID', business.razorpay?.productId || 'Awaiting Razorpay'], ['Account status', business.razorpay?.accountStatus || business.status || 'Draft'], ['Product status', business.razorpay?.productStatus || 'Awaiting Razorpay'], ['Application', !business.onboardingRequest ? 'Owner has not submitted business details' : business.razorpay?.providerState === 'QUEUED' ? 'Queued - waiting for Razorpay access' : 'Submitted'], ['Last provider message', business.razorpay?.lastProviderError || 'None'], ['Owner setup progress', `${row.onboarding?.progress ?? 0}%${row.onboarding?.nextStep ? ` (next: ${row.onboarding.nextStep})` : ''}`], ['Requirements', (row.onboarding?.requirements || []).map((item) => `${item.label} (${item.reason})`).join(', ') || 'None']]} />
+            <Detail title="Business QR and collections" items={[['QR status', row.qr?.status || 'Not generated'], ['QR reference', row.qr?.qrReference || business.publicId || 'N/A'], ['Provider', row.qr?.provider || 'Razorpay Partner'], ['Collection mode', row.qr?.collectionMode || 'Awaiting Razorpay activation'], ['Payment page', row.qr?.paymentUrl || 'N/A'], ['Disabled reason', row.qr?.disabledReason || 'N/A'], ['Successful collections', `${row.payments?.successful || 0} of ${row.payments?.total || 0}`], ['Amount received', money(row.payments?.collectedAmount)], ['Settlement pending', money(row.settlements?.pendingAmount)], ['Settlement completed', money(row.settlements?.settledAmount)]]} />
           </Col>
         </Row>
 
-        {approvalBlocked && <Alert variant="warning" className="mt-3 mb-0">Bank account must be VERIFIED or REVIEW before QR can be activated.</Alert>}
+        <Alert variant="info" className="mt-3 mb-0">Razorpay controls payment-product approval, QR activation, collections and settlement status. This panel shows the provider status and allows only internal bank review or disabling an already-issued QR.</Alert>
         <QrStatusHistory rows={row.qr?.statusHistory || []} />
         <PaymentHistory rows={row.history?.payments || []} />
         <SettlementHistory rows={row.history?.settlements || []} />
       </Modal.Body>
       <Modal.Footer>
-        {!businessApproved && <Button variant="outline-danger" disabled={saving} onClick={() => onDecision('REJECTED')}><XCircle size={16} className="me-1" />Reject</Button>}
-        {(!businessApproved || !qrActive) && <Button disabled={saving || approvalBlocked} onClick={() => onDecision('APPROVED')} title={approvalBlocked ? 'Bank account must be verified or marked for review first' : primaryLabel}>{saving ? 'Saving...' : <><CheckCircle2 size={16} className="me-1" />{primaryLabel}</>}</Button>}
+        <Button variant="outline-primary" disabled={saving || (!business.razorpay?.productId && !business.onboardingRequest)} onClick={onProviderSync}><RefreshCw size={16} className="me-1" />{business.razorpay?.productId ? 'Refresh Razorpay status' : 'Send application to Razorpay'}</Button>
         <Button variant="secondary" onClick={onHide}>Close</Button>
       </Modal.Footer>
     </Modal>
@@ -244,9 +252,9 @@ function QrPreview({ row }) {
           {qr.qrImageDataUrl ? <img src={qr.qrImageDataUrl} alt="Business UPI QR" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div className="h-100 d-flex align-items-center justify-content-center text-muted small px-3">Refresh QR to create preview image</div>}
           <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', width: 46, height: 46, display: 'grid', placeItems: 'center', borderRadius: 14, background: '#fff', border: '1px solid #e5e7eb' }}><img src={khatuLogo} alt="" style={{ width: 34, height: 34, objectFit: 'contain' }} /></div>
         </div>
-        <Badge bg={qr.status === 'ACTIVE' ? 'success' : 'danger'} className="mt-3">{qr.status === 'ACTIVE' ? 'SECURE VELXAPAY QR' : 'QR DISABLED'}</Badge>
+        <Badge bg={qr.status === 'ACTIVE' ? 'success' : 'danger'} className="mt-3">{qr.status === 'ACTIVE' ? 'RAZORPAY BUSINESS QR' : 'QR DISABLED'}</Badge>
         <div className="mt-2 fw-bold text-break">{qr.qrReference}</div>
-        <small className="text-muted">Scan opens Khatu Pay payment page and creates VelxaPay checkout</small>
+        <small className="text-muted">QR collections are enabled only after Razorpay product activation.</small>
       </div>
     </div>
   )

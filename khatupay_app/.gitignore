@@ -43,6 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/key.properties
+/android/*.jks
+/android/app/*.jks
 node_modules/
 *.log
 .env
+
+# Firebase Admin SDK keys are server-only secrets; never keep them in the app
+*firebase-adminsdk*.json

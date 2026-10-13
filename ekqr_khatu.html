@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KhatuPay Business QR UI</title>
+  <style>
+    :root {
+      --navy: #061735;
+      --blue: #073b8e;
+      --blue2: #0b5fd7;
+      --green: #12b886;
+      --mint: #e8fff7;
+      --soft: #f5f9ff;
+      --line: #e3ebf7;
+      --muted: #66758f;
+      --card: #ffffff;
+      --shadow: 0 22px 60px rgba(7, 59, 142, .14);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--navy);
+      background:
+        radial-gradient(circle at 16% 8%, rgba(18, 184, 134, .14), transparent 28%),
+        radial-gradient(circle at 84% 4%, rgba(11, 95, 215, .14), transparent 30%),
+        linear-gradient(180deg, #fbfdff 0%, #eef6ff 58%, #ffffff 100%);
+    }
+
+    .wrap {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px 18px;
+      border: 1px solid rgba(227, 235, 247, .9);
+      border-radius: 26px;
+      background: rgba(255,255,255,.88);
+      box-shadow: 0 12px 34px rgba(6, 23, 53, .08);
+      backdrop-filter: blur(14px);
+    }
+
+    .logo {
+      width: 160px;
+      height: auto;
+      display: block;
+    }
+
+    .top-title { text-align: right; }
+    .top-title strong { display: block; font-size: 18px; letter-spacing: 0; }
+    .top-title span { color: var(--muted); font-size: 13px; font-weight: 700; }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(280px, 1fr));
+      gap: 28px;
+      padding: 34px 0;
+      align-items: start;
+    }
+
+    .phone {
+      position: relative;
+      min-height: 690px;
+      border: 9px solid var(--navy);
+      border-radius: 40px;
+      background: #f7fbff;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      top: 9px;
+      left: 50%;
+      width: 104px;
+      height: 23px;
+      transform: translateX(-50%);
+      border-radius: 999px;
+      background: var(--navy);
+      z-index: 3;
+    }
+
+    .screen {
+      min-height: 672px;
+      padding: 34px 17px 84px;
+      background:
+        linear-gradient(135deg, rgba(11, 95, 215, .06), transparent 34%),
+        linear-gradient(180deg, #ffffff 0%, #f6fbff 100%);
+    }
+
+    .appbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 46px;
+    }
+
+    .appbar h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .appbar small {
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .avatar, .icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      background: #eef6ff;
+      color: var(--blue);
+      font-weight: 950;
+      flex: 0 0 auto;
+    }
+
+    .card {
+      margin-top: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--card);
+      box-shadow: 0 12px 28px rgba(7, 59, 142, .08);
+    }
+
+    .blue-card {
+      color: white;
+      background: linear-gradient(135deg, var(--blue), var(--blue2) 68%, var(--green));
+      border: 0;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .stack { display: grid; gap: 10px; }
+    .mt { margin-top: 16px; }
+
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .value {
+      margin-top: 4px;
+      font-size: 22px;
+      font-weight: 950;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #eef6ff;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .chip.green { background: var(--mint); color: #087a5c; }
+    .chip.pending { background: #fff5dd; color: #9a6500; }
+    .chip.fail { background: #fff0f0; color: #c03636; }
+    .blue-card .chip { background: rgba(255,255,255,.18); color: #fff; }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .mini {
+      min-height: 84px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: #fff;
+    }
+
+    .input {
+      min-height: 47px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 13px;
+      border: 1px solid #dce7f6;
+      border-radius: 16px;
+      background: #fbfdff;
+      color: #61708b;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .btn {
+      width: 100%;
+      min-height: 50px;
+      border: 0;
+      border-radius: 17px;
+      background: linear-gradient(135deg, var(--blue), var(--blue2));
+      color: #fff;
+      font-size: 14px;
+      font-weight: 950;
+      box-shadow: 0 16px 28px rgba(11, 95, 215, .22);
+    }
+
+    .btn.light {
+      background: #eef6ff;
+      color: var(--blue);
+      box-shadow: none;
+    }
+
+    .tx {
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+    }
+
+    .tx strong, .tx p { margin: 0; font-size: 13px; font-weight: 950; }
+    .tx small { color: var(--muted); font-size: 11px; font-weight: 750; }
+
+    .qr-panel {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      border-radius: 28px;
+      background: linear-gradient(180deg, #eef7ff, #fff);
+      border: 1px solid #dbe8ff;
+    }
+
+    .qr {
+      width: 210px;
+      height: 210px;
+      display: grid;
+      place-items: center;
+      border: 10px solid #fff;
+      border-radius: 28px;
+      background: #fff;
+      box-shadow: inset 0 0 0 1px #dbe8ff, 0 18px 40px rgba(7, 59, 142, .14);
+    }
+
+    .qr-art {
+      width: 155px;
+      height: 155px;
+      background:
+        linear-gradient(90deg, var(--navy) 14px, transparent 14px 28px, var(--navy) 28px 44px, transparent 44px 58px, var(--navy) 58px 74px, transparent 74px 88px, var(--navy) 88px 104px, transparent 104px 118px, var(--navy) 118px 132px, transparent 132px),
+        linear-gradient(var(--navy) 14px, transparent 14px 28px, var(--navy) 28px 44px, transparent 44px 58px, var(--navy) 58px 74px, transparent 74px 88px, var(--navy) 88px 104px, transparent 104px 118px, var(--navy) 118px 132px, transparent 132px);
+      background-size: 155px 155px;
+      border: 9px solid #fff;
+      outline: 3px solid var(--navy);
+    }
+
+    .logo-in-qr {
+      position: absolute;
+      width: 54px;
+      height: 54px;
+      padding: 5px;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 8px 20px rgba(6, 23, 53, .18);
+    }
+
+    .nav {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
+      padding: 7px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 16px 34px rgba(6, 23, 53, .12);
+      backdrop-filter: blur(14px);
+    }
+
+    .nav span {
+      display: grid;
+      gap: 3px;
+      place-items: center;
+      padding: 8px 2px;
+      border-radius: 18px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .nav .active {
+      background: #eef6ff;
+      color: var(--blue);
+    }
+
+    .steps {
+      display: grid;
+      gap: 11px;
+      margin-top: 12px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      align-items: center;
+      gap: 10px;
+      min-height: 56px;
+      padding: 10px;
+      border-radius: 17px;
+      background: #fff;
+      border: 1px solid var(--line);
+      font-weight: 900;
+      font-size: 13px;
+    }
+
+    .step span:first-child {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: var(--navy);
+      color: #fff;
+    }
+
+    .safe {
+      padding: 12px;
+      border-radius: 18px;
+      background: var(--mint);
+      color: #087a5c;
+      font-size: 12px;
+      font-weight: 850;
+      line-height: 1.45;
+    }
+
+    .screen-name {
+      margin: 0 0 11px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+      font-weight: 950;
+      letter-spacing: 0;
+    }
+
+    @media (max-width: 1240px) {
+      .board { grid-template-columns: repeat(3, minmax(280px, 1fr)); }
+    }
+
+    @media (max-width: 920px) {
+      .board { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
+    }
+
+    @media (max-width: 620px) {
+      .wrap { padding: 12px; }
+      .top { align-items: flex-start; }
+      .logo { width: 132px; }
+      .top-title strong { font-size: 15px; }
+      .top-title span { font-size: 11px; }
+      .board { grid-template-columns: 1fr; gap: 22px; }
+      .phone { width: min(390px, 100%); margin: 0 auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <img class="logo" src="khatupay_app/assets/khatulogo-removebg-preview.png" alt="KhatuPay" />
+      <div class="top-title">
+        <strong>KhatuPay Business</strong>
+        <span>QR, Payments, Settlements & Payouts</span>
+      </div>
+    </header>
+
+    <main class="board">
+      <section>
+        <p class="screen-name">01. Dashboard</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar">
+              <div><small>Good Morning</small><h2>Rahul</h2></div>
+              <div class="avatar">K</div>
+            </div>
+            <div class="card blue-card">
+              <div class="row">
+                <div><div class="label" style="color:#dcecff;">Business</div><div style="font-size:18px;font-weight:950;">Rahul Mobile & Electronics</div></div>
+                <span class="chip">Active</span>
+              </div>
+              <div class="row mt"><span class="chip">Verified Business</span><span class="chip">KHP-MER-10284</span></div>
+            </div>
+            <div class="grid2 mt">
+              <div class="mini"><div class="label">Today's Collections</div><div class="value">₹24,850</div></div>
+              <div class="mini"><div class="label">Transactions</div><div class="value">48</div></div>
+              <div class="mini"><div class="label">Pending</div><div class="value">₹1,250</div></div>
+              <div class="mini"><div class="label">Settled</div><div class="value">₹23,600</div></div>
+            </div>
+            <div class="card">
+              <div class="row">
+                <div><h2 style="font-size:18px;">Your KhatuPay QR</h2><small class="label">Accept customer payments</small></div>
+                <div class="icon">QR</div>
+              </div>
+              <div class="grid2 mt"><button class="btn">View QR</button><button class="btn light">Share</button></div>
+            </div>
+            <div class="row mt"><div class="icon">₹</div><div class="icon">QR</div><div class="icon">↗</div><div class="icon">✓</div></div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">R</div><div><p>Rahul Kumar</p><small>UPI Payment</small></div><strong>₹850</strong></div>
+              <div class="tx"><div class="avatar">A</div><div><p>Amit Sharma</p><small>UPI Payment</small></div><strong>₹1,500</strong></div>
+              <div class="tx"><div class="avatar">P</div><div><p>Priya Verma</p><small>Pending</small></div><strong>₹450</strong></div>
+            </div>
+          </div>
+          <div class="nav"><span class="active">⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">02. Business Profile</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Create Business Profile</h2><span class="chip">Step 1/4</span></div>
+            <div class="card blue-card"><div style="font-size:20px;font-weight:950;">Business Details</div><div style="margin-top:7px;color:#dcecff;font-weight:750;">Quick setup for merchants.</div></div>
+            <div class="stack mt">
+              <div class="input">Business Name <span>Rahul Mobile</span></div>
+              <div class="input">Business Type <span>Retail</span></div>
+              <div class="input">Owner Name <span>Rahul Singh</span></div>
+              <div class="input">Mobile Number <span>98******10</span></div>
+              <div class="input">Email Address</div>
+              <div class="input">Business Address</div>
+              <div class="grid2"><div class="input">City</div><div class="input">State</div></div>
+              <div class="input">PIN Code</div>
+            </div>
+            <button class="btn mt">Continue</button>
+          </div>
+          <div class="nav"><span class="active">⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">03. KYC</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Verify Business</h2><span class="chip">Step 2/4</span></div>
+            <div class="card"><div class="row"><div><strong>PAN Card</strong><br><small class="label">Owner document</small></div><span class="chip pending">Pending</span></div></div>
+            <div class="card"><div class="row"><div><strong>Business Certificate</strong><br><small class="label">Registration document</small></div><span class="chip pending">Pending</span></div></div>
+            <div class="card"><div class="row"><div><strong>GST Certificate</strong><br><small class="label">Optional</small></div><span class="chip">Upload</span></div></div>
+            <div class="card"><div class="row"><div><strong>Authorized Person KYC</strong><br><small class="label">Identity verification</small></div><span class="chip pending">Pending</span></div></div>
+            <div class="safe mt">Your information is securely processed for verification.</div>
+            <button class="btn mt">Submit for Verification</button>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span class="active">◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">04. Bank Account</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Settlement Bank</h2><span class="chip">Step 3/4</span></div>
+            <div class="card blue-card"><div class="row"><div><div class="label" style="color:#dcecff;">Verification</div><div style="font-size:22px;font-weight:950;">Pending</div></div><div class="icon" style="background:rgba(255,255,255,.18);color:#fff;">🏦</div></div></div>
+            <div class="stack mt">
+              <div class="input">Account Holder Name</div>
+              <div class="input">Bank Account Number</div>
+              <div class="input">Confirm Account Number</div>
+              <div class="input">IFSC Code</div>
+              <div class="input">Bank Name</div>
+            </div>
+            <div class="safe mt">Payments are settled only to the verified bank account.</div>
+            <button class="btn mt">Verify & Continue</button>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span class="active">₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">05. Verified</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Business Verified</h2><span class="chip green">Step 4/4</span></div>
+            <div class="card blue-card" style="text-align:center;padding:28px 16px;"><div class="avatar" style="margin:0 auto 14px;background:#fff;color:var(--green);font-size:22px;">✓</div><div style="font-size:24px;font-weight:950;">Verification Complete</div><div style="margin-top:8px;color:#dcecff;font-weight:750;">Rahul Mobile & Electronics</div></div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">B</div><div><p>Business</p><small>Retail store</small></div><span class="chip green">Verified</span></div>
+              <div class="tx"><div class="avatar">H</div><div><p>HDFC Bank</p><small>XXXX XXXX 4821</small></div><span class="chip green">Verified</span></div>
+              <div class="tx"><div class="avatar">P</div><div><p>Payment Account</p><small>Linked Account</small></div><span class="chip green">Active</span></div>
+            </div>
+            <button class="btn mt">Create My QR</button>
+            <button class="btn light mt">Go to Dashboard</button>
+          </div>
+          <div class="nav"><span class="active">⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">06. Business QR</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Your Business QR</h2><span class="chip green">Active</span></div>
+            <div class="qr-panel mt">
+              <div class="avatar" style="width:64px;height:64px;border-radius:22px;margin-bottom:12px;">K</div>
+              <strong>Rahul Mobile & Electronics</strong>
+              <small class="label" style="margin:7px 0 16px;">Scan to Pay</small>
+              <div class="qr" style="position:relative;"><div class="qr-art"></div><img class="logo-in-qr" src="khatupay_app/assets/khatulogo-removebg-preview.png" alt="" /></div>
+              <span class="chip mt">KHP-MER-10284</span>
+            </div>
+            <div class="grid2 mt"><button class="btn">Download</button><button class="btn light">Share</button></div>
+            <button class="btn light mt">Print QR</button>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span class="active">▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">07. Customer Payment</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Pay Merchant</h2><span class="chip">UPI</span></div>
+            <div class="card blue-card"><div class="row"><div class="avatar" style="background:#fff;color:var(--blue);">RM</div><div style="flex:1;"><div style="font-size:18px;font-weight:950;">Rahul Mobile & Electronics</div><div style="color:#dcecff;font-weight:750;font-size:12px;">Verified merchant</div></div></div></div>
+            <div class="card">
+              <div class="label">Amount</div>
+              <div style="font-size:42px;font-weight:950;margin:8px 0 16px;">₹1,250</div>
+              <div class="input">Add a note <span>Optional</span></div>
+              <div class="grid2 mt"><div class="mini"><div class="icon">U</div><strong>UPI App</strong></div><div class="mini"><div class="icon">🏦</div><strong>Bank UPI</strong></div></div>
+              <button class="btn mt">Pay Securely</button>
+            </div>
+            <div class="safe mt">Status updates: Successful, Pending, Failed or Refunded.</div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span class="active">▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">08. Payment Success</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="card blue-card" style="text-align:center;margin-top:28px;padding:30px 16px;"><div class="avatar" style="margin:0 auto 16px;background:#fff;color:var(--green);font-size:24px;">✓</div><div style="font-size:25px;font-weight:950;">Payment Successful</div><div style="font-size:42px;font-weight:950;margin-top:12px;">₹1,250</div></div>
+            <div class="card"><div class="stack"><div class="row"><span class="label">Paid To</span><strong>Rahul Mobile & Electronics</strong></div><div class="row"><span class="label">Payment ID</span><strong>KHP-PAY-839284</strong></div><div class="row"><span class="label">Date</span><strong>12 Sep 2026</strong></div><div class="row"><span class="label">Time</span><strong>10:42 PM</strong></div><div class="row"><span class="label">Status</span><span class="chip green">Successful</span></div></div></div>
+            <button class="btn mt">View Transaction</button>
+            <button class="btn light mt">Back to Business</button>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span class="active">↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">09. Transactions</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Transactions</h2><span class="chip">Today</span></div>
+            <div class="grid2 mt"><div class="mini"><div class="label">Total Received</div><div class="value">₹1,84,650</div></div><div class="mini"><div class="label">Successful</div><div class="value">₹1,72,400</div></div><div class="mini"><div class="label">Pending</div><div class="value">₹7,250</div></div><div class="mini"><div class="label">Refunded</div><div class="value">₹5,000</div></div></div>
+            <div class="row mt"><span class="chip green">Today</span><span class="chip">7 Days</span><span class="chip">30 Days</span><span class="chip">Custom</span></div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">12</div><div><p>Rahul Kumar</p><small>Successful</small></div><strong>₹850</strong></div>
+              <div class="tx"><div class="avatar">12</div><div><p>Amit Sharma</p><small>Successful</small></div><strong>₹1,500</strong></div>
+              <div class="tx"><div class="avatar">11</div><div><p>Priya Verma</p><small>Successful</small></div><strong>₹2,100</strong></div>
+              <div class="tx"><div class="avatar">10</div><div><p>Ankit Singh</p><small>Refunded</small></div><strong>₹750</strong></div>
+            </div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span class="active">↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">10. Transaction Detail</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Transaction Details</h2><span class="chip green">Success</span></div>
+            <div class="card blue-card" style="text-align:center;"><div class="label" style="color:#dcecff;">Amount</div><div style="font-size:42px;font-weight:950;">₹1,500</div></div>
+            <div class="card stack"><div class="row"><span class="label">Merchant</span><strong>Rahul Mobile</strong></div><div class="row"><span class="label">Customer</span><strong>Amit Sharma</strong></div><div class="row"><span class="label">Method</span><strong>UPI</strong></div><div class="row"><span class="label">Payment ID</span><strong>KHP-PAY-728391</strong></div><div class="row"><span class="label">Created</span><strong>12 Sep, 09:38 PM</strong></div></div>
+            <div class="steps"><div class="step"><span>1</span><span>Payment Initiated</span></div><div class="step"><span>2</span><span>Payment Successful</span></div><div class="step"><span>3</span><span>Settlement Initiated</span></div><div class="step"><span>4</span><span>Settlement Completed</span></div></div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span class="active">↗<b>Txns</b></span><span>₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">11. Settlements</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Settlements</h2><span class="chip">HDFC</span></div>
+            <div class="card blue-card"><div class="label" style="color:#dcecff;">Available Balance</div><div style="font-size:38px;font-weight:950;">₹18,450</div><div class="row mt"><span>Next Settlement</span><strong>₹12,850</strong></div></div>
+            <div class="card"><div class="row"><div><strong>Settlement Account</strong><br><small class="label">HDFC Bank XXXX 4821</small></div><span class="chip green">Verified</span></div></div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">12</div><div><p>SET-839284</p><small>48 payments</small></div><strong>₹23,600</strong></div>
+              <div class="tx"><div class="avatar">11</div><div><p>SET-839112</p><small>Completed</small></div><strong>₹18,250</strong></div>
+              <div class="tx"><div class="avatar">10</div><div><p>SET-838940</p><small>Completed</small></div><strong>₹14,850</strong></div>
+            </div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span class="active">₹<b>Settle</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">12. RazorpayX Payout Setup</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Payout Setup</h2><span class="chip pending">Pending</span></div>
+            <div class="card blue-card">
+              <div class="label" style="color:#dcecff;">Gateway Status</div>
+              <div style="font-size:26px;font-weight:950;margin-top:5px;">Payment Collection Ready</div>
+              <div style="margin-top:8px;color:#dcecff;font-weight:750;">Merchant payouts need RazorpayX, Route or Linked Account access.</div>
+            </div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">1</div><div><p>Payment Gateway</p><small>Customer payment collection</small></div><span class="chip green">Approved</span></div>
+              <div class="tx"><div class="avatar">2</div><div><p>Business QR</p><small>Merchant QR and transaction view</small></div><span class="chip green">Ready</span></div>
+              <div class="tx"><div class="avatar">3</div><div><p>Razorpay Route</p><small>Merchant linked account mapping</small></div><span class="chip pending">Required</span></div>
+              <div class="tx"><div class="avatar">4</div><div><p>RazorpayX Payouts</p><small>Transfer to merchant bank</small></div><span class="chip pending">Required</span></div>
+            </div>
+            <div class="card">
+              <div class="row"><span class="label">After Access</span><span class="chip green">Auto Flow</span></div>
+              <div class="steps">
+                <div class="step"><span>1</span><span>Customer pays on QR</span></div>
+                <div class="step"><span>2</span><span>Payment is confirmed</span></div>
+                <div class="step"><span>3</span><span>Merchant ledger updates</span></div>
+                <div class="step"><span>4</span><span>Payout moves to bank</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span class="active">₹<b>Payout</b></span><span>◉<b>Profile</b></span></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="screen-name">13. Profile & Flow</p>
+        <div class="phone">
+          <div class="screen">
+            <div class="appbar"><h2>Business Profile</h2><span class="chip green">Verified</span></div>
+            <div class="card blue-card"><div style="font-size:20px;font-weight:950;">Rahul Mobile & Electronics</div><div style="margin-top:7px;color:#dcecff;font-weight:750;">Retail · KHP-MER-10284</div></div>
+            <div class="stack mt">
+              <div class="tx"><div class="avatar">B</div><div><p>Business Details</p><small>Retail</small></div><span>›</span></div>
+              <div class="tx"><div class="avatar">🏦</div><div><p>Bank Account</p><small>HDFC XXXX 4821</small></div><span>›</span></div>
+              <div class="tx"><div class="avatar">K</div><div><p>KYC Documents</p><small>Verified</small></div><span>›</span></div>
+              <div class="tx"><div class="avatar">⚙</div><div><p>Payment Settings</p><small>Payment Partner</small></div><span>›</span></div>
+            </div>
+            <div class="steps"><div class="step"><span>1</span><span>Create Profile</span></div><div class="step"><span>2</span><span>Verify KYC</span></div><div class="step"><span>3</span><span>Add Bank</span></div><div class="step"><span>4</span><span>Generate QR</span></div><div class="step"><span>5</span><span>Track Settlements</span></div></div>
+          </div>
+          <div class="nav"><span>⌂<b>Home</b></span><span>▦<b>QR</b></span><span>↗<b>Txns</b></span><span>₹<b>Settle</b></span><span class="active">◉<b>Profile</b></span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

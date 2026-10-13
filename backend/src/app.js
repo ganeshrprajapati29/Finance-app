@@ -68,10 +68,10 @@ import merchantBusinessRoutes from './routes/merchantBusiness.js';
 import merchantQrRoutes from './routes/merchantQr.js';
 import merchantPaymentsRoutes from './routes/merchantPayments.js';
 import merchantSettlementsRoutes from './routes/merchantSettlements.js';
-import velxapayWebhookRoutes from './routes/velxapayWebhook.js';
+import razorpayPartnerWebhookRoutes from './routes/razorpayPartnerWebhook.js';
 import adminMerchantBusinessesRoutes from './routes/adminMerchantBusinesses.js';
-import { startMerchantSettlementJob } from './jobs/merchantSettlementJob.js';
-import { startMerchantPaymentReconciliationJob } from './jobs/paymentReconciliationJob.js';
+import { startAgreementSignatureSyncJob } from './jobs/agreementSignatureSyncJob.js';
+import { startMerchantOnboardingRetryJob } from './jobs/merchantOnboardingRetryJob.js';
 
 // ClubAPI
 import rechargeRoutes from './routes/recharge.js';
@@ -166,11 +166,11 @@ app.use(
 // and every signature check would fail. `startsWith` (not ===) so an appended
 // query string cannot silently skip the capture.
 const RAZORPAY_WEBHOOK_PATH = '/api/payments/razorpay/webhook';
-const VELXAPAY_WEBHOOK_PATH = '/api/webhooks/velxapay';
+const RAZORPAY_PARTNER_WEBHOOK_PATH = '/api/webhooks/razorpay/partner';
 app.use(express.json({
   limit: "10mb",
   verify: (req, _res, buf) => {
-    if ([RAZORPAY_WEBHOOK_PATH, VELXAPAY_WEBHOOK_PATH].includes((req.originalUrl || '').split('?')[0])) {
+    if ([RAZORPAY_WEBHOOK_PATH, RAZORPAY_PARTNER_WEBHOOK_PATH].includes((req.originalUrl || '').split('?')[0])) {
       req.rawBody = Buffer.from(buf);
     }
   },
@@ -292,7 +292,7 @@ app.use('/api/merchant-business', merchantBusinessRoutes);
 app.use('/api/merchant-qr', merchantQrRoutes);
 app.use('/api/merchant-payments', merchantPaymentsRoutes);
 app.use('/api/merchant-settlements', merchantSettlementsRoutes);
-app.use('/api/webhooks/velxapay', velxapayWebhookRoutes);
+app.use('/api/webhooks/razorpay/partner', razorpayPartnerWebhookRoutes);
 app.use('/api/admin/merchant-businesses', adminMerchantBusinessesRoutes);
 app.use("/api/admin/services", adminServiceRoutes);
 app.use("/api/admin/push", adminPush);
@@ -334,8 +334,10 @@ server.listen(PORT, () => {
   startAutoNotificationScheduler();
   // Resolves recharges / bill payments left pending by timeouts or missed callbacks.
   startServiceReconciler();
-  startMerchantSettlementJob();
-  startMerchantPaymentReconciliationJob();
+  // Marks Aadhaar-eSigned loan agreements SIGNED even if the borrower never refreshes.
+  startAgreementSignatureSyncJob();
+  // Sends queued business applications to Razorpay once provider access is available.
+  startMerchantOnboardingRetryJob();
   console.log(`
 🚀 Backend Server Started
 🌐 Port: ${PORT}

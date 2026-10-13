@@ -80,8 +80,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
         ),
         NotificationService.getUnreadCount(),
       ]);
-      final result = Map<String, dynamic>.from(responses[0] as Map);
-      final serverUnread = responses[1] as int;
+      final result = responses[0] is Map
+          ? Map<String, dynamic>.from(responses[0] as Map)
+          : const <String, dynamic>{};
+      final serverUnread = responses[1] is num
+          ? (responses[1] as num).toInt()
+          : int.tryParse(responses[1]?.toString() ?? '') ?? 0;
       final raw = result['notifications'];
       final rows = raw is List
           ? raw

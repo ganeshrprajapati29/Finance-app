@@ -5,10 +5,9 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../../clubapi/services/clubapi_service_updated.dart';
 import '../../core/app_theme.dart';
 import '../../core/friendly_error.dart';
 import '../../models/loan_application.dart';
@@ -16,7 +15,9 @@ import '../../routes/app_router.dart';
 import '../../services/loan_service.dart';
 import '../../services/user_service.dart';
 import '../widgets/app_back_button.dart';
+import '../widgets/credit_check_card.dart';
 import '../widgets/kp_widgets.dart';
+import '../widgets/loan_visual.dart';
 import '../widgets/offer_banner_carousel.dart';
 
 const _kLoanTypes = [
@@ -97,18 +98,20 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
   bool _capturingSelfie = false;
   bool _livenessVerified = false;
   bool _faceMatchVerified = false;
+  bool _livenessSubmitted = false;
+  bool _faceMatchSubmitted = false;
   String? _selfieVerificationMessage;
-  bool _creditVerified = false;
+  // Experian credit report. `_creditStatus` stays '' until the server has
+  // answered with VERIFIED (report received) or REVIEW (no bureau history).
+  bool _creditChecking = false;
+  String _creditStatus = '';
+  Map<String, dynamic>? _creditSummary;
+  String? _creditMessage;
 
   final bankNameC = TextEditingController();
   final accountNumberC = TextEditingController();
   final ifscC = TextEditingController();
   final accountHolderC = TextEditingController();
-  final upiIdC = TextEditingController();
-  final upiNameC = TextEditingController();
-  final aadhaarNumberC = TextEditingController();
-  final aadhaarMobileC = TextEditingController();
-  final aadhaarOtpC = TextEditingController();
   final panNumberC = TextEditingController();
 
   bool _aadhaarOtpSending = false;
@@ -118,28 +121,42 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
   bool _panVerifying = false;
   bool _bankVerified = false;
   bool _bankValidating = false;
-  bool _upiVerified = false;
-  bool _upiValidating = false;
   Timer? _panAutoVerifyTimer;
   bool _panListenerPaused = false;
   String _lastPanAutoVerified = '';
   String? _aadhaarOtpSessionId;
   Map<String, dynamic>? _aadhaarEkyc;
   Map<String, dynamic>? _panVerification;
+  Map<String, dynamic>? _panDetails;
   Map<String, dynamic>? _bankValidation;
-  Map<String, dynamic>? _upiValidation;
   String? _aadhaarMessage;
   String? _panMessage;
   String? _panName;
   String? _bankValidationMessage;
-  String? _upiValidationMessage;
 
   @override
   void initState() {
     super.initState();
     panNumberC.addListener(_onPanChanged);
+    accountNumberC.addListener(_onBankDetailsChanged);
+    ifscC.addListener(_onBankDetailsChanged);
     _loadEligibility();
     _loadSavedAadhaarEkyc();
+  }
+
+  void _onBankDetailsChanged() {
+    if (!_bankVerified &&
+        _bankValidation == null &&
+        _bankValidationMessage == null) {
+      return;
+    }
+    setState(() {
+      _bankVerified = false;
+      _bankValidation = null;
+      _bankValidationMessage = null;
+      bankNameC.clear();
+      accountHolderC.clear();
+    });
   }
 
   Future<void> _loadSavedAadhaarEkyc() async {
@@ -148,13 +165,22 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       final kyc = user.kyc ?? {};
       final aadhaarVerified = kyc['aadhaarVerified'] == true;
       final panVerified = kyc['panVerified'] == true;
-      if (!mounted || (!aadhaarVerified && !panVerified)) return;
+      if (!mounted) return;
       setState(() {
+        // A borrower should not need to type their authenticated profile
+        // details again. Keep the editable fields blank only when the profile
+        // itself has no value.
+        if (nameC.text.trim().isEmpty && user.name.trim().isNotEmpty) {
+          nameC.text = user.name.trim();
+        }
+        if (emailC.text.trim().isEmpty && user.email.trim().isNotEmpty) {
+          emailC.text = user.email.trim();
+        }
+        if (mobileC.text.trim().isEmpty && user.mobile.trim().isNotEmpty) {
+          mobileC.text = _normaliseIndianMobile(user.mobile);
+        }
         if (aadhaarVerified) {
           _aadhaarEkycVerified = true;
-          aadhaarNumberC.text = (kyc['aadhaarNumber'] ?? '').toString();
-          aadhaarMobileC.text =
-              (kyc['aadhaarMobile'] ?? user.mobile).toString();
           _aadhaarEkyc = {
             'verified': true,
             'aadhaarData': kyc['aadhaarData'],
@@ -183,20 +209,90 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           _panVerification = {
             'verified': true,
             'panData': kyc['panData'],
+            'summary': kyc['panData'], // panData IS the summary in saved form
             'response': kyc['panVerification']?['response'],
           };
+          _panDetails = kyc['panData'] is Map
+              ? Map<String, dynamic>.from(kyc['panData'])
+              : const <String, dynamic>{};
           _lastPanAutoVerified = panNumberC.text.trim();
-          final panName = _extractPanName(_panVerification!);
-          _panName = panName;
+          // Try kyc.panName first (set by backend from ClubAPI), then panData.name
+          final savedName = (kyc['panName'] ?? '').toString().trim();
+          final panName = savedName.isNotEmpty && savedName != 'Customer'
+              ? savedName
+              : _extractPanName(_panVerification!);
+          _panName = panName.isEmpty ? null : panName;
           _panMessage = panName.isEmpty
               ? 'Saved PAN verification found.'
               : 'Saved PAN verified for $panName.';
         }
       });
+      await _restoreSavedVerificationStages();
     } catch (_) {
-      // Loan can still proceed after fresh Aadhaar OTP verification.
+      // A new DigiLocker consent session can be started if saved data is stale.
     }
   }
+
+  /// Verification happens on the server and can finish after Android pauses
+  /// the app. Restore its persisted status so reopening the wizard never
+  /// makes a completed selfie or bank check look unfinished.
+  Future<void> _restoreSavedVerificationStages() async {
+    try {
+      final verification = await LoanService().verificationStatus();
+      final stages = verification['stages'];
+      if (!mounted || stages is! Map) return;
+
+      String statusOf(String stage) {
+        final value = stages[stage];
+        return value is Map
+            ? (value['status'] ?? '').toString().toUpperCase()
+            : '';
+      }
+      final aadhaarStatus = statusOf('aadhaar');
+      final panStatus = statusOf('pan');
+      final livenessStatus = statusOf('liveness');
+      final faceStatus = statusOf('faceMatch');
+      final bankStatus = statusOf('bank');
+      final bankStage = stages['bank'];
+      setState(() {
+        _aadhaarEkycVerified = _aadhaarEkycVerified || aadhaarStatus == 'VERIFIED';
+        _panVerified = _panVerified || panStatus == 'VERIFIED';
+        _livenessVerified = livenessStatus == 'VERIFIED';
+        _faceMatchVerified = faceStatus == 'VERIFIED';
+        _livenessSubmitted = ['VERIFIED', 'REVIEW'].contains(livenessStatus);
+        _faceMatchSubmitted = ['VERIFIED', 'REVIEW'].contains(faceStatus);
+        _bankVerified = ['VERIFIED', 'REVIEW'].contains(bankStatus);
+        if (bankStage is Map && _bankVerified) {
+          _bankValidation = Map<String, dynamic>.from(bankStage);
+          final accountName = (bankStage['accountName'] ?? '').toString().trim();
+          final bankName = (bankStage['bankName'] ?? '').toString().trim();
+          if (accountHolderC.text.trim().isEmpty && accountName.isNotEmpty) {
+            accountHolderC.text = accountName;
+          }
+          if (bankNameC.text.trim().isEmpty && bankName.isNotEmpty) {
+            bankNameC.text = bankName;
+          }
+        }
+        if (_livenessSubmitted && _faceMatchSubmitted && _selfieVerificationMessage == null) {
+          _selfieVerificationMessage = _livenessVerified && _faceMatchVerified
+              ? 'Live selfie and face match verified.'
+              : 'Live photo submitted and awaiting secure review.';
+        }
+      });
+    } catch (_) {
+      // The wizard remains usable; each stage can still be checked again.
+    }
+  }
+
+  String _normaliseIndianMobile(String value) {
+    var digits = value.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 12 && digits.startsWith('91')) digits = digits.substring(2);
+    if (digits.length == 11 && digits.startsWith('0')) digits = digits.substring(1);
+    return digits;
+  }
+
+  bool _isValidIndianMobile(String value) =>
+      RegExp(r'^[6-9]\d{9}$').hasMatch(_normaliseIndianMobile(value));
 
   Future<void> _loadEligibility() async {
     try {
@@ -235,11 +331,6 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       accountNumberC,
       ifscC,
       accountHolderC,
-      upiIdC,
-      upiNameC,
-      aadhaarNumberC,
-      aadhaarMobileC,
-      aadhaarOtpC,
       panNumberC,
     ]) {
       controller.dispose();
@@ -267,6 +358,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       setState(() {
         _panVerified = false;
         _panVerification = null;
+        _panDetails = null;
         _panName = null;
         _panMessage = null;
       });
@@ -306,31 +398,22 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     );
   }
 
+  /// ClubAPI returns the real name from PAN database (firstName + middleName + lastName).
+  /// The backend merges it into summary.name before sending to Flutter.
   String _extractPanName(Map<String, dynamic> result) {
     final summary = result['summary'] is Map
         ? Map<String, dynamic>.from(result['summary'])
         : const <String, dynamic>{};
-    final panData = result['panData'] is Map
-        ? Map<String, dynamic>.from(result['panData'])
-        : const <String, dynamic>{};
-    final direct = (panData['name'] ??
-            panData['fullName'] ??
-            panData['panName'] ??
-            result['name'] ??
-            result['panName'] ??
-            summary['name'] ??
-            '')
-        .toString()
-        .trim();
-    if (direct.isNotEmpty) return direct;
-    return [
-      panData['firstName'],
-      panData['middleName'],
-      panData['lastName'],
-    ]
-        .where((part) => part != null && part.toString().trim().isNotEmpty)
-        .map((part) => part.toString().trim())
-        .join(' ');
+
+    // Backend stores ClubAPI name in summary.name
+    for (final v in [
+      summary['name'],
+      summary['fullName'],
+    ]) {
+      final t = (v ?? '').toString().trim();
+      if (t.isNotEmpty && t != 'null' && t != 'Customer') return t;
+    }
+    return '';
   }
 
   String _firstText(List<dynamic> values) {
@@ -406,33 +489,40 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     });
     try {
       if (!await _ensureSignCareConsent()) return;
-      final result = await LoanService().startAadhaarOvse();
+      final result = await LoanService().startDigiLocker();
       if (!mounted) return;
       setState(() {
         _aadhaarOtpSessionId =
-            (result['txnId'] ?? result['providerReference'] ?? '').toString();
+            (result['transactionId'] ?? result['providerReference'] ?? '')
+                .toString();
         _aadhaarMessage =
-            'Complete face-auth verification in the official Aadhaar app, then return here.';
+            'Complete secure DigiLocker consent inside Khatu Pay.';
       });
       final requestUrl = (result['requestUrl'] ?? '').toString();
       if (requestUrl.isNotEmpty) {
-        await launchUrl(Uri.parse(requestUrl),
-            mode: LaunchMode.externalApplication);
+        final completed = await router.push<bool>(
+          '/loan-aadhaar-verification?url=${Uri.encodeComponent(requestUrl)}',
+        );
+        if (completed == true && mounted) {
+          await _verifyAadhaarOtp(afterConsent: true);
+        }
+      } else {
+        throw Exception('Secure verification could not be started.');
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _aadhaarMessage =
-            friendlyErrorMessage(e, fallback: 'Could not send Aadhaar OTP.'));
+        setState(() => _aadhaarMessage = friendlyErrorMessage(e,
+            fallback: 'Could not start secure identity verification.'));
       }
     } finally {
       if (mounted) setState(() => _aadhaarOtpSending = false);
     }
   }
 
-  Future<void> _verifyAadhaarOtp() async {
+  Future<void> _verifyAadhaarOtp({bool afterConsent = false}) async {
     final txnId = (_aadhaarOtpSessionId ?? '').trim();
     if (txnId.isEmpty) {
-      _showError('Start Aadhaar verification first.');
+      _showError('Start secure identity verification first.');
       return;
     }
     setState(() {
@@ -440,7 +530,9 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       _aadhaarMessage = null;
     });
     try {
-      final result = await LoanService().aadhaarOvseResult(txnId);
+      final result = afterConsent
+          ? await LoanService().digilockerResultAfterConsent(txnId)
+          : await LoanService().digilockerResult(txnId);
       final verified = result['status'] == 'VERIFIED';
       if (!mounted) return;
       setState(() {
@@ -449,22 +541,27 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         final data = result['summary'] is Map
             ? Map<String, dynamic>.from(result['summary'])
             : const <String, dynamic>{};
-        final name = (data['fullName'] ?? '').toString();
-        final address = _extractAadhaarAddress(data);
+        // summary carries the name; the parsed address lives in providerData.
+        final claims = result['providerData'] is Map
+            ? Map<String, dynamic>.from(result['providerData'])
+            : const <String, dynamic>{};
+        final name =
+            _firstText([data['name'], data['fullName'], claims['fullName']]);
+        final address = _extractAadhaarAddress(claims.isEmpty ? data : claims);
         if (name.isNotEmpty && nameC.text.trim().isEmpty) nameC.text = name;
         if (address.isNotEmpty && addressC.text.trim().isEmpty) {
           addressC.text = address;
         }
         _aadhaarMessage = verified
             ? (name.isEmpty
-                ? 'Aadhaar OVSE verified.'
-                : 'Aadhaar OVSE verified for $name.')
-            : 'Verification is still pending. Complete it in the Aadhaar app and retry.';
+                ? 'Identity verification completed.'
+                : 'Identity verified for $name.')
+            : 'Verification is still pending. Complete secure consent and try again.';
       });
     } catch (e) {
       if (mounted) {
         setState(() => _aadhaarMessage = friendlyErrorMessage(e,
-            fallback: 'Aadhaar could not be verified.'));
+            fallback: 'Identity verification could not be completed.'));
       }
     } finally {
       if (mounted) setState(() => _aadhaarOtpVerifying = false);
@@ -487,6 +584,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       _panMessage = null;
       _panVerified = false;
       _panName = null;
+      _panDetails = null;
     });
     try {
       if (!await _ensureSignCareConsent()) return;
@@ -499,20 +597,43 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       setState(() {
         _panVerified = verified;
         _panVerification = result;
+        _panDetails = result['summary'] is Map
+            ? Map<String, dynamic>.from(result['summary'])
+            : const <String, dynamic>{};
         _lastPanAutoVerified = pan;
         final panName = _extractPanName(result);
         _panName = panName.isEmpty ? null : panName;
-        _panMessage = verified
-            ? (panName.isEmpty
-                ? 'PAN details verified.'
-                : 'PAN verified for $panName.')
-            : 'PAN details match nahi ho rahe. PAN number check karke dobara try karein.';
+
+        // Build a rich status message from all returned fields
+        final summary = _panDetails ?? {};
+        final category = (summary['category'] ?? '').toString().trim();
+        final panStatus =
+            (summary['panStatus'] ?? summary['status'] ?? '').toString().trim();
+        final aadhaar =
+            (summary['aadhaarSeedingStatus'] ?? '').toString().trim();
+
+        String msg;
+        if (verified) {
+          final parts = <String>[];
+          if (panName.isNotEmpty) parts.add('Name: $panName');
+          if (category.isNotEmpty) parts.add('Type: $category');
+          if (panStatus.isNotEmpty) parts.add('Status: $panStatus');
+          if (aadhaar.isNotEmpty) parts.add('Aadhaar: $aadhaar');
+          msg = parts.isEmpty
+              ? 'PAN verified successfully.'
+              : parts.join('  •  ');
+        } else {
+          final statusText = panStatus.isNotEmpty ? panStatus : 'INVALID';
+          msg = 'PAN status: $statusText. Sahi PAN number enter karein.';
+        }
+        _panMessage = msg;
       });
     } catch (e) {
       if (mounted) {
         setState(() {
           _panVerified = false;
           _panName = null;
+          _panDetails = null;
           _panMessage = friendlyErrorMessage(
             e,
             fallback:
@@ -526,7 +647,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
   }
 
   Future<void> _validateBankAccount() async {
-    final mobile = mobileC.text.trim();
+    final mobile = _normaliseIndianMobile(mobileC.text);
     final account = accountNumberC.text.trim();
     final ifsc = ifscC.text.trim().toUpperCase();
     if (!RegExp(r'^\d{10}$').hasMatch(mobile) ||
@@ -548,15 +669,42 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       final summary = result['summary'] is Map
           ? Map<String, dynamic>.from(result['summary'])
           : const <String, dynamic>{};
-      final name = (summary['name'] ?? '').toString();
+      final name = (result['accountName'] ??
+              result['beneficiaryName'] ??
+              result['name'] ??
+              summary['name'] ??
+              summary['accountName'] ??
+              summary['beneficiaryName'] ??
+              '')
+          .toString();
+      final bankName = (result['bankName'] ??
+              result['bank_name'] ??
+              summary['bankName'] ??
+              summary['bank_name'] ??
+              '')
+          .toString();
+      final status = (result['status'] ?? '').toString().toUpperCase();
+      final accepted = status == 'VERIFIED' || status == 'REVIEW';
+      final message = (result['message'] ?? '').toString().trim();
       if (!mounted) return;
       setState(() {
-        _bankVerified = result['status'] == 'VERIFIED';
+        _bankVerified = accepted;
         _bankValidation = result;
         if (name.isNotEmpty) accountHolderC.text = name;
-        _bankValidationMessage = name.isEmpty
-            ? 'Bank response received, name not returned.'
-            : 'Bank account validated for $name.';
+        if (bankName.isNotEmpty) bankNameC.text = bankName;
+        _bankValidationMessage = status == 'REVIEW'
+            ? (message.isEmpty
+                ? 'Bank details submitted for Khatu Pay review.'
+                : message)
+            : status == 'PENDING'
+                ? 'Bank verification is still running. Tap Validate again in a moment.'
+                : status == 'FAILED'
+                    ? (message.isEmpty
+                        ? 'Bank account could not be verified. Please check the account number and IFSC.'
+                        : message)
+                    : name.isEmpty
+                        ? 'Bank account validated.'
+                        : 'Bank account validated for $name.';
       });
     } catch (e) {
       if (mounted) {
@@ -595,43 +743,6 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     await LoanService().acceptVerificationConsent();
     if (mounted) setState(() => _consentAccepted = true);
     return true;
-  }
-
-  Future<void> _validateUpi() async {
-    final upi = upiIdC.text.trim();
-    if (!RegExp(r'^[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}$').hasMatch(upi)) {
-      _showError('Enter valid UPI ID.');
-      return;
-    }
-    setState(() {
-      _upiValidating = true;
-      _upiValidationMessage = null;
-      _upiVerified = false;
-    });
-    try {
-      final result = await ClubAPIService().validateUpi(upi);
-      final name = (result['accountName'] ??
-              result['upiName'] ??
-              result['beneficiaryName'] ??
-              '')
-          .toString();
-      if (!mounted) return;
-      setState(() {
-        _upiVerified = true;
-        _upiValidation = result;
-        if (name.isNotEmpty) upiNameC.text = name;
-        _upiValidationMessage = name.isEmpty
-            ? 'UPI response received, name not returned.'
-            : 'UPI name validated for $name.';
-      });
-    } catch (e) {
-      if (mounted) {
-        setState(() => _upiValidationMessage =
-            friendlyErrorMessage(e, fallback: 'UPI could not be validated.'));
-      }
-    } finally {
-      if (mounted) setState(() => _upiValidating = false);
-    }
   }
 
   Future<void> _pickIncomeProofFile() async {
@@ -681,6 +792,17 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       );
       final orderId =
           (result['orderId'] ?? result['providerReference'] ?? '').toString();
+      if ((result['status'] ?? '') == 'REVIEW') {
+        // Provider outage: the statement is saved and the credit team
+        // completes the analysis, so the customer can continue.
+        setState(() {
+          _bankStatementVerified = true;
+          _bankStatementMessage = (result['message'] ??
+                  'Bank statement received. Khatu Pay will complete the analysis during review.')
+              .toString();
+        });
+        return;
+      }
       if (orderId.isEmpty) {
         throw Exception('Bank statement analysis could not be started.');
       }
@@ -756,6 +878,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
   Future<void> _captureLiveSelfie() async {
     setState(() => _capturingSelfie = true);
     try {
+      if (!await _ensureSignCareConsent()) return;
       final picked = await _imagePicker.pickImage(
         source: ImageSource.camera,
         preferredCameraDevice: CameraDevice.front,
@@ -763,39 +886,98 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         maxWidth: 1400,
       );
       if (picked == null) return;
-      if (!await _ensureSignCareConsent()) return;
-      final imageBase64 = base64Encode(await File(picked.path).readAsBytes());
-      final liveness = await LoanService().verifyLiveness(imageBase64);
-      if (liveness['status'] != 'VERIFIED') {
-        throw Exception('Live face verification needs another clear photo.');
-      }
-      final faceMatch =
-          await LoanService().verifyFaceMatch(selfieBase64: imageBase64);
-      if (faceMatch['status'] != 'VERIFIED') {
-        throw Exception(
-            'Your selfie could not be matched with verified Aadhaar details.');
-      }
       if (!mounted) return;
       setState(() {
         _selfiePath = picked.path;
-        _livenessVerified = true;
-        _faceMatchVerified = true;
-        _selfieVerificationMessage = 'Live selfie and face match verified.';
+        _livenessVerified = false;
+        _faceMatchVerified = false;
+        _livenessSubmitted = false;
+        _faceMatchSubmitted = false;
+        _selfieVerificationMessage =
+            'Live photo submitted. Verification is in progress.';
+      });
+      final imageBase64 = base64Encode(await File(picked.path).readAsBytes());
+      final liveness = await LoanService().verifyLiveness(imageBase64);
+      final livenessStatus = (liveness['status'] ?? '').toString();
+      final livenessAccepted =
+          livenessStatus == 'VERIFIED' || livenessStatus == 'REVIEW';
+      if (!livenessAccepted) {
+        if (livenessStatus == 'FAILED') {
+          throw Exception(liveness['message'] ??
+              'Live selfie was not accepted. Please retake the photo in good light with only your face visible.');
+        }
+        if (livenessStatus == 'PENDING') {
+          throw Exception(
+              'Your live photo is still being verified. Please capture it again in a moment.');
+        }
+        throw Exception(_verificationStageMessage(liveness,
+            'Live photo was captured, but needs one more clear selfie.'));
+      }
+      if (!mounted) return;
+      setState(() {
+        _livenessVerified = livenessStatus == 'VERIFIED';
+        _livenessSubmitted = true;
+        _selfieVerificationMessage = livenessStatus == 'VERIFIED'
+            ? 'Live selfie verified. Matching face with identity photo...'
+            : _verificationStageMessage(liveness,
+                'Live photo captured. Verification will be reviewed securely.');
+      });
+      final faceMatch =
+          await LoanService().verifyFaceMatch(selfieBase64: imageBase64);
+      if (!mounted) return;
+      final faceStatus = (faceMatch['status'] ?? '').toString();
+      final verified = faceStatus == 'VERIFIED';
+      final faceAccepted = verified || faceStatus == 'REVIEW';
+      setState(() {
+        _livenessSubmitted = true;
+        _faceMatchVerified = verified;
+        _faceMatchSubmitted = faceAccepted;
+        _selfieVerificationMessage = verified
+            ? 'Live selfie and face match verified.'
+            : faceAccepted
+                ? _verificationStageMessage(faceMatch,
+                    'Live photo captured. Face match is under review.')
+                : _verificationStageMessage(
+                    faceMatch, 'Face match needs one more clear live photo.');
       });
     } catch (e) {
       if (mounted) {
+        // The service layer already read the stage back from the server after
+        // a lost response, so anything that reaches here really needs a retry.
+        // Marking it "submitted" locally would only fail later at submit.
         setState(() {
-          _selfiePath = '';
           _livenessVerified = false;
           _faceMatchVerified = false;
-          _selfieVerificationMessage = friendlyErrorMessage(e,
-              fallback:
-                  'Live selfie could not be verified. Please try again in good light.');
+          _livenessSubmitted = false;
+          _faceMatchSubmitted = false;
+          _selfieVerificationMessage = _selfiePath.isNotEmpty
+              ? friendlyErrorMessage(e,
+                  fallback:
+                      'Live photo could not be submitted. Please try again in good light.')
+              : friendlyErrorMessage(e,
+                  fallback:
+                      'Camera photo could not be saved. Please try again.');
         });
       }
     } finally {
       if (mounted) setState(() => _capturingSelfie = false);
     }
+  }
+
+  String _verificationStageMessage(
+      Map<String, dynamic> result, String fallback) {
+    final summary = result['summary'] is Map
+        ? Map<String, dynamic>.from(result['summary'])
+        : const <String, dynamic>{};
+    for (final value in [
+      summary['providerMessage'],
+      result['message'],
+      summary['providerStatus'],
+    ]) {
+      final text = (value ?? '').toString().trim();
+      if (text.isNotEmpty && text != 'null') return text;
+    }
+    return fallback;
   }
 
   /// Blocking requirements for a step, in the order the user should fix them.
@@ -806,6 +988,10 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       case 0:
         final amount = num.tryParse(amountC.text.trim()) ?? 0;
         final tenure = int.tryParse(tenureC.text.trim()) ?? 0;
+        if (nameC.text.trim().isEmpty) return 'Please enter your full name.';
+        if (!_isValidIndianMobile(mobileC.text)) {
+          return 'Please enter a valid mobile number.';
+        }
         if (amount < 1000) return 'Minimum loan amount is Rs. 1,000.';
         if (amount > 500000) return 'Maximum loan amount is Rs. 5,00,000.';
         if (tenure < 3 || tenure > 60) {
@@ -824,18 +1010,25 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         return null;
       case 2:
         if (!_aadhaarEkycVerified) {
-          return 'Please complete Aadhaar Offline eKYC OTP verification.';
+          return 'Please complete secure DigiLocker identity verification.';
         }
         if (!_panVerified) return 'Please verify your PAN details.';
-        if (_selfiePath.isEmpty || !_livenessVerified || !_faceMatchVerified) {
-          return 'Please complete live selfie and face-match verification.';
+        if (!_livenessSubmitted ||
+            !_faceMatchSubmitted) {
+          return 'Please capture and submit your live photo.';
         }
         return null;
       case 3:
+        if (!RegExp(r'^\d{6,20}$').hasMatch(accountNumberC.text.trim())) {
+          return 'Please enter a valid bank account number.';
+        }
+        if (!RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$')
+            .hasMatch(ifscC.text.trim().toUpperCase())) {
+          return 'Please enter a valid IFSC code.';
+        }
         if (!_bankVerified) {
           return 'Please validate your bank account details.';
         }
-        if (!_upiVerified) return 'Please validate your UPI ID.';
         return null;
       default:
         return null;
@@ -917,6 +1110,20 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       }
     }
 
+    // The credit report is part of every application. A bureau outage comes
+    // back as REVIEW (the credit team re-pulls it), so this never strands the
+    // customer - it only stops a submit that skipped the check.
+    if (_creditStatus != 'VERIFIED' && _creditStatus != 'REVIEW') {
+      final creditOk = await _runCreditCheck();
+      if (!creditOk) {
+        if (mounted) {
+          setState(() => _submitError = _creditMessage ??
+              'Please complete the credit report check before submitting.');
+        }
+        return;
+      }
+    }
+
     _bindDraft();
     setState(() {
       _submitting = true;
@@ -924,17 +1131,14 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     });
 
     try {
-      if (!_creditVerified) {
-        final credit = await LoanService().fetchExperian();
-        if (credit['status'] != 'VERIFIED') {
-          throw Exception(
-              'Credit report verification is pending. Please try again.');
-        }
-        _creditVerified = true;
-      }
       final id = await LoanService().applyDraft(_draft);
       if (!mounted) return;
       router.go('/apply-success/$id');
+    } on LoanSubmitException catch (e) {
+      if (!mounted) return;
+      setState(() => _submitError = e.message);
+      final step = _stepForStages(e.stages);
+      if (step != null && step != _step) _goToStep(step);
     } catch (e) {
       if (!mounted) return;
       setState(() => _submitError = friendlyErrorMessage(e,
@@ -942,6 +1146,74 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
               'Your application could not be submitted. Please try again.'));
     } finally {
       if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  /// The wizard step where the customer can finish the first stage the
+  /// server says is incomplete.
+  int? _stepForStages(List<String> stages) {
+    if (stages.isEmpty) return null;
+    const identity = {'pan', 'aadhaar', 'liveness', 'faceMatch'};
+    if (stages.any(identity.contains)) {
+      // Reset local flags so the step shows what is still missing.
+      setState(() {
+        if (stages.contains('aadhaar')) _aadhaarEkycVerified = false;
+        if (stages.contains('pan')) _panVerified = false;
+        if (stages.contains('liveness') || stages.contains('faceMatch')) {
+          _livenessSubmitted = false;
+          _faceMatchSubmitted = false;
+        }
+      });
+      return 2;
+    }
+    if (stages.contains('bank') || stages.contains('upi')) {
+      setState(() => _bankVerified = false);
+      return 3;
+    }
+    if (stages.contains('bankStatement')) return 1;
+    if (stages.contains('credit')) {
+      setState(() => _creditStatus = '');
+      return _reviewStep;
+    }
+    return null;
+  }
+
+  /// Fetches the Experian report. Returns true when the application may go on:
+  /// VERIFIED (report received) or REVIEW (no bureau history - the credit team
+  /// decides). Any other outcome leaves [_creditMessage] set for the user.
+  Future<bool> _runCreditCheck() async {
+    if (_creditChecking) return false;
+    setState(() {
+      _creditChecking = true;
+      _creditMessage = null;
+    });
+    try {
+      final credit = await LoanService().fetchExperian();
+      final status = (credit['status'] ?? '').toString().toUpperCase();
+      if (status != 'VERIFIED' && status != 'REVIEW') {
+        throw Exception(
+            'Your credit report is still being prepared. Please try again in a moment.');
+      }
+      if (!mounted) return false;
+      final summary = credit['summary'];
+      setState(() {
+        _creditStatus = status;
+        _creditSummary =
+            summary is Map ? Map<String, dynamic>.from(summary) : null;
+      });
+      return true;
+    } catch (e) {
+      if (!mounted) return false;
+      setState(() {
+        _creditStatus = '';
+        _creditSummary = null;
+        _creditMessage = friendlyErrorMessage(e,
+            fallback:
+                'Your credit report could not be fetched. Please try again.');
+      });
+      return false;
+    } finally {
+      if (mounted) setState(() => _creditChecking = false);
     }
   }
 
@@ -973,7 +1245,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     _draft
       ..name = nameC.text.trim()
       ..email = emailC.text.trim()
-      ..mobile = mobileC.text.trim()
+      ..mobile = _normaliseIndianMobile(mobileC.text)
       ..address = addressC.text.trim()
       ..amountRequested = num.tryParse(amountC.text.trim()) ?? 0
       ..tenureMonths = int.tryParse(tenureC.text.trim()) ?? 12
@@ -992,11 +1264,13 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       ..bankName = bankNameC.text.trim()
       ..accountNumber = accountNumberC.text.trim()
       ..ifscCode = ifscC.text.trim().toUpperCase()
-      ..accountHolderName = accountHolderC.text.trim()
-      ..upiId = upiIdC.text.trim()
-      ..upiAccountName = upiNameC.text.trim()
+      ..accountHolderName = accountHolderC.text.trim().isEmpty
+          ? (_bankVerified ? 'Pending Khatu Pay review' : '')
+          : accountHolderC.text.trim()
       ..bankValidation = _bankValidation
-      ..upiValidation = _upiValidation;
+      ..creditReportConsent = _consentAccepted
+      ..termsAccepted = _consentAccepted
+      ..privacyAccepted = _consentAccepted;
   }
 
   void _showError(String message) {
@@ -1169,13 +1443,10 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     return _StepScaffold(
       title: 'KYC Verify',
       subtitle:
-          'Verify your PAN and Aadhaar OTP to continue with your application.',
+          'Verify your PAN and identity through secure DigiLocker consent to continue.',
       formKey: _formKeys[2],
       children: [
         _AadhaarEkycPanel(
-          aadhaarNumberController: aadhaarNumberC,
-          aadhaarMobileController: aadhaarMobileC,
-          otpController: aadhaarOtpC,
           sending: _aadhaarOtpSending,
           verifying: _aadhaarOtpVerifying,
           verified: _aadhaarEkycVerified,
@@ -1189,6 +1460,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           verifying: _panVerifying,
           verified: _panVerified,
           panName: _panName,
+          panDetails: _panDetails,
           message: _panMessage,
           onVerify: () => _verifyPan(),
         ),
@@ -1197,6 +1469,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           selfiePath: _selfiePath,
           capturing: _capturingSelfie,
           verified: _livenessVerified && _faceMatchVerified,
+          submitted: _livenessSubmitted && _faceMatchSubmitted,
           message: _selfieVerificationMessage,
           onCapture: _captureLiveSelfie,
         ),
@@ -1210,12 +1483,25 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       subtitle: 'Loan amount will be disbursed to this account after approval.',
       formKey: _formKeys[3],
       children: [
-        _field(bankNameC, 'Bank name', Icons.account_balance),
         _field(accountNumberC, 'Account number', Icons.numbers,
             required: true, number: true),
-        _field(ifscC, 'IFSC code', Icons.pin_outlined, required: true),
-        _field(accountHolderC, 'Account holder name', Icons.person_pin,
-            required: true),
+        _field(
+          ifscC,
+          'IFSC code',
+          Icons.pin_outlined,
+          required: true,
+          textCapitalization: TextCapitalization.characters,
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
+            LengthLimitingTextInputFormatter(11),
+            TextInputFormatter.withFunction((oldValue, newValue) {
+              return newValue.copyWith(
+                text: newValue.text.toUpperCase(),
+                selection: newValue.selection,
+              );
+            }),
+          ],
+        ),
         OutlinedButton.icon(
           onPressed: _bankValidating ? null : _validateBankAccount,
           icon: _bankValidating
@@ -1233,25 +1519,12 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
               style: const TextStyle(
                   color: KhatuColors.teal, fontWeight: FontWeight.w800)),
         ],
-        SizedBox(height: 14.h),
-        _field(upiIdC, 'UPI ID', Icons.alternate_email, required: true),
-        _field(upiNameC, 'UPI account name', Icons.person_search_outlined,
-            required: true),
-        OutlinedButton.icon(
-          onPressed: _upiValidating ? null : _validateUpi,
-          icon: _upiValidating
-              ? SizedBox(
-                  width: 16.w,
-                  height: 16.w,
-                  child: const CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.verified_outlined),
-          label: Text(_upiValidating ? 'Validating...' : 'Validate UPI Name'),
-        ),
-        if (_upiValidationMessage != null) ...[
+        if (_bankVerified) ...[
           SizedBox(height: 8.h),
-          Text(_upiValidationMessage!,
-              style: const TextStyle(
-                  color: KhatuColors.teal, fontWeight: FontWeight.w800)),
+          _AutoVerifiedBankDetails(
+            bankName: bankNameC.text.trim(),
+            accountHolder: accountHolderC.text.trim(),
+          ),
         ],
         SizedBox(height: 12.h),
         _ReviewCard(
@@ -1273,6 +1546,8 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
     bool phone = false,
     int lines = 1,
     ValueChanged<String>? onChanged,
+    TextCapitalization? textCapitalization,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Padding(
       padding: EdgeInsets.only(bottom: 12.h),
@@ -1280,8 +1555,9 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
         controller: controller,
         maxLines: lines,
         onChanged: onChanged,
-        textCapitalization:
-            email ? TextCapitalization.none : TextCapitalization.words,
+        inputFormatters: inputFormatters,
+        textCapitalization: textCapitalization ??
+            (email ? TextCapitalization.none : TextCapitalization.words),
         keyboardType: number
             ? const TextInputType.numberWithOptions(decimal: false)
             : phone
@@ -1300,9 +1576,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           if (number && text.isNotEmpty && num.tryParse(text) == null) {
             return 'Enter numbers only';
           }
-          if (phone &&
-              text.isNotEmpty &&
-              !RegExp(r'^[6-9]\d{9}$').hasMatch(text)) {
+          if (phone && text.isNotEmpty && !_isValidIndianMobile(text)) {
             return 'Enter a valid 10-digit mobile number';
           }
           return null;
@@ -1449,14 +1723,26 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
             icon: Icons.verified_user_outlined,
             onEdit: () => _goToStep(2),
             rows: [
-              ('Aadhaar eKYC', _aadhaarEkycVerified ? 'Verified' : 'Pending'),
+              (
+                'Identity verification',
+                _aadhaarEkycVerified ? 'Verified' : 'Pending'
+              ),
               ('PAN', _panVerified ? (_panName ?? 'Verified') : 'Pending'),
-              ('Live photo', _selfiePath.isEmpty ? 'Pending' : 'Captured'),
+              (
+                'Face verification',
+                _livenessVerified && _faceMatchVerified
+                    ? 'Verified'
+                    : _selfiePath.isEmpty
+                        ? 'Pending'
+                        : _livenessSubmitted && _faceMatchSubmitted
+                            ? 'Submitted for review'
+                            : 'Incomplete'
+              ),
             ],
             statuses: [
               _aadhaarEkycVerified,
               _panVerified,
-              _selfiePath.isNotEmpty,
+              _livenessSubmitted && _faceMatchSubmitted,
             ],
           ),
           SizedBox(height: 12.h),
@@ -1469,7 +1755,6 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
               ('Account', _maskAccount(accountNumberC.text.trim())),
               ('IFSC', ifscC.text.trim().toUpperCase()),
               ('Account holder', accountHolderC.text.trim()),
-              ('UPI ID', upiIdC.text.trim()),
             ],
           ),
           SizedBox(height: 16.h),
@@ -1512,6 +1797,15 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
                 ),
               ],
             ),
+          ),
+          SizedBox(height: 12.h),
+          CreditCheckCard(
+            checking: _creditChecking,
+            status: _creditStatus,
+            summary: _creditSummary,
+            message: _creditMessage,
+            enabled: _consentAccepted && !_submitting,
+            onCheck: _runCreditCheck,
           ),
           if (_submitError != null) ...[
             SizedBox(height: 12.h),
@@ -1681,7 +1975,93 @@ class _ProgressHeader extends StatelessWidget {
               ],
             ],
           ),
+          SizedBox(height: 10.h),
+          Row(
+            children: [
+              for (var i = 0; i < totalSteps; i++)
+                Expanded(
+                  child: Text(
+                    _kStepTitles[i],
+                    textAlign: i == 0
+                        ? TextAlign.left
+                        : i == totalSteps - 1
+                            ? TextAlign.right
+                            : TextAlign.center,
+                    style: TextStyle(
+                      color:
+                          i == step ? KhatuColors.deepTeal : KhatuColors.faint,
+                      fontSize: 10,
+                      fontWeight: i == step ? FontWeight.w900 : FontWeight.w700,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _AutoVerifiedBankDetails extends StatelessWidget {
+  final String bankName;
+  final String accountHolder;
+
+  const _AutoVerifiedBankDetails({
+    required this.bankName,
+    required this.accountHolder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = [
+      (
+        'Bank name',
+        bankName.isEmpty ? 'Will be reviewed by Khatu Pay' : bankName
+      ),
+      (
+        'Account holder',
+        accountHolder.isEmpty ? 'Will be reviewed by Khatu Pay' : accountHolder
+      ),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(12.w),
+      decoration: BoxDecoration(
+        color: KhatuColors.softTeal,
+        borderRadius: BorderRadius.circular(12.r),
+        border: Border.all(color: KhatuColors.teal.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: rows
+            .map((row) => Padding(
+                  padding: EdgeInsets.only(bottom: row == rows.last ? 0 : 8.h),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          row.$1,
+                          style: const TextStyle(
+                            color: KhatuColors.muted,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          row.$2,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            color: KhatuColors.text,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ))
+            .toList(),
       ),
     );
   }
@@ -1934,16 +2314,60 @@ class _StepScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = switch (title) {
+      'Loan details' => const (
+          'assets/loans/generated/loan_apply_illustration.png',
+          Icons.request_quote_outlined
+        ),
+      'Income details' => const (
+          'assets/loans/generated/loan_credit_review.png',
+          Icons.insights_outlined
+        ),
+      'KYC Verify' => const (
+          'assets/loans/generated/loan_identity_check.png',
+          Icons.verified_user_outlined
+        ),
+      'Bank Details' => const (
+          'assets/loans/generated/loan_bank_verify.png',
+          Icons.account_balance_outlined
+        ),
+      _ => const (
+          'assets/loans/generated/loan_apply_illustration.png',
+          Icons.assignment_turned_in_outlined
+        ),
+    };
     return Form(
       key: formKey,
       child: ListView(
         padding: EdgeInsets.fromLTRB(16.w, 18.h, 16.w, 24.h),
         children: [
-          Text(title,
-              style: TextStyle(
-                  color: KhatuColors.text,
-                  fontSize: 22.sp,
-                  fontWeight: FontWeight.w900)),
+          Align(
+            alignment: Alignment.centerRight,
+            child: LoanVisual(
+                asset: visual.$1, fallbackIcon: visual.$2, size: 86.w),
+          ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 5,
+                height: 42,
+                margin: EdgeInsets.only(right: 12.w, top: 2.h),
+                decoration: BoxDecoration(
+                  color: KhatuColors.saffron,
+                  borderRadius: BorderRadius.circular(KhatuRadius.pill),
+                ),
+              ),
+              Expanded(
+                child: Text(title,
+                    style: TextStyle(
+                        color: KhatuColors.text,
+                        fontSize: 22.sp,
+                        height: 1.1,
+                        fontWeight: FontWeight.w900)),
+              ),
+            ],
+          ),
           SizedBox(height: 6.h),
           Text(subtitle,
               style: TextStyle(
@@ -1959,9 +2383,6 @@ class _StepScaffold extends StatelessWidget {
 }
 
 class _AadhaarEkycPanel extends StatelessWidget {
-  final TextEditingController aadhaarNumberController;
-  final TextEditingController aadhaarMobileController;
-  final TextEditingController otpController;
   final bool sending;
   final bool verifying;
   final bool verified;
@@ -1970,9 +2391,6 @@ class _AadhaarEkycPanel extends StatelessWidget {
   final VoidCallback onVerifyOtp;
 
   const _AadhaarEkycPanel({
-    required this.aadhaarNumberController,
-    required this.aadhaarMobileController,
-    required this.otpController,
     required this.sending,
     required this.verifying,
     required this.verified,
@@ -1996,7 +2414,7 @@ class _AadhaarEkycPanel extends StatelessWidget {
                     color: color),
                 SizedBox(width: 10.w),
                 const Expanded(
-                  child: Text('Aadhaar OVSE Verification',
+                  child: Text('DigiLocker identity verification',
                       style: TextStyle(
                           fontWeight: FontWeight.w900,
                           color: KhatuColors.text)),
@@ -2013,21 +2431,21 @@ class _AadhaarEkycPanel extends StatelessWidget {
             ),
             SizedBox(height: 12.h),
             const Text(
-                'Verify through the official Aadhaar app using consent and face authentication. Khatu Pay does not collect your Aadhaar number.'),
+                'Continue with secure DigiLocker consent inside Khatu Pay. Your Aadhaar number and OTP are never entered in Khatu Pay.'),
             SizedBox(height: 12.h),
             Row(
               children: [
                 Expanded(
                     child: OutlinedButton.icon(
                   onPressed: sending || verified ? null : onSendOtp,
-                  icon: const Icon(Icons.open_in_new_rounded),
+                  icon: const Icon(Icons.verified_user_outlined),
                   label: sending
                       ? SizedBox(
                           width: 16.w,
                           height: 16.w,
                           child:
                               const CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Start verification'),
+                      : const Text('Verify securely'),
                 )),
               ],
             ),
@@ -2044,7 +2462,7 @@ class _AadhaarEkycPanel extends StatelessWidget {
                             strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.verified_outlined),
                 label: Text(verified
-                    ? 'Aadhaar Verified'
+                    ? 'Identity verified'
                     : 'Check verification status'),
               ),
             ),
@@ -2067,6 +2485,7 @@ class _PanVerifyPanel extends StatelessWidget {
   final bool verifying;
   final bool verified;
   final String? panName;
+  final Map<String, dynamic>? panDetails;
   final String? message;
   final VoidCallback onVerify;
 
@@ -2075,6 +2494,7 @@ class _PanVerifyPanel extends StatelessWidget {
     required this.verifying,
     required this.verified,
     required this.panName,
+    required this.panDetails,
     required this.message,
     required this.onVerify,
   });
@@ -2082,6 +2502,12 @@ class _PanVerifyPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = verified ? Colors.green : KhatuColors.saffron;
+    final details = panDetails ?? const <String, dynamic>{};
+    final panStatus =
+        (details['panStatus'] ?? details['status'] ?? '').toString().trim();
+    final aadhaarSeeding =
+        (details['aadhaarSeedingStatus'] ?? '').toString().trim();
+    final category = (details['category'] ?? '').toString().trim();
     return Card(
       child: Padding(
         padding: EdgeInsets.all(14.w),
@@ -2121,7 +2547,13 @@ class _PanVerifyPanel extends StatelessWidget {
                 counterText: '',
               ),
             ),
-            if (panName != null && panName!.isNotEmpty) ...[
+            // Show PAN details returned by provider (category, status, aadhaar link).
+            // Name comes from ClubAPI panVerify — show it when available.
+            if (verified &&
+                (panName != null && panName!.isNotEmpty ||
+                    category.isNotEmpty ||
+                    panStatus.isNotEmpty ||
+                    aadhaarSeeding.isNotEmpty)) ...[
               SizedBox(height: 10.h),
               Container(
                 width: double.infinity,
@@ -2132,26 +2564,53 @@ class _PanVerifyPanel extends StatelessWidget {
                   border: Border.all(color: Colors.green.shade200),
                 ),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.person_search_outlined,
-                        color: Colors.green),
+                    const Icon(Icons.verified_outlined, color: Colors.green),
                     SizedBox(width: 10.w),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'Name on PAN',
-                            style: TextStyle(
-                                color: KhatuColors.muted,
-                                fontWeight: FontWeight.w700),
-                          ),
-                          Text(
-                            panName!,
-                            style: const TextStyle(
-                                color: KhatuColors.text,
-                                fontWeight: FontWeight.w900),
-                          ),
+                          if (panName != null && panName!.isNotEmpty) ...[
+                            const Text(
+                              'Name on PAN',
+                              style: TextStyle(
+                                  color: KhatuColors.muted,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                            Text(
+                              panName!,
+                              style: const TextStyle(
+                                  color: KhatuColors.text,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 16),
+                            ),
+                            SizedBox(height: 4.h),
+                          ],
+                          if (category.isNotEmpty)
+                            Text(
+                              'PAN type: $category',
+                              style: const TextStyle(
+                                  color: KhatuColors.muted,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                          if (panStatus.isNotEmpty)
+                            Text(
+                              'Status: $panStatus',
+                              style: TextStyle(
+                                  color: panStatus.toUpperCase() == 'VALID'
+                                      ? Colors.green.shade700
+                                      : KhatuColors.muted,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                          if (aadhaarSeeding.isNotEmpty)
+                            Text(
+                              'Aadhaar link: $aadhaarSeeding',
+                              style: const TextStyle(
+                                  color: KhatuColors.muted,
+                                  fontWeight: FontWeight.w700),
+                            ),
                         ],
                       ),
                     ),
@@ -2171,7 +2630,7 @@ class _PanVerifyPanel extends StatelessWidget {
                         child: const CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.fact_check_outlined),
-                label: Text(verified ? 'Reverify PAN Name' : 'Verify PAN Name'),
+                label: Text(verified ? 'Reverify PAN' : 'Verify PAN'),
               ),
             ),
             if (message != null && message!.isNotEmpty) ...[
@@ -2192,6 +2651,7 @@ class _LiveSelfiePanel extends StatelessWidget {
   final String selfiePath;
   final bool capturing;
   final bool verified;
+  final bool submitted;
   final String? message;
   final VoidCallback onCapture;
 
@@ -2199,24 +2659,40 @@ class _LiveSelfiePanel extends StatelessWidget {
     required this.selfiePath,
     required this.capturing,
     required this.verified,
+    required this.submitted,
     required this.message,
     required this.onCapture,
   });
 
   @override
   Widget build(BuildContext context) {
-    final hasSelfie = selfiePath.isNotEmpty && verified;
+    final hasSelfie = selfiePath.isNotEmpty;
+    final submittedForReview = submitted && !verified;
+    final statusColor = verified
+        ? Colors.green
+        : submittedForReview
+            ? KhatuColors.saffron
+            : KhatuColors.saffron;
     return Card(
       child: Padding(
         padding: EdgeInsets.all(14.w),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (!hasSelfie)
+              const Align(
+                alignment: Alignment.centerRight,
+                child: LoanVisual(
+                  asset: 'assets/loans/generated/loan_selfie_secure.png',
+                  fallbackIcon: Icons.face_retouching_natural_outlined,
+                  size: 72,
+                ),
+              ),
             Row(
               children: [
                 Icon(
                   hasSelfie ? Icons.verified_user : Icons.camera_front_outlined,
-                  color: hasSelfie ? Colors.green : KhatuColors.saffron,
+                  color: statusColor,
                 ),
                 SizedBox(width: 10.w),
                 const Expanded(
@@ -2230,15 +2706,18 @@ class _LiveSelfiePanel extends StatelessWidget {
                 ),
                 Chip(
                   label: Text(
-                    hasSelfie ? 'VERIFIED' : 'REQUIRED',
+                    verified
+                        ? 'VERIFIED'
+                        : submittedForReview
+                            ? 'SUBMITTED'
+                            : 'REQUIRED',
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w900,
                       fontSize: 11,
                     ),
                   ),
-                  backgroundColor:
-                      hasSelfie ? Colors.green : KhatuColors.saffron,
+                  backgroundColor: statusColor,
                 ),
               ],
             ),
@@ -2255,7 +2734,7 @@ class _LiveSelfiePanel extends StatelessWidget {
               SizedBox(height: 8.h),
               Text(message!,
                   style: TextStyle(
-                    color: verified ? Colors.green : Colors.red.shade700,
+                    color: verified ? Colors.green : KhatuColors.muted,
                     fontWeight: FontWeight.w700,
                   )),
             ],
@@ -2532,9 +3011,11 @@ class _BottomActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 16.h),
+      padding: EdgeInsets.fromLTRB(
+          16.w, 10.h, 16.w, 10.h + MediaQuery.of(context).viewPadding.bottom),
       decoration: BoxDecoration(
         color: Colors.white,
+        border: const Border(top: BorderSide(color: KhatuColors.line)),
         boxShadow: [
           BoxShadow(
               color: Colors.black.withValues(alpha: 0.08),
@@ -2545,10 +3026,15 @@ class _BottomActions extends StatelessWidget {
       child: Row(
         children: [
           if (step > 0)
-            OutlinedButton.icon(
+            IconButton(
+              tooltip: 'Back',
               onPressed: submitting ? null : onBack,
               icon: const Icon(Icons.arrow_back),
-              label: const Text('Back'),
+              style: IconButton.styleFrom(
+                foregroundColor: KhatuColors.deepTeal,
+                backgroundColor: KhatuColors.softTeal,
+                fixedSize: const Size(48, 48),
+              ),
             ),
           if (step > 0) SizedBox(width: 10.w),
           Expanded(
@@ -2556,6 +3042,12 @@ class _BottomActions extends StatelessWidget {
               onPressed: submitting || !canSubmit
                   ? null
                   : (step == maxStep ? onSubmit : onNext),
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(0, 48),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(KhatuRadius.md),
+                ),
+              ),
               icon: submitting
                   ? SizedBox(
                       width: 18.w,

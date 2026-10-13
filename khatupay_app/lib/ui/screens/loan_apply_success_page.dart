@@ -5,6 +5,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../../core/app_theme.dart';
 import '../../routes/app_router.dart';
 import '../widgets/app_back_button.dart';
+import '../widgets/loan_visual.dart';
 
 class LoanApplySuccessPage extends StatelessWidget {
   final String id;
@@ -20,13 +21,216 @@ class LoanApplySuccessPage extends StatelessWidget {
         leading: const AppBackButton(fallbackRoute: '/loans'),
       ),
       body: SafeArea(
-        child: Padding(
-          padding: EdgeInsets.all(18.w),
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(16.w, 14.h, 16.w, 24.h),
           child: Column(
             children: [
-              Expanded(
-                child: Center(
-                  child: Container(
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(20.w, 24.h, 20.w, 20.h),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24.r),
+                  border: Border.all(color: KhatuColors.line),
+                  boxShadow: [
+                    BoxShadow(
+                      color: KhatuColors.deepTeal.withValues(alpha: 0.08),
+                      blurRadius: 24,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    const LoanVisual(
+                      asset: 'assets/loans/generated/loan_success.png',
+                      fallbackIcon: Icons.task_alt_rounded,
+                      size: 106,
+                    ),
+                    SizedBox(height: 4.h),
+                    Container(
+                      width: 76.w,
+                      height: 76.w,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE4F7F1),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: KhatuColors.teal.withValues(alpha: 0.22),
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.check_rounded,
+                        color: KhatuColors.teal,
+                        size: 46.sp,
+                      ),
+                    ),
+                    SizedBox(height: 18.h),
+                    Text(
+                      'Application received',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: KhatuColors.text,
+                        fontSize: 24.sp,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(height: 8.h),
+                    Text(
+                      'Your loan request has been submitted successfully.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: KhatuColors.muted,
+                        fontSize: 14.sp,
+                        height: 1.4,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(height: 14.h),
+                    Container(
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 12.w, vertical: 7.h),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF4D6),
+                        borderRadius: BorderRadius.circular(20.r),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.hourglass_top_rounded,
+                              color: KhatuColors.saffron, size: 16.sp),
+                          SizedBox(width: 6.w),
+                          Text(
+                            'Under review by Khatu Pay',
+                            style: TextStyle(
+                              color: const Color(0xFF8A5A00),
+                              fontSize: 12.sp,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 22.h),
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.fromLTRB(14.w, 14.h, 10.w, 14.h),
+                      decoration: BoxDecoration(
+                        color: KhatuColors.bg,
+                        borderRadius: BorderRadius.circular(16.r),
+                        border: Border.all(color: KhatuColors.line),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Application ID',
+                                      style: TextStyle(
+                                        color: KhatuColors.muted,
+                                        fontSize: 12.sp,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    SizedBox(height: 4.h),
+                                    SelectableText(
+                                      id,
+                                      style: TextStyle(
+                                        color: KhatuColors.deepTeal,
+                                        fontSize: 18.sp,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 0.4,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Copy application ID',
+                                onPressed: () async {
+                                  await Clipboard.setData(
+                                      ClipboardData(text: id));
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content:
+                                              Text('Application ID copied')),
+                                    );
+                                  }
+                                },
+                                icon: const Icon(Icons.copy_rounded,
+                                    color: KhatuColors.teal),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: 18.h),
+                          const _TimelineStep(
+                            icon: Icons.check_circle_rounded,
+                            title: 'Application saved',
+                            subtitle:
+                                'Your request is with the Khatu Pay review team.',
+                          ),
+                          SizedBox(height: 12.h),
+                          const _TimelineStep(
+                            icon: Icons.manage_search_rounded,
+                            title: 'Verification review',
+                            subtitle:
+                                'Your profile and bank details will be checked securely.',
+                          ),
+                          SizedBox(height: 12.h),
+                          const _TimelineStep(
+                            icon: Icons.notifications_active_rounded,
+                            title: 'Status updates',
+                            subtitle:
+                                'Approval or action updates will appear in the app.',
+                            isLast: true,
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 14.h),
+                    const _InfoStrip(
+                      icon: Icons.phone_in_talk_outlined,
+                      text:
+                          'Keep your registered mobile reachable for updates.',
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 16.h),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => router.go('/loans'),
+                  icon: const Icon(Icons.track_changes_rounded),
+                  label: const Text('Track application'),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: Size(double.infinity, 54.h),
+                  ),
+                ),
+              ),
+              SizedBox(height: 4.h),
+              TextButton.icon(
+                onPressed: () => router.go('/'),
+                icon: const Icon(Icons.home_outlined),
+                label: const Text('Back to home'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/*
+                    // Kept below in the diff context only; the success page
+                    // above intentionally owns the complete confirmation UI.
+                    child: Container(
                     width: double.infinity,
                     padding: EdgeInsets.all(22.w),
                     decoration: BoxDecoration(
@@ -173,6 +377,7 @@ class LoanApplySuccessPage extends StatelessWidget {
     );
   }
 }
+*/
 
 class _TimelineStep extends StatelessWidget {
   final IconData icon;
@@ -267,7 +472,8 @@ class _InfoStrip extends StatelessWidget {
           Expanded(
             child: Text(
               text,
-              style: const TextStyle(color: Color(0xFF92400E), fontWeight: FontWeight.w700),
+              style: const TextStyle(
+                  color: Color(0xFF92400E), fontWeight: FontWeight.w700),
             ),
           ),
         ],

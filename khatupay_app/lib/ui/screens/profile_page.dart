@@ -171,8 +171,8 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
               _completionCard(data),
               const KpSectionHeader(title: 'Personal information'),
               _personal(data),
-              const KpSectionHeader(title: 'Verification and KYC'),
-              _kyc(data),
+              const KpSectionHeader(title: 'Bank verification'),
+              _bankVerification(data),
               const KpSectionHeader(title: 'Loan applications'),
               _loans(),
               const KpSectionHeader(title: 'Merchant business'),
@@ -257,10 +257,9 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                 label: const Text('Edit personal details'))),
       ]));
 
-  Widget _kyc(KPUser user) {
-    final status = (user.kyc?['status'] ?? 'NOT_STARTED').toString();
-    final reason =
-        (user.kyc?['rejectionReason'] ?? user.kyc?['remarks'] ?? '').toString();
+  Widget _bankVerification(KPUser user) {
+    final verified = _flag(user.kyc, ['bankVerified', 'bankStatus']);
+    final status = verified ? 'Verified' : 'Required';
     return KpCard(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
@@ -270,24 +269,24 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
         Expanded(
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Identity verification', style: KhatuText.h3),
+          const Text('Bank verification', style: KhatuText.h3),
           const SizedBox(height: 6),
           KpStatusBadge(status: status),
         ])),
       ]),
-      if (reason.isNotEmpty) ...[
-        const SizedBox(height: 12),
-        KpErrorBanner(message: reason)
-      ],
+      const SizedBox(height: 12),
+      Text(
+          verified
+              ? 'Your bank account is verified and ready for disbursal processing.'
+              : 'Verify your bank account during the loan application flow.',
+          style: KhatuText.bodyMuted),
       const SizedBox(height: 12),
       SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
-              onPressed: () => router.push('/kyc'),
-              icon: const Icon(Icons.shield_outlined),
-              label: Text(status.toUpperCase() == 'APPROVED'
-                  ? 'Review details'
-                  : 'Continue verification'))),
+              onPressed: () => router.push('/apply'),
+              icon: const Icon(Icons.account_balance_outlined),
+              label: Text(verified ? 'Review bank details' : 'Verify bank'))),
     ]));
   }
 

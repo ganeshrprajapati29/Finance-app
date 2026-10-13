@@ -130,7 +130,6 @@ class _QRStickerOrderPageState extends State<QRStickerOrderPage> {
         },
         userNote: _note.text.trim(),
       );
-      final order = Map<String, dynamic>.from(data['order'] ?? {});
       final checkout = data['checkout'];
       if (checkout == null || _total <= 0) {
         if (!mounted) return;

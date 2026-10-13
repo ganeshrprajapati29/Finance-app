@@ -43,11 +43,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ref.read(userServiceProvider).getSettings(),
       ]);
       if (!mounted) return;
-      final preferences = Map<String, dynamic>.from(values[3] as Map);
+      final rawPreferences = values[3];
+      final preferences = rawPreferences is Map
+          ? Map<String, dynamic>.from(rawPreferences)
+          : const <String, dynamic>{};
       setState(() {
-        _biometricEnabled = values[0] as bool;
-        _biometricAvailable = values[1] as bool;
-        _version = (values[2] as PackageInfo).version;
+        _biometricEnabled = values[0] == true;
+        _biometricAvailable = values[1] == true;
+        _version = values[2] is PackageInfo ? (values[2] as PackageInfo).version : '';
         _notificationsEnabled = preferences['notificationsEnabled'] ?? true;
       });
     } catch (_) {

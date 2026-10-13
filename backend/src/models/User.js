@@ -14,7 +14,7 @@ const kycDocSchema = new mongoose.Schema({
   submittedAt: { type: Date, default: Date.now }
 }, { _id:false });
 const userSchema = new mongoose.Schema({
-  name:String, email:{type:String,unique:true,lowercase:true}, mobile:{type:String,unique:true},
+  name:String, email:{type:String,unique:true,sparse:true,lowercase:true}, mobile:{type:String,unique:true}, mobileVerified:{type:Boolean,default:false},
   passwordHash:String, mpinHash:String, emailVerified:{type:Boolean,default:false},
   pinAttempts:{type:Number, default:0}, pinLockedUntil:Date, pinResetRequired:{type:Boolean, default:false},
   // Bumped on password/PIN reset or explicit "log out everywhere"; refresh

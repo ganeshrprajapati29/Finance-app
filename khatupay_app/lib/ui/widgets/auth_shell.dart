@@ -44,7 +44,17 @@ class AuthShell extends StatelessWidget {
                     ]),
                     if (illustrationAsset != null) ...[
                       const SizedBox(height: 14),
-                      Center(child: SizedBox(height: compactIllustration ? 112 : (constraints.maxHeight * .19).clamp(120.0, 168.0), width: compactIllustration ? 112 : double.infinity, child: Image.asset(illustrationAsset!, fit: BoxFit.contain))),
+                      Center(
+                        child: SizedBox(
+                          height: compactIllustration ? 112 : (constraints.maxHeight * .19).clamp(120.0, 168.0),
+                          width: compactIllustration ? 112 : double.infinity,
+                          child: Image.asset(
+                            illustrationAsset!,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => Icon(icon, color: kpAuthTeal, size: 72),
+                          ),
+                        ),
+                      ),
                     ],
                     const SizedBox(height: 16),
                     Text(title, style: const TextStyle(color: kpAuthInk, fontSize: 26, fontWeight: FontWeight.w800)),
@@ -54,7 +64,7 @@ class AuthShell extends StatelessWidget {
                     child,
                     const SizedBox(height: 14),
                     Center(child: TextButton(onPressed: onFooterTap, child: Text(footerText, style: const TextStyle(color: kpAuthTeal, fontWeight: FontWeight.w700)))),
-                    const Center(child: Text('Protected with secure authentication', style: TextStyle(color: kpAuthMuted, fontSize: 12))),
+                    const Center(child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.shield_outlined, size: 14, color: kpAuthMuted), SizedBox(width: 5), Text('Secure account access', style: TextStyle(color: kpAuthMuted, fontSize: 12))])),
                   ]),
                 ),
               ),
@@ -163,6 +173,48 @@ class AuthOtpInput extends StatelessWidget {
       );
 }
 
+class AuthMpinInput extends StatelessWidget {
+  final TextEditingController controller;
+  final ValueChanged<String>? onCompleted;
+  final bool enabled;
+
+  const AuthMpinInput({
+    super.key,
+    required this.controller,
+    this.onCompleted,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) => PinCodeTextField(
+        appContext: context,
+        length: 4,
+        controller: controller,
+        enabled: enabled,
+        keyboardType: TextInputType.number,
+        obscureText: true,
+        obscuringCharacter: '*',
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        animationType: AnimationType.fade,
+        autoFocus: true,
+        enableActiveFill: true,
+        onChanged: (_) {},
+        onCompleted: onCompleted,
+         pinTheme: PinTheme(
+          shape: PinCodeFieldShape.box,
+          borderRadius: BorderRadius.circular(8),
+          fieldHeight: 54,
+          fieldWidth: 52,
+          activeFillColor: const Color(0xFFF8FAFA),
+          inactiveFillColor: const Color(0xFFF8FAFA),
+          selectedFillColor: kpAuthMint,
+          activeColor: kpAuthTeal,
+          inactiveColor: kpAuthLine,
+           selectedColor: kpAuthTeal,
+         ),
+       );
+}
+
 class PasswordRequirements extends StatelessWidget {
   final String password;
   const PasswordRequirements({super.key, required this.password});
@@ -179,7 +231,7 @@ String friendlyAuthError(Object error, {String fallback = 'Something went wrong.
   if (lower.contains('invalid credentials')) return 'The email, mobile number, or password is incorrect.';
   if (lower.contains('already registered') || lower.contains('user_exists')) return 'An account with this email or mobile number already exists.';
   if (lower.contains('expired')) return 'This verification code has expired. Request a new code.';
-  if (lower.contains('invalid otp')) return 'The verification code is incorrect. Please check and try again.';
+  if (lower.contains('invalid otp') || lower.contains('incorrect otp')) return 'Incorrect OTP. Please check and try again.';
   if (lower.contains('too many')) return 'Too many attempts. Please wait and try again.';
   if (lower.contains('network') || lower.contains('connection') || lower.contains('socket')) return 'Please check your internet connection and try again.';
   if (value.isNotEmpty && value.length <= 120 && !lower.contains('dio') && !lower.contains('exception')) return value;

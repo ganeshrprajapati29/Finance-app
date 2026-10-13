@@ -10,6 +10,10 @@ class LoanReference {
 }
 
 class LoanApplicationDraft {
+  /// Identifies this draft to the server; every submit retry sends the same
+  /// value so a lost response can never create a second application.
+  String idempotencyKey = '';
+
   // Step 1: Personal
   String name = '';
   String email = '';
@@ -62,10 +66,7 @@ class LoanApplicationDraft {
   String accountNumber = '';
   String ifscCode = '';
   String accountHolderName = '';
-  String upiId = '';
-  String upiAccountName = '';
   Map<String, dynamic>? bankValidation;
-  Map<String, dynamic>? upiValidation;
 
   // Requested loan
   num amountRequested = 0;
@@ -100,10 +101,7 @@ class LoanApplicationDraft {
       'accountNumber': accountNumber,
       'ifscCode': ifscCode,
       'accountHolderName': accountHolderName,
-      'upiId': upiId,
-      'upiAccountName': upiAccountName,
       'bankValidation': bankValidation,
-      'upiValidation': upiValidation,
     },
     'amountRequested': amountRequested,
     'tenureMonths': tenureMonths,

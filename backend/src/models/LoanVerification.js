@@ -8,6 +8,11 @@ const stageSchema = new mongoose.Schema({
   verifiedAt: Date,
   updatedAt: Date,
   data: mongoose.Schema.Types.Mixed,
+  // Set when an admin clears or rejects a stage by hand.
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reviewedAt: Date,
+  reviewNote: String,
+  reviewDecision: String,
 }, { _id: false });
 
 const loanVerificationSchema = new mongoose.Schema({
@@ -30,6 +35,9 @@ const loanVerificationSchema = new mongoose.Schema({
   eStamp: { type: stageSchema, default: () => ({}) },
   eSign: { type: stageSchema, default: () => ({}) },
   auditTrail: { type: stageSchema, default: () => ({}) },
+  // Short lock so two overlapping loan submits cannot both pass the
+  // one-active-loan check.
+  submitLockUntil: Date,
 }, { timestamps: true });
 
 export default mongoose.models.LoanVerification || mongoose.model('LoanVerification', loanVerificationSchema);

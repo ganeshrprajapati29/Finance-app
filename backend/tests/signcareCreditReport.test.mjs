@@ -177,6 +177,27 @@ test('request builder resolves every field from saved KYC', () => {
   });
 });
 
+test('request builder finds DOB in the saved provider response when aadhaarData is incomplete', () => {
+  const { request, missing } = buildExperianRetailRequest({
+    user: {
+      mobile: '9140718388',
+      name: 'Ganesh Prajapati',
+      kyc: {
+        panNumber: 'eoqpp8094r',
+        panName: 'GANESH PRAJAPATI',
+        aadhaarData: { pincode: '273407' },
+        aadhaarVerification: {
+          response: { data: { dob: '13/09/2003' } },
+        },
+      },
+    },
+    verification: {},
+  });
+
+  assert.equal(missing.includes('dateOfBirth'), false);
+  assert.equal(request.dateOfBirth, '2003-09-13');
+});
+
 test('request builder prefers the verification record and finds a pincode inside the address text', () => {
   const { request, missing } = buildExperianRetailRequest({
     user: kycUser({ kyc: { panNumber: 'EOQPP8094R', panName: 'Ganesh Prajapati' } }),

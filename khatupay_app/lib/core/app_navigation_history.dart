@@ -12,6 +12,15 @@ class AppNavigationHistory {
     if (_locations.isEmpty) _locations.add(clean);
   }
 
+  /// Starts a new navigation session after boot, sign-in, sign-out or unlock.
+  /// Authentication routes must never remain behind the signed-in dashboard.
+  static void reset(String location) {
+    _locations
+      ..clear()
+      ..add(_clean(location));
+    _navigatingBack = false;
+  }
+
   static void record(String location) {
     final clean = _clean(location);
     if (_navigatingBack) {

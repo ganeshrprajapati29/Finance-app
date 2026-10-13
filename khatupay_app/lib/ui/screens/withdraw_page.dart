@@ -4,7 +4,6 @@ import '../../core/friendly_error.dart';
 import '../../models/withdrawal_request.dart';
 import '../../clubapi/services/clubapi_service_updated.dart';
 import '../../providers/auth_providers.dart';
-import '../../routes/app_router.dart';
 import '../../services/withdrawal_service.dart';
 import '../widgets/app_back_button.dart';
 

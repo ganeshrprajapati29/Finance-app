@@ -138,16 +138,31 @@ export async function runSmartNotificationScan(options = {}) {
       notificationsEnabled: { $ne: false },
       ...(options.userId ? { _id: options.userId } : {}),
     };
-    const users = await User.find(query)
-      .select('name mobile walletBalance kyc notificationsEnabled fcmTokens')
-      .limit(options.limit || 500);
-
-    for (const user of users) {
-      await generateForUser(user, options, generated);
+    // Walk every eligible user in id order; a fixed limit silently skipped
+    // everyone after the first page. options.limit still caps manual scans.
+    const pageSize = 200;
+    const max = options.limit || Infinity;
+    let scanned = 0;
+    let lastId = null;
+    while (scanned < max) {
+      const users = await User.find(lastId ? { ...query, _id: { ...(query._id ? { $eq: query._id } : {}), $gt: lastId } } : query)
+        .sort({ _id: 1 })
+        .limit(Math.min(pageSize, max - scanned))
+        .select('name mobile walletBalance kyc notificationsEnabled fcmTokens');
+      if (!users.length) break;
+      for (const user of users) {
+        try {
+          await generateForUser(user, options, generated);
+        } catch (error) {
+          console.error(`Auto notification for user ${user._id} failed:`, error.message);
+        }
+      }
+      scanned += users.length;
+      lastId = users[users.length - 1]._id;
     }
 
     return {
-      scannedUsers: users.length,
+      scannedUsers: scanned,
       generatedCount: generated.length,
       generated,
     };

@@ -1,9 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  HTTPS-only. No cleartext, no dev/LAN hosts - both were previously shipped
+  in production builds (security audit finding, 2026-08-16).
+
+  To add certificate pinning once the API's certificate is known, add a
+  <domain-config> for api.khatupay.com with a <pin-set> containing the
+  SHA-256 pins of its public key, plus a backup pin for rotation. Generate
+  them with (run against the real production host):
+
+    openssl s_client -connect api.khatupay.com:443 -servername api.khatupay.com </dev/null 2>/dev/null \
+      | openssl x509 -pubkey -noout \
+      | openssl pkey -pubin -outform der \
+      | openssl dgst -sha256 -binary \
+      | openssl enc -base64
+
+  Do this for both the current leaf certificate AND the issuing CA (or a
+  planned replacement cert) so a routine renewal doesn't lock users out.
+  Do not ship a <pin-set> until the pins have been verified against the
+  live server - a wrong pin fails every request, with no fallback.
+-->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <!-- Emulator host -->
-        <domain includeSubdomains="true">192.168.29.124</domain>
-        <!-- Optional: production API -->
-        <domain includeSubdomains="true">api.khatupay.com</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

@@ -31,19 +31,40 @@ export function applyPaymentToSchedule(schedule, payment) {
   const rows = Array.isArray(schedule) ? schedule : [];
   const paidAt = payment?.paidAt || new Date();
   const settled = [];
+  let appliedAmount = 0;
 
-  const markPaid = (row) => {
+  const rowPaidAmount = (row) => Array.isArray(row?.partPayments)
+    ? row.partPayments.reduce((sum, item) => sum + Number(item?.amount || 0), 0)
+    : 0;
+  const rowOutstanding = (row) => Math.max(0, Number(row?.total || 0) - rowPaidAmount(row));
+
+  const applyToRow = (row, requestedAmount) => {
+    const outstanding = rowOutstanding(row);
+    if (row?.paid || outstanding <= 0) return false;
+    const amount = Math.min(
+      outstanding,
+      requestedAmount == null ? outstanding : Math.max(0, Number(requestedAmount)),
+    );
+    if (!(amount > 0)) return false;
+    if (amount < outstanding) {
+      if (!Array.isArray(row.partPayments)) row.partPayments = [];
+      row.partPayments.push({ amount, paymentId: payment?.paymentId, paymentDate: paidAt });
+      appliedAmount += amount;
+      return true;
+    }
     row.paid = true;
     row.paidAt = paidAt;
     row.paymentId = payment?.paymentId;
+    appliedAmount += amount;
     settled.push(Number(row.installmentNo));
+    return true;
   };
 
   if (payment?.type === 'FULL_REPAYMENT') {
     for (const row of rows) {
-      if (!row.paid) markPaid(row);
+      applyToRow(row);
     }
-    return { settled, alreadySettled: settled.length === 0 };
+    return { settled, appliedAmount, alreadySettled: appliedAmount === 0 };
   }
 
   const installmentNo = payment?.installmentNo;
@@ -52,9 +73,9 @@ export function applyPaymentToSchedule(schedule, payment) {
       (row) => Number(row.installmentNo) === Number(installmentNo)
     );
     if (!target) return { settled, alreadySettled: false };
-    if (target.paid) return { settled, alreadySettled: true };
-    markPaid(target);
-    return { settled, alreadySettled: false };
+    if (target.paid || rowOutstanding(target) <= 0) return { settled, appliedAmount, alreadySettled: true };
+    applyToRow(target, payment?.amount);
+    return { settled, appliedAmount, alreadySettled: false };
   }
 
   // No installment specified: settle the earliest unpaid one by due date, so
@@ -63,9 +84,9 @@ export function applyPaymentToSchedule(schedule, payment) {
     .filter((row) => !row.paid)
     .sort((a, b) => new Date(a.dueDate || 0) - new Date(b.dueDate || 0));
 
-  if (!pending.length) return { settled, alreadySettled: true };
-  markPaid(pending[0]);
-  return { settled, alreadySettled: false };
+  if (!pending.length) return { settled, appliedAmount, alreadySettled: true };
+  applyToRow(pending[0], payment?.amount);
+  return { settled, appliedAmount, alreadySettled: false };
 }
 
 /**
@@ -87,8 +108,11 @@ export function isScheduleFullyPaid(schedule) {
  */
 export function outstandingAmount(schedule) {
   const rows = Array.isArray(schedule) ? schedule : [];
-  return rows.reduce(
-    (sum, row) => sum + (row.paid ? 0 : Number(row.total || 0)),
-    0
-  );
+  return rows.reduce((sum, row) => {
+    if (row.paid) return sum;
+    const paid = Array.isArray(row.partPayments)
+      ? row.partPayments.reduce((rowSum, item) => rowSum + Number(item?.amount || 0), 0)
+      : 0;
+    return sum + Math.max(0, Number(row.total || 0) - paid);
+  }, 0);
 }

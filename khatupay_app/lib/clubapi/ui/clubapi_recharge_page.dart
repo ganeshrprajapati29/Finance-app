@@ -145,12 +145,7 @@ class _ClubAPIRechargePageState extends ConsumerState<ClubAPIRechargePage> {
       _amountError = null;
       if (_selectedPlan != null && amount != _selectedPlan!.amount)
         _selectedPlan = null;
-      if (_method == ServicePayMethod.wallet) {
-        final balance =
-            (ref.read(meProvider).valueOrNull?.walletBalance ?? 0).toDouble();
-        if (amount == null || amount > balance)
-          _method = ServicePayMethod.gateway;
-      }
+      _method = ServicePayMethod.gateway;
     });
   }
 
@@ -284,7 +279,6 @@ class _ClubAPIRechargePageState extends ConsumerState<ClubAPIRechargePage> {
     );
 
     if (!mounted) return;
-    if (_method == ServicePayMethod.wallet) ref.invalidate(meProvider);
     setState(() {
       _paying = false;
       if (feedback != null) {
@@ -302,8 +296,6 @@ class _ClubAPIRechargePageState extends ConsumerState<ClubAPIRechargePage> {
 
   @override
   Widget build(BuildContext context) {
-    final walletBalance = ref.watch(meProvider).valueOrNull?.walletBalance;
-
     return KpAppShell(
       title: 'Recharge',
       showBack: false,
@@ -326,12 +318,12 @@ class _ClubAPIRechargePageState extends ConsumerState<ClubAPIRechargePage> {
           onSelected: _switchService,
         ),
         KhatuSpace.gapLg,
-        ..._body(walletBalance),
+        ..._body(),
       ],
     );
   }
 
-  List<Widget> _body(num? walletBalance) {
+  List<Widget> _body() {
     if (_loadingCatalog && _catalog == null) {
       return const [
         SizedBox(height: 120),
@@ -493,10 +485,11 @@ class _ClubAPIRechargePageState extends ConsumerState<ClubAPIRechargePage> {
             const Text('Pay using', style: KhatuText.h3),
             KhatuSpace.gapSm,
             PaymentMethodSelector(
-              method: _method,
-              walletBalance: walletBalance,
+              method: ServicePayMethod.gateway,
+              walletBalance: null,
               amount: amount,
-              onChanged: (value) => setState(() => _method = value),
+              showWallet: false,
+              onChanged: (_) => setState(() => _method = ServicePayMethod.gateway),
             ),
           ],
         ),

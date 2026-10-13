@@ -10,6 +10,11 @@ class SupportService {
 
   Future<List<Ticket>> myTickets() async {
     final r = await _dio.get('/support/me');
-    return (r.data['data'] as List).map((e) => Ticket.fromJson(e)).toList();
+    final body = r.data;
+    final rows = body is Map && body['data'] is List ? body['data'] as List : const [];
+    return rows
+        .whereType<Map>()
+        .map((e) => Ticket.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
   }
 }

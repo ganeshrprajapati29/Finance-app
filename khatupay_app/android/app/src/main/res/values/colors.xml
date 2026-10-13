@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Accent applied to the push notification small icon -->
+    <color name="notification_color">#0F766E</color>
+	<color name="ic_launcher_background">#FFFFFF</color>
+</resources>

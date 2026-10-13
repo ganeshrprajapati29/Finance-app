@@ -33,6 +33,30 @@ export async function verifyMailer() {
   return getTransporter().verify();
 }
 
+function brandEmailHtml(html, subject = '') {
+  const content = String(html || '').trim();
+  if (!content) return content;
+  // Smart notifications already use the shared branded template.
+  if (content.includes('khatulogo-removebg-preview.png') || content.includes('data-khatu-branded')) {
+    return content;
+  }
+  const logoUrl = process.env.KHATUPAY_LOGO_URL || 'https://khatupay.com/khatulogo-removebg-preview.png';
+  const body = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || content;
+  return `<!doctype html><html><body style="margin:0;background:#f5f8f7;font-family:Arial,Helvetica,sans-serif;color:#102a27">
+  <div style="max-width:600px;margin:0 auto;padding:28px 16px">
+    <div style="overflow:hidden;background:#fff;border:1px solid #dfeae7;border-radius:18px">
+      <div style="padding:22px 24px;background:#08201e;color:#fff">
+        <img src="${logoUrl}" alt="Khatu Pay" style="height:38px;max-width:160px;object-fit:contain;background:#fff;border-radius:10px;padding:4px" />
+        <div style="margin-top:12px;font-size:20px;font-weight:800">${subject}</div>
+      </div>
+      <div style="padding:26px 24px">${body}</div>
+      <div style="padding:16px 24px;background:#f7faf9;border-top:1px solid #e5ecea;color:#667b77;font-size:12px;line-height:1.6">
+        Khatu Pay secure communications. Please do not share OTPs, passwords or account details.<br />Need help? Contact ${process.env.SUPPORT_EMAIL || 'support@khatupay.com'}.
+      </div>
+    </div>
+  </div></body></html>`;
+}
+
 export async function sendMail(to, subject, html, text) {
   const sender = process.env.MAIL_FROM || process.env.SMTP_FROM || process.env.MAIL_USER;
   const replyTo = process.env.MAIL_REPLY_TO || process.env.SUPPORT_EMAIL || sender;
@@ -41,7 +65,7 @@ export async function sendMail(to, subject, html, text) {
     replyTo,
     to,
     subject,
-    html,
+    html: brandEmailHtml(html, subject),
     text,
   });
 }

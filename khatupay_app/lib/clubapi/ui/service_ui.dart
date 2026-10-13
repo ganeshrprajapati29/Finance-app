@@ -466,12 +466,14 @@ class PaymentMethodSelector extends StatelessWidget {
     required this.walletBalance,
     required this.amount,
     required this.onChanged,
+    this.showWallet = true,
   });
 
   final ServicePayMethod method;
   final num? walletBalance;
   final double? amount;
   final ValueChanged<ServicePayMethod> onChanged;
+  final bool showWallet;
 
   @override
   Widget build(BuildContext context) {
@@ -539,16 +541,18 @@ class PaymentMethodSelector extends StatelessWidget {
           title: 'UPI, Card or Net Banking',
           subtitle: 'Google Pay, PhonePe, Paytm, any bank',
         ),
-        KhatuSpace.gapSm,
-        option(
-          value: ServicePayMethod.wallet,
-          icon: Icons.account_balance_wallet_rounded,
-          title: 'Khatu Pay wallet',
-          subtitle: walletUsable || amount == null || amount == 0
-              ? 'Balance ${serviceMoney(balance)}'
-              : 'Balance ${serviceMoney(balance)} - not enough for this payment',
-          enabled: walletUsable,
-        ),
+        if (showWallet) ...[
+          KhatuSpace.gapSm,
+          option(
+            value: ServicePayMethod.wallet,
+            icon: Icons.account_balance_wallet_rounded,
+            title: 'Khatu Pay wallet',
+            subtitle: walletUsable || amount == null || amount == 0
+                ? 'Balance ${serviceMoney(balance)}'
+                : 'Balance ${serviceMoney(balance)} - not enough for this payment',
+            enabled: walletUsable,
+          ),
+        ],
       ],
     );
   }

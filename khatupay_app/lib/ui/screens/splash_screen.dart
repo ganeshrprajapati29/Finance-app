@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/auth_storage.dart';
+import '../../core/fcm.dart';
+import '../../core/app_navigation_history.dart';
 import '../../services/app_update_service.dart';
 import '../../services/play_store_update_service.dart';
 import 'update_required_page.dart';
@@ -94,8 +96,13 @@ class _SplashScreenState extends State<SplashScreen>
       return;
     }
     final token = results[0] as String?;
+    final appLockEnabled = await AuthStorage.isAppLockEnabled();
+    final identifier = await AuthStorage.getLastIdentifier();
     _bootCompleted = true;
-    context.go(token == null ? '/login' : '/');
+    final target = await _initialTarget(token, appLockEnabled, identifier);
+    AppNavigationHistory.reset(target);
+    context.go(target);
+    if (target == '/') FCM.onSessionReady();
   }
 
   Future<void> _checkUpdateAgain() async {
@@ -115,7 +122,41 @@ class _SplashScreenState extends State<SplashScreen>
       return;
     }
     final token = await AuthStorage.getAccessToken();
-    if (mounted) context.go(token == null ? '/login' : '/');
+    final appLockEnabled = await AuthStorage.isAppLockEnabled();
+    final identifier = await AuthStorage.getLastIdentifier();
+    final target = await _initialTarget(token, appLockEnabled, identifier);
+    if (mounted) {
+      AppNavigationHistory.reset(target);
+      context.go(target);
+      if (target == '/') FCM.onSessionReady();
+    }
+  }
+
+  Future<String> _initialTarget(
+    String? token,
+    bool appLockEnabled,
+    String? identifier,
+  ) async {
+    if (token == null) return '/login';
+    final savedRoute = await AuthStorage.getResumeRoute();
+    final resumeRoute = _safeResumeRoute(savedRoute) ?? '/';
+    if (!appLockEnabled || identifier?.isNotEmpty != true) return resumeRoute;
+    return Uri(path: '/unlock', queryParameters: {'returnTo': resumeRoute}).toString();
+  }
+
+  String? _safeResumeRoute(String? value) {
+    final route = value?.trim() ?? '';
+    if (!route.startsWith('/') || route.startsWith('//')) return null;
+    final path = Uri.tryParse(route)?.path ?? '';
+    const blocked = {
+      '/splash',
+      '/login',
+      '/unlock',
+      '/forgot',
+      '/forgot-pin',
+      '/recharge-result',
+    };
+    return blocked.contains(path) ? null : route;
   }
 
   Future<bool> _startPlayUpdate() async {

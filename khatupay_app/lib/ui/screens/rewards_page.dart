@@ -74,7 +74,10 @@ class _RewardsPageState extends State<RewardsPage> {
           : 'Reward claimed successfully.');
       await _load();
     } catch (e) {
-      if (mounted) setState(() => _message = e.toString());
+      if (mounted) {
+        setState(() => _message = friendlyErrorMessage(e,
+            fallback: 'Reward could not be claimed. Please try again.'));
+      }
     }
   }
 

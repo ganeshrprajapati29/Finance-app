@@ -5,12 +5,26 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import User from '../models/User.js';
 import Otp from '../models/Otp.js';
+import MobileOnboardingSession from '../models/MobileOnboardingSession.js';
 import { ok, fail } from '../utils/response.js';
 import { signAccessToken, signRefreshToken, verifyToken } from '../utils/jwt.js';
 import { sendOtpMail } from '../services/mailer.js';
+import { sendApitxtOtp, OtpDeliveryError } from '../services/apitxtOtp.js';
+
 import { requireAuth } from '../middlewares/auth.js';
 import { ensureUserPaymentQr } from '../services/qrAuto.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
+import { decryptSessionMobile, encryptSessionMobile, hashSessionToken } from '../utils/secureMobileSession.js';
+
+// India is the only supported mobile market for KhatuPay today. Accept common
+// user input formats while storing one canonical 10-digit number everywhere.
+const indianMobile = Joi.string().trim().custom((value, helpers) => {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.startsWith('0091')) digits = digits.slice(4);
+  else if (digits.startsWith('91') && digits.length === 12) digits = digits.slice(2);
+  if (!/^[6-9]\d{9}$/.test(digits)) return helpers.error('string.indianMobile');
+  return digits;
+}).messages({ 'string.indianMobile': 'Enter a valid 10-digit Indian mobile number.' });
 
 const router = Router();
 
@@ -42,6 +56,15 @@ router.use(authLimiter);
 const credentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { trustProxy: false, xForwardedForHeader: false },
+  handler: authLimitFail,
+});
+
+const mobileOtpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: false, xForwardedForHeader: false },
@@ -101,6 +124,31 @@ async function verifyOtp(email, purpose, candidate, { consume = true } = {}) {
   return { ok: true, record };
 }
 
+async function createMobileOtp(mobile, purpose = 'mobile_verify', ttlMinutes = 10) {
+  const otp = genOTP();
+  const otpHash = await bcrypt.hash(otp, 10);
+  const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+  await Otp.create({ mobile, otp: otpHash, purpose, expiresAt });
+  return otp;
+}
+
+async function verifyMobileOtp(mobile, candidate, purpose = 'mobile_verify') {
+  const record = await Otp.findOne({ mobile, purpose, used: false })
+    .sort({ createdAt: -1 });
+  if (!record) return { ok: false, error: 'INVALID_OTP' };
+  if (record.expiresAt < new Date()) return { ok: false, error: 'OTP_EXPIRED' };
+  if (record.attempts >= 5) return { ok: false, error: 'OTP_LOCKED' };
+  const valid = await bcrypt.compare(candidate, record.otp);
+  if (!valid) {
+    record.attempts += 1;
+    await record.save();
+    return { ok: false, error: 'INVALID_OTP' };
+  }
+  record.used = true;
+  await record.save();
+  return { ok: true };
+}
+
 function otpFailure(res, error) {
   const messages = {
     INVALID_OTP: 'Incorrect OTP. Please check the 6-digit code and try again.',
@@ -109,6 +157,137 @@ function otpFailure(res, error) {
   };
   return fail(res, error, messages[error] || 'Incorrect OTP. Please try again.', 400);
 }
+
+function authSessionPayload(user) {
+  const payload = { uid: user._id.toString(), roles: user.roles, sv: user.sessionVersion || 0 };
+  return {
+    accessToken: signAccessToken(payload),
+    refreshToken: signRefreshToken(payload),
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      mobile: user.mobile,
+      khatuUpiId: user.khatuUpiId,
+      roles: user.roles,
+      emailVerified: user.emailVerified,
+    },
+  };
+}
+
+async function recordMobileLogin(user, req) {
+  user.mobileVerified = true;
+  user.security = {
+    ...(user.security || {}),
+    lastLoginAt: new Date(),
+    lastLoginIp: requestIp(req),
+    lastLoginUserAgent: req.headers['user-agent'] || '',
+  };
+  await user.save();
+}
+
+/* ===============================
+   MOBILE-FIRST AUTHENTICATION
+   =============================== */
+router.post('/mobile-auth/send', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile } = await Joi.object({
+      mobile: indianMobile.required(),
+    }).validateAsync(req.body);
+    const user = await User.findOne({ mobile }).select('status');
+    if (user?.status === 'blocked') {
+      return ok(res, {}, 'If this mobile number can access Khatu Pay, a verification code has been sent.');
+    }
+    const otp = await createMobileOtp(mobile, 'mobile_auth');
+    try {
+      await sendApitxtOtp({ mobile, otp, purpose: 'mobile_auth' });
+    } catch (error) {
+      await Otp.updateMany({ mobile, purpose: 'mobile_auth', used: false }, { $set: { used: true } });
+      if (error instanceof OtpDeliveryError) return fail(res, 'OTP_DELIVERY_UNAVAILABLE', error.message, 503);
+      throw error;
+    }
+    ok(res, {}, 'A verification code has been sent to your mobile number.');
+  } catch (error) {
+    if (error.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid 10-digit Indian mobile number.', 400);
+    next(error);
+  }
+});
+
+router.post('/mobile-auth/verify', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile, otp } = await Joi.object({
+      mobile: indianMobile.required(),
+      otp: Joi.string().length(6).required(),
+    }).validateAsync(req.body);
+    const result = await verifyMobileOtp(mobile, otp, 'mobile_auth');
+    if (!result.ok) return otpFailure(res, result.error);
+
+    const user = await User.findOne({ mobile });
+    if (user) {
+      if (user.status !== 'active') return fail(res, 'ACCOUNT_BLOCKED', 'This account is temporarily unavailable. Please contact Khatu Pay support.', 403);
+      await recordMobileLogin(user, req);
+      return ok(res, { next: 'LOGIN', ...authSessionPayload(user) }, 'Login successful.');
+    }
+
+    const secret = crypto.randomBytes(32).toString('base64url');
+    const session = await MobileOnboardingSession.create({
+      tokenHash: hashSessionToken(secret),
+      mobileCiphertext: encryptSessionMobile(mobile),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+    return ok(res, {
+      next: 'PROFILE',
+      onboardingToken: `${session._id}.${secret}`,
+    }, 'Mobile number verified. Complete your profile to continue.');
+  } catch (error) {
+    if (error.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid mobile number and 6-digit code.', 400);
+    next(error);
+  }
+});
+
+router.post('/mobile-auth/complete-profile', credentialLimiter, async (req, res, next) => {
+  try {
+    const { onboardingToken, name, email, mpin, termsAccepted } = await Joi.object({
+      onboardingToken: Joi.string().min(40).max(300).required(),
+      name: Joi.string().trim().min(2).max(100).required(),
+      email: Joi.string().email().allow('').optional(),
+      mpin: Joi.string().pattern(/^\d{4}$/).required(),
+      termsAccepted: Joi.boolean().valid(true).required(),
+    }).validateAsync(req.body, { abortEarly: false, stripUnknown: true });
+    if (['0000', '1111', '1234'].includes(mpin)) return fail(res, 'WEAK_MPIN', 'Choose a stronger 4-digit MPIN.', 400);
+    const [sessionId, secret] = onboardingToken.split('.');
+    if (!sessionId || !secret) return fail(res, 'ONBOARDING_EXPIRED', 'Your verified session expired. Please start again.', 400);
+    const session = await MobileOnboardingSession.findOne({
+      _id: sessionId,
+      tokenHash: hashSessionToken(secret),
+      usedAt: { $exists: false },
+      expiresAt: { $gt: new Date() },
+    });
+    const mobile = decryptSessionMobile(session?.mobileCiphertext);
+    if (!session || !/^[6-9]\d{9}$/.test(mobile)) return fail(res, 'ONBOARDING_EXPIRED', 'Your verified session expired. Please start again.', 400);
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const duplicate = await User.findOne({ $or: [{ mobile }, ...(normalizedEmail ? [{ email: normalizedEmail }] : [])] }).select('_id');
+    if (duplicate) return fail(res, 'PROFILE_ALREADY_EXISTS', 'This mobile number already has an account. Please sign in again.', 409);
+    const user = await User.create({
+      name,
+      mobile,
+      mobileVerified: true,
+      ...(normalizedEmail ? { email: normalizedEmail } : {}),
+      mpinHash: await bcrypt.hash(mpin, 12),
+      roles: ['user'],
+      status: 'active',
+    });
+    session.usedAt = new Date();
+    await session.save();
+    await recordMobileLogin(user, req);
+    ensureUserPaymentQr(user._id).catch((error) => console.error('Auto QR setup failed:', error.message));
+    ok(res, { next: 'LOGIN', ...authSessionPayload(user) }, 'Profile created successfully.');
+  } catch (error) {
+    if (error.isJoi) return fail(res, 'VALIDATION_ERROR', 'Complete the required profile details.', 400);
+    if (error?.code === 11000) return fail(res, 'PROFILE_ALREADY_EXISTS', 'This mobile number or email already has an account.', 409);
+    next(error);
+  }
+});
 
 /* ===============================
    REGISTER
@@ -203,6 +382,132 @@ router.post('/resend-verification', credentialLimiter, async (req, res, next) =>
     ok(res, {}, 'If verification is pending, a new code has been sent');
   } catch (err) {
     if (err.isJoi) return fail(res, 'VALIDATION_ERROR', err.message, 400);
+    next(err);
+  }
+});
+
+/* ===============================
+   MOBILE OTP (APITxT delivery)
+   =============================== */
+router.post('/mobile-otp/send', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile } = await Joi.object({
+      mobile: indianMobile.required(),
+    }).validateAsync(req.body);
+
+    const user = await User.findOne({ mobile }).select('_id status');
+    if (!user || user.status !== 'active') {
+      return ok(res, {}, 'If this mobile number is registered, a verification code has been sent.');
+    }
+
+    const otp = await createMobileOtp(mobile);
+    try {
+      await sendApitxtOtp({ mobile, otp, purpose: 'mobile_verify' });
+    } catch (error) {
+      // Do not retain a code that was never delivered.
+      await Otp.updateMany(
+        { mobile, purpose: 'mobile_verify', otp: { $exists: true }, used: false },
+        { $set: { used: true } }
+      );
+      if (error instanceof OtpDeliveryError) {
+        return fail(res, 'OTP_DELIVERY_UNAVAILABLE', error.message, 503);
+      }
+      throw error;
+    }
+    ok(res, {}, 'A verification code has been sent to your mobile number.');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid 10-digit Indian mobile number.', 400);
+    next(err);
+  }
+});
+
+router.post('/mobile-otp/verify', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile, otp } = await Joi.object({
+      mobile: indianMobile.required(),
+      otp: Joi.string().length(6).required(),
+    }).validateAsync(req.body);
+    const user = await User.findOne({ mobile });
+    if (!user) return otpFailure(res, 'INVALID_OTP');
+    const result = await verifyMobileOtp(mobile, otp);
+    if (!result.ok) return otpFailure(res, result.error);
+    user.mobileVerified = true;
+    await user.save();
+    ok(res, { mobileVerified: true }, 'Mobile number verified successfully.');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid mobile number and 6-digit code.', 400);
+    next(err);
+  }
+});
+
+/* ===============================
+   MOBILE OTP LOGIN
+   =============================== */
+router.post('/login/mobile-otp/send', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile } = await Joi.object({
+      mobile: indianMobile.required(),
+    }).validateAsync(req.body);
+    const user = await User.findOne({ mobile }).select('_id status');
+    if (!user || user.status !== 'active') {
+      return ok(res, {}, 'If this mobile number is registered, a verification code has been sent.');
+    }
+    const otp = await createMobileOtp(mobile, 'mobile_login');
+    try {
+      await sendApitxtOtp({ mobile, otp, purpose: 'mobile_login' });
+    } catch (error) {
+      await Otp.updateMany(
+        { mobile, purpose: 'mobile_login', used: false },
+        { $set: { used: true } }
+      );
+      if (error instanceof OtpDeliveryError) {
+        return fail(res, 'OTP_DELIVERY_UNAVAILABLE', error.message, 503);
+      }
+      throw error;
+    }
+    ok(res, {}, 'A verification code has been sent to your mobile number.');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid 10-digit Indian mobile number.', 400);
+    next(err);
+  }
+});
+
+router.post('/login/mobile-otp/verify', mobileOtpLimiter, async (req, res, next) => {
+  try {
+    const { mobile, otp } = await Joi.object({
+      mobile: indianMobile.required(),
+      otp: Joi.string().length(6).required(),
+    }).validateAsync(req.body);
+    const user = await User.findOne({ mobile });
+    if (!user || user.status !== 'active') return otpFailure(res, 'INVALID_OTP');
+    const result = await verifyMobileOtp(mobile, otp, 'mobile_login');
+    if (!result.ok) return otpFailure(res, result.error);
+
+    user.mobileVerified = true;
+    user.security = {
+      ...(user.security || {}),
+      lastLoginAt: new Date(),
+      lastLoginIp: requestIp(req),
+      lastLoginUserAgent: req.headers['user-agent'] || '',
+    };
+    await user.save();
+
+    const payload = { uid: user._id.toString(), roles: user.roles, sv: user.sessionVersion || 0 };
+    ok(res, {
+      accessToken: signAccessToken(payload),
+      refreshToken: signRefreshToken(payload),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        mobile: user.mobile,
+        khatuUpiId: user.khatuUpiId,
+        roles: user.roles,
+        emailVerified: user.emailVerified,
+      },
+    }, 'Login successful');
+  } catch (err) {
+    if (err.isJoi) return fail(res, 'VALIDATION_ERROR', 'Enter a valid mobile number and 6-digit code.', 400);
     next(err);
   }
 });

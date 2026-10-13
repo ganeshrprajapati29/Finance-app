@@ -292,7 +292,10 @@ class _VirtualCardTileState extends State<_VirtualCardTile> {
       if (mounted)
         setState(() => _message = 'Card status updated successfully');
     } catch (e) {
-      if (mounted) setState(() => _message = e.toString());
+      if (mounted) {
+        setState(() => _message = friendlyErrorMessage(e,
+            fallback: 'Card status could not be updated. Please try again.'));
+      }
     } finally {
       if (mounted) setState(() => _updating = false);
     }

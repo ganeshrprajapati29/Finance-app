@@ -116,11 +116,23 @@ const FIELD_LABELS = {
  */
 export function buildExperianRetailRequest({ user = {}, verification = {} } = {}) {
   const kyc = asObject(user.kyc);
+  const savedPanSources = [
+    verification.pan?.data,
+    kyc.panData,
+    kyc.panVerification?.response,
+    kyc.panVerification,
+  ].filter(Boolean);
+  const savedAadhaarSources = [
+    verification.aadhaar?.data,
+    kyc.aadhaarData,
+    kyc.aadhaarVerification?.response,
+    kyc.aadhaarVerification,
+  ].filter(Boolean);
   const panProfile = normalizePanKycData(
-    verification.pan?.data || kyc.panData || {},
+    savedPanSources[0] || {},
     { panNumber: kyc.panNumber, name: kyc.panName },
   );
-  const aadhaarStored = verification.aadhaar?.data || kyc.aadhaarData || {};
+  const aadhaarStored = savedAadhaarSources[0] || {};
   const aadhaar = normalizeAadhaarKycData(aadhaarStored, asObject(kyc.aadhaarData));
 
   const fullName = [panProfile.name, kyc.panName, aadhaar.fullName, user.name].map(text).find(Boolean) || '';
@@ -137,7 +149,18 @@ export function buildExperianRetailRequest({ user = {}, verification = {} } = {}
     validPincode(user.address?.pincode),
   ].find(Boolean) || '';
 
-  const dateOfBirth = [aadhaar.dob, panProfile.dob, kyc.aadhaarData?.dob, user.dob, user.dateOfBirth]
+  const dateOfBirth = [
+    aadhaar.dob,
+    panProfile.dob,
+    ...savedAadhaarSources.flatMap((source) => [
+      findDeep(source, ['dob', 'dateOfBirth', 'date_of_birth', 'birthDate']),
+    ]),
+    ...savedPanSources.flatMap((source) => [
+      findDeep(source, ['dob', 'dateOfBirth', 'date_of_birth', 'birthDate']),
+    ]),
+    user.dob,
+    user.dateOfBirth,
+  ]
     .map(toIsoDate).find(Boolean) || '';
 
   const request = {

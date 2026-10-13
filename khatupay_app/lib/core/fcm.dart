@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'app_theme.dart';
 import 'auth_storage.dart';
 import '../routes/app_router.dart';
 import '../services/user_service.dart';
@@ -29,9 +30,18 @@ class FCM {
     importance: Importance.high,
   );
 
+  // A tapped notification can arrive before the user is signed in or unlocked
+  // (cold start goes through splash/login). Its route waits here until then.
+  static String? _pendingRoute;
+  static bool _sessionReady = false;
+  static bool _listening = false;
+
   static Future<void> init() async {
     await Firebase.initializeApp();
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    // Listeners first: the permission prompt below can wait on the user for
+    // a long time and taps must still be handled meanwhile.
+    listenForeground();
     await _initLocalNotifications();
 
     await _messaging.requestPermission(
@@ -79,13 +89,29 @@ class FCM {
   }
 
   static void listenForeground() {
+    if (_listening) return;
+    _listening = true;
     FirebaseMessaging.onMessage.listen(_showLocalNotification);
     FirebaseMessaging.onMessageOpenedApp.listen(_openMessage);
   }
 
+  /// Call once the user is on the dashboard (after splash, login or unlock).
+  /// Opens the screen of a notification tapped before that point.
+  static void onSessionReady() {
+    _sessionReady = true;
+    final route = _pendingRoute;
+    _pendingRoute = null;
+    if (route != null && route != '/') _push(route);
+  }
+
+  static void onSessionEnded() {
+    _sessionReady = false;
+    _pendingRoute = null;
+  }
+
   static Future<void> _initLocalNotifications() async {
     const settings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      android: AndroidInitializationSettings('@drawable/ic_notification'),
       iOS: DarwinInitializationSettings(),
     );
 
@@ -107,6 +133,9 @@ class FCM {
 
   static Future<void> _showLocalNotification(RemoteMessage message) async {
     inboxRevision.value++;
+    // iOS already shows foreground alerts via the presentation options set in
+    // init(); a local copy would appear twice.
+    if (!Platform.isAndroid) return;
     final title =
         message.notification?.title ?? message.data['title'] ?? 'KhatuPay';
     final body = message.notification?.body ??
@@ -114,7 +143,7 @@ class FCM {
         'You have a new notification';
 
     await _localNotifications.show(
-      message.hashCode,
+      (message.messageId ?? '${message.sentTime}$title').hashCode & 0x7fffffff,
       title,
       body,
       NotificationDetails(
@@ -124,7 +153,8 @@ class FCM {
           channelDescription: _androidChannel.description,
           importance: Importance.high,
           priority: Priority.high,
-          icon: '@mipmap/ic_launcher',
+          icon: '@drawable/ic_notification',
+          color: KhatuColors.deepTeal,
           playSound: true,
           enableVibration: true,
         ),
@@ -146,6 +176,7 @@ class FCM {
   }
 
   static void _openMessage(RemoteMessage message) {
+    inboxRevision.value++;
     _openRoute(_routeForMessage(message));
   }
 
@@ -160,9 +191,11 @@ class FCM {
         return id == null || id.isEmpty ? '/loans' : '/loan/$id';
       case 'payments':
       case 'payment':
-        return '/payments';
+        return '/payment-history';
       case 'kyc':
         return '/kyc';
+      case 'business':
+        return '/business';
       case 'support':
         return '/support';
       case 'offers':
@@ -175,22 +208,38 @@ class FCM {
   static void _openRoute(String? route) {
     final target =
         route != null && _isAllowedRoute(route) ? route : '/notifications';
+    if (!_sessionReady) {
+      _pendingRoute = target;
+      return;
+    }
+    _push(target);
+  }
+
+  static void _push(String target) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      router.go(target);
+      if (router.routerDelegate.currentConfiguration.uri.path == target) return;
+      router.push(target);
     });
   }
 
   static bool _isAllowedRoute(String route) {
     final uri = Uri.tryParse(route);
     if (uri == null || uri.hasScheme || !route.startsWith('/')) return false;
+    // Only screens that exist in app_router.dart and are safe to deep-link.
     const exact = {
       '/notifications',
       '/service-history',
+      '/payment-history',
+      '/payments',
       '/loans',
       '/kyc',
+      '/offers',
+      '/rewards',
+      '/profile',
       '/settings',
       '/support',
       '/business',
+      '/business/verification',
       '/business/transactions',
       '/business/settlements',
       '/business/qr',

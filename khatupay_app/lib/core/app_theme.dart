@@ -206,6 +206,7 @@ class KhatuText {
   const KhatuText._();
 
   static const display = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 28,
     fontWeight: FontWeight.w900,
     color: KhatuColors.text,
@@ -214,6 +215,7 @@ class KhatuText {
   );
 
   static const h1 = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 22,
     fontWeight: FontWeight.w900,
     color: KhatuColors.text,
@@ -222,6 +224,7 @@ class KhatuText {
   );
 
   static const h2 = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 18,
     fontWeight: FontWeight.w900,
     color: KhatuColors.text,
@@ -229,6 +232,7 @@ class KhatuText {
   );
 
   static const h3 = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 16,
     fontWeight: FontWeight.w800,
     color: KhatuColors.text,
@@ -236,6 +240,7 @@ class KhatuText {
   );
 
   static const body = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 14,
     fontWeight: FontWeight.w600,
     color: KhatuColors.text,
@@ -243,6 +248,7 @@ class KhatuText {
   );
 
   static const bodyMuted = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 14,
     fontWeight: FontWeight.w600,
     color: KhatuColors.muted,
@@ -250,6 +256,7 @@ class KhatuText {
   );
 
   static const label = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 12.5,
     fontWeight: FontWeight.w700,
     color: KhatuColors.muted,
@@ -257,6 +264,7 @@ class KhatuText {
   );
 
   static const caption = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 11.5,
     fontWeight: FontWeight.w700,
     color: KhatuColors.faint,
@@ -265,6 +273,7 @@ class KhatuText {
 
   /// Money. Bold and tight so an amount reads as data, not as prose.
   static const amount = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 20,
     fontWeight: FontWeight.w900,
     color: KhatuColors.text,
@@ -273,6 +282,7 @@ class KhatuText {
   );
 
   static const amountLarge = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 32,
     fontWeight: FontWeight.w900,
     color: Colors.white,
@@ -281,6 +291,7 @@ class KhatuText {
   );
 
   static const button = TextStyle(
+    fontFamily: 'Roboto',
     fontSize: 15,
     fontWeight: FontWeight.w900,
     letterSpacing: 0.2,
@@ -309,7 +320,6 @@ class AppTheme {
       visualDensity: VisualDensity.standard,
       fontFamily: 'Roboto',
       splashFactory: InkRipple.splashFactory,
-
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
@@ -318,6 +328,7 @@ class AppTheme {
         scrolledUnderElevation: 0.5,
         centerTitle: true,
         titleTextStyle: TextStyle(
+          fontFamily: 'Roboto',
           color: KhatuColors.text,
           fontSize: 18,
           fontWeight: FontWeight.w900,
@@ -329,7 +340,6 @@ class AppTheme {
           statusBarBrightness: Brightness.light,
         ),
       ),
-
       cardTheme: CardThemeData(
         color: KhatuColors.surface,
         elevation: 0,
@@ -341,24 +351,27 @@ class AppTheme {
         ),
         surfaceTintColor: Colors.white,
       ),
-
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.white,
         labelStyle: const TextStyle(
+          fontFamily: 'Roboto',
           color: KhatuColors.muted,
           fontWeight: FontWeight.w700,
         ),
         floatingLabelStyle: const TextStyle(
+          fontFamily: 'Roboto',
           color: KhatuColors.deepTeal,
           fontWeight: FontWeight.w800,
         ),
         hintStyle: const TextStyle(
+          fontFamily: 'Roboto',
           color: KhatuColors.faint,
           fontWeight: FontWeight.w600,
         ),
         helperStyle: KhatuText.caption,
         errorStyle: const TextStyle(
+          fontFamily: 'Roboto',
           color: KhatuColors.danger,
           fontWeight: FontWeight.w700,
           fontSize: 12,
@@ -392,7 +405,6 @@ class AppTheme {
           borderSide: const BorderSide(color: KhatuColors.line),
         ),
       ),
-
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: KhatuColors.teal,
@@ -408,7 +420,6 @@ class AppTheme {
           textStyle: KhatuText.button,
         ),
       ),
-
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: KhatuColors.saffron,
@@ -422,7 +433,6 @@ class AppTheme {
           textStyle: KhatuText.button,
         ),
       ),
-
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: KhatuColors.deepTeal,
@@ -435,45 +445,44 @@ class AppTheme {
           textStyle: KhatuText.button,
         ),
       ),
-
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: KhatuColors.deepTeal,
           textStyle: const TextStyle(
+            fontFamily: 'Roboto',
             fontWeight: FontWeight.w900,
             fontSize: 13.5,
           ),
         ),
       ),
-
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: KhatuColors.teal,
         foregroundColor: Colors.white,
         elevation: 2,
       ),
-
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: Colors.white,
         selectedItemColor: KhatuColors.teal,
         unselectedItemColor: KhatuColors.muted,
-        selectedLabelStyle:
-            TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
-        unselectedLabelStyle:
-            TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+        selectedLabelStyle: TextStyle(
+            fontFamily: 'Roboto', fontWeight: FontWeight.w900, fontSize: 11),
+        unselectedLabelStyle: TextStyle(
+            fontFamily: 'Roboto', fontWeight: FontWeight.w700, fontSize: 11),
         type: BottomNavigationBarType.fixed,
         elevation: 0,
       ),
-
       chipTheme: ChipThemeData(
         backgroundColor: KhatuColors.surfaceAlt,
         selectedColor: KhatuColors.softTeal,
         side: const BorderSide(color: KhatuColors.line),
         labelStyle: const TextStyle(
+          fontFamily: 'Roboto',
           fontWeight: FontWeight.w800,
           fontSize: 12.5,
           color: KhatuColors.text,
         ),
         secondaryLabelStyle: const TextStyle(
+          fontFamily: 'Roboto',
           fontWeight: FontWeight.w800,
           fontSize: 12.5,
           color: KhatuColors.deepTeal,
@@ -483,10 +492,10 @@ class AppTheme {
           borderRadius: BorderRadius.all(Radius.circular(KhatuRadius.pill)),
         ),
       ),
-
       snackBarTheme: SnackBarThemeData(
         backgroundColor: KhatuColors.ink,
         contentTextStyle: const TextStyle(
+          fontFamily: 'Roboto',
           color: Colors.white,
           fontWeight: FontWeight.w700,
         ),
@@ -496,7 +505,6 @@ class AppTheme {
           borderRadius: BorderRadius.circular(KhatuRadius.md),
         ),
       ),
-
       dialogTheme: DialogThemeData(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
@@ -507,7 +515,6 @@ class AppTheme {
           borderRadius: BorderRadius.circular(KhatuRadius.xl),
         ),
       ),
-
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
@@ -518,13 +525,11 @@ class AppTheme {
         showDragHandle: true,
         dragHandleColor: KhatuColors.lineStrong,
       ),
-
       dividerTheme: const DividerThemeData(
         color: KhatuColors.line,
         thickness: 1,
         space: 1,
       ),
-
       listTileTheme: const ListTileThemeData(
         iconColor: KhatuColors.teal,
         textColor: KhatuColors.text,
@@ -533,24 +538,22 @@ class AppTheme {
         contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         horizontalTitleGap: 12,
       ),
-
       progressIndicatorTheme: const ProgressIndicatorThemeData(
         color: KhatuColors.teal,
         linearTrackColor: KhatuColors.line,
         circularTrackColor: Colors.transparent,
       ),
-
       tabBarTheme: const TabBarThemeData(
         labelColor: KhatuColors.deepTeal,
         unselectedLabelColor: KhatuColors.muted,
         indicatorColor: KhatuColors.teal,
         indicatorSize: TabBarIndicatorSize.tab,
-        labelStyle: TextStyle(fontWeight: FontWeight.w900, fontSize: 13.5),
-        unselectedLabelStyle:
-            TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5),
+        labelStyle: TextStyle(
+            fontFamily: 'Roboto', fontWeight: FontWeight.w900, fontSize: 13.5),
+        unselectedLabelStyle: TextStyle(
+            fontFamily: 'Roboto', fontWeight: FontWeight.w700, fontSize: 13.5),
         dividerColor: KhatuColors.line,
       ),
-
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.all(Colors.white),
         trackColor: WidgetStateProperty.resolveWith(
@@ -560,7 +563,6 @@ class AppTheme {
         ),
         trackOutlineColor: WidgetStateProperty.all(Colors.transparent),
       ),
-
       checkboxTheme: CheckboxThemeData(
         fillColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
@@ -571,7 +573,6 @@ class AppTheme {
         side: const BorderSide(color: KhatuColors.lineStrong, width: 1.5),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
       ),
-
       radioTheme: RadioThemeData(
         fillColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
@@ -579,13 +580,11 @@ class AppTheme {
               : KhatuColors.lineStrong,
         ),
       ),
-
       textSelectionTheme: const TextSelectionThemeData(
         cursorColor: KhatuColors.teal,
         selectionColor: KhatuColors.softTeal,
         selectionHandleColor: KhatuColors.teal,
       ),
-
       textTheme: const TextTheme(
         displaySmall: KhatuText.display,
         headlineSmall: KhatuText.h1,

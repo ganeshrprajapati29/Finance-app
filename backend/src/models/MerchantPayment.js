@@ -8,5 +8,6 @@ const schema = new mongoose.Schema({
   status: { type: String, enum: ['CREATED', 'PENDING', 'SUCCESS', 'FAILED', 'REFUNDED'], default: 'CREATED', index: true },
   checkoutUrl: String, utr: String, providerTransactionId: String,
   provider: mongoose.Schema.Types.Mixed, creditedAt: Date, failedAt: Date,
+  refundedAmount: { type: Number, default: 0 }, refundedAt: Date,
 }, { timestamps: true });
 export default mongoose.models.MerchantPayment || mongoose.model('MerchantPayment', schema);

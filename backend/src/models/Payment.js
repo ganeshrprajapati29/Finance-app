@@ -8,7 +8,7 @@ const paymentSchema = new mongoose.Schema({
   installmentNo:{ type:Number },
   type:{ type:String, enum:['REPAYMENT','FULL_REPAYMENT','BILL','DISBURSEMENT','FEE','P2P','WALLET_TOPUP','WALLET_SPEND','RECHARGE','BBPS_BILL','OTHER','PART_PAYMENT','PENALTY'], default:'OTHER' },
   amount:{ type:Number, required:true },
-  method:{ type:String, enum:['UPI','BANK','CASH','RAZORPAY','VELXAPAY','WALLET','OTHER','MANUAL'], default:'RAZORPAY' },
+  method:{ type:String, enum:['UPI','BANK','CASH','RAZORPAY','WALLET','OTHER','MANUAL'], default:'RAZORPAY' },
   reference:String,
   status:{ type:String, enum:['PENDING','CONFIRMED','FAILED','REFUNDED'], default:'PENDING' },
   proofUrl:String,
@@ -32,7 +32,6 @@ const paymentSchema = new mongoose.Schema({
     // so Mongoose's strict mode silently discarded them.
     razorpayFailure: mongoose.Schema.Types.Mixed,
     razorpayRefund: mongoose.Schema.Types.Mixed,
-    velxapay: mongoose.Schema.Types.Mixed
   }
 }, { timestamps:true });
 

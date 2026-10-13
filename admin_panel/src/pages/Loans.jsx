@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Badge, Button, Col, Form, Modal, Row, Table } from 'react-bootstrap'
 import {
   AlertTriangle,
@@ -7,6 +7,7 @@ import {
   Clock3,
   Download,
   Eye,
+  FilePen as FileSignature,
   FileText,
   IndianRupee,
   RefreshCcw,
@@ -19,6 +20,7 @@ import {
 import api from '../api/axios'
 import { AlertStrip, PageHeader } from '../components/AdminUI.jsx'
 import ExperianReport from '../components/ExperianReport.jsx'
+import { allInclusiveApr, buildRepaymentSchedule } from '../utils/loanSchedule.js'
 
 const normalize = (value) => String(value || '').trim().toUpperCase()
 
@@ -81,10 +83,46 @@ const getPanStatus = (loan) => {
 
 const statusMap = {
   PENDING: { bg: 'warning', label: 'Pending', color: '#D97706' },
+  UNDER_REVIEW: { bg: 'warning', label: 'Under review', color: '#D97706' },
+  DOCUMENTS_REQUIRED: { bg: 'warning', label: 'Documents required', color: '#D97706' },
   APPROVED: { bg: 'success', label: 'Approved', color: '#059669' },
   REJECTED: { bg: 'danger', label: 'Rejected', color: '#DC2626' },
+  DISBURSEMENT_PROCESSING: { bg: 'info', label: 'Disbursing', color: '#0891B2' },
   DISBURSED: { bg: 'info', label: 'Disbursed', color: '#0891B2' },
+  OVERDUE: { bg: 'danger', label: 'Overdue', color: '#DC2626' },
   CLOSED: { bg: 'secondary', label: 'Closed', color: '#475569' },
+}
+
+const OPEN_STATUSES = ['PENDING', 'UNDER_REVIEW', 'DOCUMENTS_REQUIRED']
+
+// loan.agreement is the source of truth; decision.agreementStatus is its legacy mirror.
+const getAgreementStatus = (loan) => {
+  const status = normalize(loan.agreement?.status || loan.agreementDetails?.status)
+  if (status) return status
+  const legacy = normalize(loan.decision?.agreementStatus)
+  if (legacy === 'SIGNED') return 'SIGNED'
+  return loan.decision?.agreementDocumentId ? 'SIGNING' : legacy || 'NOT_AVAILABLE'
+}
+
+const agreementLabel = (status) => ({
+  NOT_AVAILABLE: 'Agreement not generated',
+  PENDING_SIGNATURE: 'Awaiting borrower eSign',
+  SIGNING: 'eSign in progress',
+  SIGNED: 'Signed',
+  FAILED: 'eSign failed - borrower can retry',
+}[normalize(status)] || String(status || '').replaceAll('_', ' '))
+
+const agreementTone = (status) => ({ SIGNED: 'success', FAILED: 'danger', SIGNING: 'info' }[normalize(status)] || 'warning')
+
+// Blob responses (the PDF preview) carry JSON errors as a Blob body.
+const blobErrorMessage = async (err, fallback) => {
+  try {
+    const data = err.response?.data
+    if (data instanceof Blob) return JSON.parse(await data.text())?.message || fallback
+    return data?.message || fallback
+  } catch {
+    return fallback
+  }
 }
 
 const riskTone = (riskLevel) => {
@@ -95,30 +133,77 @@ const riskTone = (riskLevel) => {
   return 'secondary'
 }
 
+const SORT_OPTIONS = {
+  newest: { sortBy: 'createdAt', sortOrder: 'desc' },
+  oldest: { sortBy: 'createdAt', sortOrder: 'asc' },
+  requested: { sortBy: 'application.amountRequested', sortOrder: 'desc' },
+  approved: { sortBy: 'decision.amountApproved', sortOrder: 'desc' },
+  due: { sortBy: 'nextDueDate', sortOrder: 'asc' },
+}
+
+const MAX_APR = 48
+const emptyDecisionForm = { amountApproved: '', rateAPR: '', tenureMonths: '', processingFee: '0', taxAmount: '0', lenderName: '', rejectionReason: '' }
+
+// Client-side mirror of the backend Joi rules, so the admin sees problems
+// before submitting. The backend stays the authority.
+const validateOffer = (form, requested) => {
+  const errors = {}
+  const amount = Number(form.amountApproved)
+  const rate = form.rateAPR === '' ? NaN : Number(form.rateAPR)
+  const tenure = Number(form.tenureMonths)
+  const fee = Number(form.processingFee || 0)
+  const tax = Number(form.taxAmount || 0)
+  if (!(amount > 0)) errors.amountApproved = 'Enter the approved amount.'
+  else if (requested > 0 && amount > requested) errors.amountApproved = `Cannot exceed the requested ${formatCurrency(requested)}.`
+  if (!Number.isFinite(rate) || rate < 0) errors.rateAPR = 'Enter an interest rate (0 or more).'
+  else if (rate > MAX_APR) errors.rateAPR = `Interest rate cannot exceed ${MAX_APR}% per annum.`
+  if (!Number.isInteger(tenure) || tenure < 3 || tenure > 60) errors.tenureMonths = 'Tenure must be 3 to 60 months.'
+  if (!(fee >= 0)) errors.processingFee = 'Fee cannot be negative.'
+  if (!(tax >= 0)) errors.taxAmount = 'Tax cannot be negative.'
+  if (amount > 0 && fee + tax >= amount) errors.processingFee = 'Fee and tax must be less than the approved amount.'
+  return errors
+}
+
 const Loans = () => {
   const [loans, setLoans] = useState([])
+  const [summary, setSummary] = useState(null)
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [riskFilter, setRiskFilter] = useState('ALL')
   const [sortBy, setSortBy] = useState('newest')
+  const [searchInput, setSearchInput] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
-  const [selectedLoan, setSelectedLoan] = useState(null)
+  const [selectedLoanId, setSelectedLoanId] = useState(null)
   const [decisionLoan, setDecisionLoan] = useState(null)
   const [decisionType, setDecisionType] = useState('')
-  const [decisionForm, setDecisionForm] = useState({ amountApproved: '', rateAPR: '', tenureMonths: '', processingFee: '0', taxAmount: '0', lenderName: '', rejectionReason: '' })
+  const [decisionForm, setDecisionForm] = useState(emptyDecisionForm)
+  const [decisionError, setDecisionError] = useState('')
+  const [disburseTarget, setDisburseTarget] = useState(null)
   const [processing, setProcessing] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
 
-  const fetchLoans = async () => {
+  // Debounce search so every keystroke is not a server round trip.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchTerm(searchInput.trim()), 350)
+    return () => clearTimeout(timer)
+  }, [searchInput])
+
+  const fetchLoans = useCallback(async () => {
     try {
       setError('')
-      const res = await api.get('/admin/loans?status=ALL&limit=1000&sortBy=createdAt&sortOrder=desc')
-      const data = res.data?.data || res.data || {}
-      const items = Array.isArray(data) ? data : data.items || []
-      setLoans(items)
+      const sort = SORT_OPTIONS[sortBy] || SORT_OPTIONS.newest
+      const res = await api.get('/admin/loans', {
+        params: { status: statusFilter, risk: riskFilter, search: searchTerm || undefined, page, limit, ...sort },
+      })
+      const data = res.data?.data || {}
+      setLoans(Array.isArray(data.items) ? data.items : [])
+      setTotal(Number(data.total || 0))
+      if (data.summary) setSummary(data.summary)
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Loans could not be loaded')
       setLoans([])
@@ -126,130 +211,117 @@ const Loans = () => {
       setLoading(false)
       setRefreshing(false)
     }
-  }
+  }, [statusFilter, riskFilter, searchTerm, page, limit, sortBy])
 
   useEffect(() => {
     fetchLoans()
-  }, [])
+  }, [fetchLoans])
 
   useEffect(() => {
     setPage(1)
   }, [statusFilter, riskFilter, sortBy, searchTerm, limit])
 
-  const stats = useMemo(() => {
-    const totalRequested = loans.reduce((sum, loan) => sum + getRequestedAmount(loan), 0)
-    const totalApproved = loans.reduce((sum, loan) => sum + getApprovedAmount(loan), 0)
-    const overdue = loans.filter((loan) => isOverdue(loan)).length
-    return {
-      total: loans.length,
-      pending: loans.filter((loan) => normalize(loan.status) === 'PENDING').length,
-      approved: loans.filter((loan) => normalize(loan.status) === 'APPROVED').length,
-      disbursed: loans.filter((loan) => normalize(loan.status) === 'DISBURSED').length,
-      rejected: loans.filter((loan) => normalize(loan.status) === 'REJECTED').length,
-      overdue,
-      totalRequested,
-      totalApproved,
-    }
-  }, [loans])
+  const stats = useMemo(() => ({
+    total: summary?.total ?? total,
+    pending: (summary?.byStatus?.PENDING || 0) + (summary?.byStatus?.UNDER_REVIEW || 0) + (summary?.byStatus?.DOCUMENTS_REQUIRED || 0),
+    approved: summary?.byStatus?.APPROVED || 0,
+    disbursed: summary?.byStatus?.DISBURSED || 0,
+    overdue: summary?.overdue || 0,
+    totalRequested: summary?.totalRequested || 0,
+    totalApproved: summary?.totalApproved || 0,
+  }), [summary, total])
 
-  const filteredLoans = useMemo(() => {
-    const term = searchTerm.toLowerCase().trim()
-
-    return loans
-      .filter((loan) => {
-        const status = normalize(loan.status || 'PENDING')
-        const nextDue = getNextDue(loan)
-        const overdue = isOverdue(loan)
-        const matchesStatus = statusFilter === 'ALL' || status === statusFilter
-        const matchesRisk =
-          riskFilter === 'ALL' ||
-          (riskFilter === 'OVERDUE' && overdue) ||
-          (riskFilter === 'DUE_SOON' && nextDue && !overdue && daysFromNow(nextDue.dueDate) <= 7) ||
-          (riskFilter === 'NO_SCHEDULE' && status === 'DISBURSED' && !loan.schedule?.length)
-        const matchesSearch =
-          !term ||
-          getUserName(loan).toLowerCase().includes(term) ||
-          getUserMobile(loan).toLowerCase().includes(term) ||
-          String(loan.userId?.email || '').toLowerCase().includes(term) ||
-          String(loan.loanAccountNumber || '').toLowerCase().includes(term) ||
-          String(loan._id || '').toLowerCase().includes(term)
-
-        return matchesStatus && matchesRisk && matchesSearch
-      })
-      .sort((a, b) => {
-        if (sortBy === 'oldest') return new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
-        if (sortBy === 'requested') return getRequestedAmount(b) - getRequestedAmount(a)
-        if (sortBy === 'approved') return getApprovedAmount(b) - getApprovedAmount(a)
-        if (sortBy === 'due') return dueTime(a) - dueTime(b)
-        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
-      })
-  }, [loans, searchTerm, statusFilter, riskFilter, sortBy])
-
-  const totalPages = Math.max(1, Math.ceil(filteredLoans.length / limit))
-  const pagedLoans = filteredLoans.slice((page - 1) * limit, page * limit)
+  const totalPages = Math.max(1, Math.ceil(total / limit))
 
   const openDecisionModal = (loan, type) => {
     setDecisionLoan(loan)
     setDecisionType(type)
+    setDecisionError('')
     setDecisionForm({
+      ...emptyDecisionForm,
       amountApproved: loan.decision?.amountApproved || loan.application?.amountRequested || '',
-      rateAPR: loan.decision?.rateAPR || 12,
+      rateAPR: loan.decision?.rateAPR ?? 12,
       tenureMonths: loan.decision?.tenureMonths || loan.application?.tenureMonths || 12,
-      processingFee: loan.decision?.processingFee || 0,
-      taxAmount: loan.decision?.taxAmount || 0,
+      processingFee: loan.decision?.processingFee ?? 0,
+      taxAmount: loan.decision?.taxAmount ?? 0,
       lenderName: loan.decision?.lenderName || '',
-      rejectionReason: '',
     })
+  }
+
+  const offerPayload = () => ({
+    decision: 'APPROVED',
+    amountApproved: Number(decisionForm.amountApproved),
+    rateAPR: Number(decisionForm.rateAPR),
+    tenureMonths: Number(decisionForm.tenureMonths),
+    processingFee: Number(decisionForm.processingFee || 0),
+    taxAmount: Number(decisionForm.taxAmount || 0),
+    lenderName: String(decisionForm.lenderName || '').trim(),
+  })
+
+  const offerErrors = decisionLoan && decisionType === 'APPROVE'
+    ? validateOffer(decisionForm, getRequestedAmount(decisionLoan))
+    : {}
+  const offerPreview = useMemo(() => {
+    if (!decisionLoan || decisionType !== 'APPROVE') return null
+    const principal = Number(decisionForm.amountApproved)
+    const months = Number(decisionForm.tenureMonths)
+    const rate = Number(decisionForm.rateAPR)
+    if (!(principal > 0) || !(months >= 1) || !Number.isFinite(rate)) return null
+    const upfrontCharges = Number(decisionForm.processingFee || 0) + Number(decisionForm.taxAmount || 0)
+    const repayment = buildRepaymentSchedule({ principal, annualRatePercent: rate, months })
+    return {
+      ...repayment,
+      netDisbursal: Math.max(0, principal - upfrontCharges),
+      apr: allInclusiveApr({ principal, annualRatePercent: rate, months, upfrontCharges }),
+    }
+  }, [decisionLoan, decisionType, decisionForm])
+
+  const approvalBlockers = decisionLoan?.verificationPolicy?.approvalBlockingLabels || []
+
+  const previewAgreement = async () => {
+    if (!decisionLoan || Object.keys(offerErrors).length) return
+    try {
+      setPreviewing(true)
+      const res = await api.post(`/admin/loans/${decisionLoan._id}/agreement/preview`, offerPayload(), { responseType: 'blob' })
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+      window.open(url, '_blank', 'noopener')
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      setDecisionError(await blobErrorMessage(err, 'Agreement preview could not be generated.'))
+    } finally {
+      setPreviewing(false)
+    }
   }
 
   const submitDecision = async () => {
     if (!decisionLoan) return
+    setDecisionError('')
     try {
-      setProcessing(true)
       if (decisionType === 'APPROVE') {
-        await api.post(`/admin/loans/${decisionLoan._id}/decision`, {
-          decision: 'APPROVED',
-          amountApproved: Number(decisionForm.amountApproved || 0),
-          rateAPR: Number(decisionForm.rateAPR || 0),
-          tenureMonths: Number(decisionForm.tenureMonths || 0),
-          processingFee: Number(decisionForm.processingFee || 0),
-          taxAmount: Number(decisionForm.taxAmount || 0),
-          lenderName: decisionForm.lenderName.trim(),
-        })
+        if (Object.keys(offerErrors).length) return
+        setProcessing(true)
+        await api.post(`/admin/loans/${decisionLoan._id}/decision`, offerPayload())
       } else {
-        if (!decisionForm.rejectionReason.trim()) {
-          alert('Enter a customer-friendly rejection reason.')
+        if (decisionForm.rejectionReason.trim().length < 3) {
+          setDecisionError('Enter a customer-friendly rejection reason.')
           return
         }
+        setProcessing(true)
         await api.post(`/admin/loans/${decisionLoan._id}/decision`, {
-          decision: 'REJECTED', rejectionReason: decisionForm.rejectionReason.trim()
+          decision: 'REJECTED', rejectionReason: decisionForm.rejectionReason.trim(),
         })
       }
       setDecisionLoan(null)
       await fetchLoans()
     } catch (err) {
-      alert(err.response?.data?.message || 'Loan decision failed')
-    } finally {
-      setProcessing(false)
-    }
-  }
-
-  const disburseLoan = async (loan) => {
-    const txnId = window.prompt('Enter confirmed bank transfer UTR/reference')?.trim()
-    if (!txnId) return
-    try {
-      setProcessing(true)
-      await api.post(`/admin/loans/${loan._id}/disburse`, { txnId })
-      await fetchLoans()
-    } catch (err) {
-      alert(err.response?.data?.message || 'Failed to disburse loan')
+      setDecisionError(err.response?.data?.message || 'Loan decision failed')
     } finally {
       setProcessing(false)
     }
   }
 
   const exportCsv = () => {
-    const rows = filteredLoans.map((loan) => [
+    const rows = loans.map((loan) => [
       loan._id,
       loan.loanAccountNumber || '',
       getUserName(loan),
@@ -258,7 +330,7 @@ const Loans = () => {
       normalize(loan.status || 'PENDING'),
       getRequestedAmount(loan),
       getApprovedAmount(loan),
-      loan.decision?.rateAPR || '',
+      loan.decision?.rateAPR ?? '',
       loan.decision?.tenureMonths || '',
       formatDate(loan.createdAt),
       formatDate(loan.disbursementDate),
@@ -268,7 +340,7 @@ const Loans = () => {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `khatupay-loans-${Date.now()}.csv`
+    link.download = `khatupay-loans-page-${page}-${Date.now()}.csv`
     link.click()
     URL.revokeObjectURL(link.href)
   }
@@ -294,11 +366,11 @@ const Loans = () => {
       <PageHeader
         icon={FileText}
         title="Loans"
-        subtitle="Review applications, approve and disburse, and track EMI schedules and overdue risk."
+        subtitle="Review applications, clear verification, approve, track eSign and disburse."
         actions={
           <>
             <Button variant="outline-primary" size="sm" onClick={exportCsv}>
-              <Download size={14} className="me-1" /> Export CSV
+              <Download size={14} className="me-1" /> Export page CSV
             </Button>
             <Button size="sm" onClick={refresh} disabled={refreshing}>
               <RefreshCcw size={14} className={refreshing ? 'spin me-1' : 'me-1'} />
@@ -317,7 +389,7 @@ const Loans = () => {
       <Row className="g-3">
         <Col xl={3} md={6}><StatCard title="Total loans" value={stats.total} icon={FileText} color="#2563EB" /></Col>
         <Col xl={3} md={6}><StatCard title="Pending review" value={stats.pending} icon={Clock3} color="#D97706" /></Col>
-        <Col xl={3} md={6}><StatCard title="Disbursed loans" value={stats.disbursed} icon={Send} color="#0891B2" /></Col>
+        <Col xl={3} md={6}><StatCard title="Awaiting signature / disbursal" value={stats.approved} icon={FileSignature} color="#0F766E" /></Col>
         <Col xl={3} md={6}><StatCard title="Overdue risk" value={stats.overdue} icon={ShieldAlert} color="#DC2626" /></Col>
       </Row>
 
@@ -330,7 +402,7 @@ const Loans = () => {
         <div className="loans-panel-head">
           <div>
             <h2>Loan Applications</h2>
-            <p>{filteredLoans.length.toLocaleString('en-IN')} matching records</p>
+            <p>{total.toLocaleString('en-IN')} matching records</p>
           </div>
           <div className="loans-count-pill">Page {page} of {totalPages}</div>
         </div>
@@ -338,11 +410,12 @@ const Loans = () => {
         <div className="loans-toolbar">
           <div className="loans-search">
             <Search size={18} />
-            <input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search user, mobile, email, loan ID" />
+            <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Search name, mobile, email, application no." />
           </div>
           <Form.Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
             <option value="ALL">All status</option>
             <option value="PENDING">Pending</option>
+            <option value="UNDER_REVIEW">Under review</option>
             <option value="APPROVED">Approved</option>
             <option value="DISBURSED">Disbursed</option>
             <option value="REJECTED">Rejected</option>
@@ -351,7 +424,7 @@ const Loans = () => {
           <Form.Select value={riskFilter} onChange={(event) => setRiskFilter(event.target.value)}>
             <option value="ALL">All risk</option>
             <option value="OVERDUE">Overdue</option>
-            <option value="DUE_SOON">Due soon</option>
+            <option value="DUE_SOON">Due in 7 days</option>
             <option value="NO_SCHEDULE">No schedule</option>
           </Form.Select>
           <Form.Select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
@@ -377,22 +450,22 @@ const Loans = () => {
                 <th>Borrower</th>
                 <th>Amount</th>
                 <th>Decision</th>
-                <th>Next EMI</th>
-                <th>PAN KYC</th>
+                <th>Verification</th>
+                <th>Agreement / EMI</th>
                 <th>Status</th>
                 <th>Applied</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {pagedLoans.length ? (
-                pagedLoans.map((loan) => {
+              {loans.length ? (
+                loans.map((loan) => {
                   const status = statusMap[normalize(loan.status || 'PENDING')] || statusMap.PENDING
                   const nextDue = getNextDue(loan)
                   const overdue = isOverdue(loan)
-                  const panVerified = getPanStatus(loan)
-                  const panName = getPanName(loan)
-                  const panNumber = getPanNumber(loan)
+                  const policy = loan.verificationPolicy || {}
+                  const agreementStatus = getAgreementStatus(loan)
+                  const open = OPEN_STATUSES.includes(normalize(loan.status))
                   return (
                     <tr key={loan._id}>
                       <td>
@@ -416,10 +489,20 @@ const Loans = () => {
                       </td>
                       <td>
                         <strong>{formatCurrency(getApprovedAmount(loan))}</strong>
-                        <small>{loan.decision?.rateAPR || 0}% APR / {loan.decision?.tenureMonths || loan.application?.tenureMonths || 0} mo</small>
+                        <small>{loan.decision?.rateAPR ?? 0}% / {loan.decision?.tenureMonths || loan.application?.tenureMonths || 0} mo</small>
                       </td>
                       <td>
-                        {nextDue ? (
+                        {open ? (
+                          <div className="pan-kyc-cell">
+                            <Badge bg={policy.approvable ? 'success' : 'warning'}>{policy.approvable ? 'Ready' : `${policy.approvalBlocking?.length || 0} to clear`}</Badge>
+                            <small>{policy.approvable ? 'All checks verified' : (policy.approvalBlockingLabels || []).join(', ')}</small>
+                          </div>
+                        ) : <span className="muted-text">Decided</span>}
+                      </td>
+                      <td>
+                        {normalize(loan.status) === 'APPROVED' ? (
+                          <Badge bg={agreementTone(agreementStatus)}>{agreementLabel(agreementStatus)}</Badge>
+                        ) : nextDue ? (
                           <div className={overdue ? 'due-cell overdue' : 'due-cell'}>
                             <strong>{formatCurrency(nextDue.total)}</strong>
                             <small>{formatDate(nextDue.dueDate)}</small>
@@ -428,20 +511,14 @@ const Loans = () => {
                           <span className="muted-text">No EMI</span>
                         )}
                       </td>
-                      <td>
-                        <div className="pan-kyc-cell">
-                          <Badge bg={panVerified ? 'success' : 'warning'}>{panVerified ? 'Verified' : 'Pending'}</Badge>
-                          <small>{panName || panNumber || 'No PAN data'}</small>
-                        </div>
-                      </td>
                       <td><Badge bg={status.bg}>{status.label}</Badge></td>
                       <td>{formatDate(loan.createdAt)}</td>
                       <td>
                         <div className="loan-actions">
-                          <Button variant="light" size="sm" onClick={() => setSelectedLoan(loan)} title="View details">
+                          <Button variant="light" size="sm" onClick={() => setSelectedLoanId(loan._id)} title="View details">
                             <Eye size={15} />
                           </Button>
-                          {normalize(loan.status) === 'PENDING' && (
+                          {open && (
                             <>
                               <Button variant="outline-success" size="sm" onClick={() => openDecisionModal(loan, 'APPROVE')} title="Approve">
                                 <CheckCircle2 size={15} />
@@ -455,9 +532,9 @@ const Loans = () => {
                             <Button
                               variant="outline-primary"
                               size="sm"
-                              title={loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
-                              onClick={() => disburseLoan(loan)}
-                              disabled={processing || loan.decision?.agreementStatus !== 'SIGNED'}
+                              title={agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
+                              onClick={() => setDisburseTarget(loan)}
+                              disabled={processing || agreementStatus !== 'SIGNED'}
                             >
                               <Send size={15} />
                             </Button>
@@ -477,33 +554,34 @@ const Loans = () => {
         </div>
 
         <div className="loans-pagination">
-          <span>Showing {filteredLoans.length ? (page - 1) * limit + 1 : 0} to {Math.min(page * limit, filteredLoans.length)} of {filteredLoans.length}</span>
+          <span>Showing {total ? (page - 1) * limit + 1 : 0} to {Math.min(page * limit, total)} of {total}</span>
           <div>
             <Button variant="outline-secondary" size="sm" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</Button>
-            <Button variant="outline-secondary" size="sm" disabled={page === totalPages} onClick={() => setPage((value) => value + 1)}>Next</Button>
+            <Button variant="outline-secondary" size="sm" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>Next</Button>
           </div>
         </div>
       </section>
 
       <LoanDetailModal
-        loan={selectedLoan}
-        onHide={() => setSelectedLoan(null)}
+        loanId={selectedLoanId}
+        onHide={() => setSelectedLoanId(null)}
+        onChanged={fetchLoans}
         onApprove={(loan) => {
-          setSelectedLoan(null)
+          setSelectedLoanId(null)
           openDecisionModal(loan, 'APPROVE')
         }}
         onReject={(loan) => {
-          setSelectedLoan(null)
+          setSelectedLoanId(null)
           openDecisionModal(loan, 'REJECT')
         }}
         onDisburse={(loan) => {
-          setSelectedLoan(null)
-          disburseLoan(loan)
+          setSelectedLoanId(null)
+          setDisburseTarget(loan)
         }}
         processing={processing}
       />
 
-      <Modal show={Boolean(decisionLoan)} onHide={() => setDecisionLoan(null)} centered>
+      <Modal show={Boolean(decisionLoan)} onHide={() => setDecisionLoan(null)} centered size={decisionType === 'APPROVE' ? 'lg' : undefined}>
         <Modal.Header closeButton>
           <Modal.Title>{decisionType === 'APPROVE' ? 'Approve Loan' : 'Reject Loan'}</Modal.Title>
         </Modal.Header>
@@ -512,34 +590,42 @@ const Loans = () => {
             <div className="decision-body">
               <div className="decision-summary">
                 <strong>{getUserName(decisionLoan)}</strong>
-                <span>Requested {formatCurrency(getRequestedAmount(decisionLoan))}</span>
+                <span>Requested {formatCurrency(getRequestedAmount(decisionLoan))} for {decisionLoan.application?.tenureMonths || 0} months</span>
               </div>
+              {decisionError && <div className="reject-warning mb-3"><AlertTriangle size={18} />{decisionError}</div>}
               {decisionType === 'APPROVE' ? (
                 <>
-                  <Form.Group>
-                    <Form.Label>Approved amount</Form.Label>
-                    <Form.Control type="number" min="1" value={decisionForm.amountApproved} onChange={(event) => setDecisionForm((form) => ({ ...form, amountApproved: event.target.value }))} />
-                  </Form.Group>
-                  <Form.Group>
-                    <Form.Label>APR rate (%)</Form.Label>
-                    <Form.Control type="number" min="0" step="0.1" value={decisionForm.rateAPR} onChange={(event) => setDecisionForm((form) => ({ ...form, rateAPR: event.target.value }))} />
-                  </Form.Group>
-                  <Form.Group>
-                    <Form.Label>Tenure months</Form.Label>
-                    <Form.Control type="number" min="1" value={decisionForm.tenureMonths} onChange={(event) => setDecisionForm((form) => ({ ...form, tenureMonths: event.target.value }))} />
-                  </Form.Group>
-                  <Form.Group>
-                    <Form.Label>Processing fee</Form.Label>
-                    <Form.Control type="number" min="0" value={decisionForm.processingFee} onChange={(event) => setDecisionForm((form) => ({ ...form, processingFee: event.target.value }))} />
-                  </Form.Group>
-                  <Form.Group>
-                    <Form.Label>Tax amount</Form.Label>
-                    <Form.Control type="number" min="0" value={decisionForm.taxAmount} onChange={(event) => setDecisionForm((form) => ({ ...form, taxAmount: event.target.value }))} />
-                  </Form.Group>
-                  <Form.Group>
-                    <Form.Label>Lender name</Form.Label>
-                    <Form.Control value={decisionForm.lenderName} onChange={(event) => setDecisionForm((form) => ({ ...form, lenderName: event.target.value }))} placeholder="Regulated lending partner" />
-                  </Form.Group>
+                  {approvalBlockers.length > 0 && (
+                    <div className="blocker-box">
+                      <strong><ShieldAlert size={16} /> Clear these checks before approving</strong>
+                      <span>{approvalBlockers.join(', ')}</span>
+                      <Button size="sm" variant="outline-warning" onClick={() => { const id = decisionLoan._id; setDecisionLoan(null); setSelectedLoanId(id) }}>
+                        Open verification review
+                      </Button>
+                    </div>
+                  )}
+                  <Row className="g-3">
+                    <Col md={6}><OfferField label="Approved amount (Rs.)" name="amountApproved" form={decisionForm} setForm={setDecisionForm} errors={offerErrors} min="1" /></Col>
+                    <Col md={6}><OfferField label="Interest rate (% p.a.)" name="rateAPR" form={decisionForm} setForm={setDecisionForm} errors={offerErrors} min="0" step="0.01" /></Col>
+                    <Col md={6}><OfferField label="Tenure (months)" name="tenureMonths" form={decisionForm} setForm={setDecisionForm} errors={offerErrors} min="3" max="60" /></Col>
+                    <Col md={6}><OfferField label="Processing fee (Rs.)" name="processingFee" form={decisionForm} setForm={setDecisionForm} errors={offerErrors} min="0" /></Col>
+                    <Col md={6}><OfferField label="GST / tax (Rs.)" name="taxAmount" form={decisionForm} setForm={setDecisionForm} errors={offerErrors} min="0" /></Col>
+                    <Col md={6}>
+                      <Form.Group>
+                        <Form.Label>Lender name</Form.Label>
+                        <Form.Control value={decisionForm.lenderName} onChange={(event) => setDecisionForm((form) => ({ ...form, lenderName: event.target.value }))} placeholder="Regulated lending partner" />
+                      </Form.Group>
+                    </Col>
+                  </Row>
+                  {offerPreview && (
+                    <div className="offer-preview">
+                      <Info label="EMI" value={formatCurrency(offerPreview.emi)} />
+                      <Info label="Total interest" value={formatCurrency(offerPreview.totalInterest)} />
+                      <Info label="Total repayment" value={formatCurrency(offerPreview.totalRepayment)} />
+                      <Info label="Net disbursal" value={formatCurrency(offerPreview.netDisbursal)} />
+                      <Info label="All-inclusive APR" value={`${offerPreview.apr.toFixed(2)}%`} />
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -555,44 +641,229 @@ const Loans = () => {
         </Modal.Body>
         <Modal.Footer>
           <Button variant="light" onClick={() => setDecisionLoan(null)}>Cancel</Button>
-          <Button variant={decisionType === 'APPROVE' ? 'success' : 'danger'} onClick={submitDecision} disabled={processing}>
-            {processing ? 'Processing...' : decisionType === 'APPROVE' ? 'Approve loan' : 'Reject loan'}
+          {decisionType === 'APPROVE' && (
+            <Button variant="outline-primary" onClick={previewAgreement} disabled={previewing || Object.keys(offerErrors).length > 0}>
+              {previewing ? 'Preparing...' : 'Preview agreement'}
+            </Button>
+          )}
+          <Button
+            variant={decisionType === 'APPROVE' ? 'success' : 'danger'}
+            onClick={submitDecision}
+            disabled={processing || (decisionType === 'APPROVE' && (Object.keys(offerErrors).length > 0 || approvalBlockers.length > 0))}
+          >
+            {processing ? 'Processing...' : decisionType === 'APPROVE' ? 'Approve & generate agreement' : 'Reject loan'}
           </Button>
         </Modal.Footer>
       </Modal>
+
+      <DisburseModal
+        loan={disburseTarget}
+        onHide={() => setDisburseTarget(null)}
+        onDone={async () => {
+          setDisburseTarget(null)
+          await fetchLoans()
+        }}
+      />
 
       <style>{loansStyles}</style>
     </div>
   )
 }
 
-const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, processing }) => {
+const OfferField = ({ label, name, form, setForm, errors, ...props }) => (
+  <Form.Group>
+    <Form.Label>{label}</Form.Label>
+    <Form.Control
+      type="number"
+      value={form[name]}
+      isInvalid={Boolean(errors[name])}
+      onChange={(event) => setForm((current) => ({ ...current, [name]: event.target.value }))}
+      {...props}
+    />
+    <Form.Control.Feedback type="invalid">{errors[name]}</Form.Control.Feedback>
+  </Form.Group>
+)
+
+const DisburseModal = ({ loan, onHide, onDone }) => {
+  const [utr, setUtr] = useState('')
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    setUtr('')
+    setConfirmed(false)
+    setMessage('')
+  }, [loan?._id])
+
   if (!loan) return null
+  const bank = loan.application?.bankDetails || {}
+  const net = loan.decision?.netDisbursalAmount ?? loan.decision?.amountApproved
+  const validUtr = /^[A-Za-z0-9/_-]{4,64}$/.test(utr.trim())
+
+  const submit = async () => {
+    if (!validUtr || !confirmed) return
+    try {
+      setBusy(true)
+      setMessage('')
+      await api.post(`/admin/loans/${loan._id}/disburse`, { txnId: utr.trim() })
+      await onDone()
+    } catch (err) {
+      setMessage(err.response?.data?.message || 'Failed to disburse loan')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal show onHide={busy ? undefined : onHide} centered>
+      <Modal.Header closeButton={!busy}>
+        <Modal.Title>Confirm disbursal</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <div className="decision-body">
+          <div className="offer-preview mt-0">
+            <Info label="Borrower" value={getUserName(loan)} />
+            <Info label="Transfer amount" value={formatCurrency(net)} />
+            <Info label="Bank" value={bank.bankName || 'N/A'} />
+            <Info label="Account" value={maskAccount(bank.accountNumber)} />
+            <Info label="IFSC" value={bank.ifscCode || 'N/A'} />
+            <Info label="Account holder" value={bank.accountHolderName || 'N/A'} />
+          </div>
+          {message && <div className="reject-warning mt-3"><AlertTriangle size={18} />{message}</div>}
+          <Form.Group className="mt-3">
+            <Form.Label>Bank transfer UTR / reference</Form.Label>
+            <Form.Control value={utr} onChange={(event) => setUtr(event.target.value)} isInvalid={Boolean(utr) && !validUtr} placeholder="e.g. HDFCN52026092812345" autoFocus />
+            <Form.Control.Feedback type="invalid">4 to 64 letters, numbers, / _ or -.</Form.Control.Feedback>
+          </Form.Group>
+          <Form.Check
+            className="mt-3"
+            id="confirm-disbursal"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+            label={`I confirm ${formatCurrency(net)} has been transferred to account ending ${String(bank.accountNumber || '').slice(-4) || 'N/A'}.`}
+          />
+        </div>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="light" onClick={onHide} disabled={busy}>Cancel</Button>
+        <Button onClick={submit} disabled={busy || !validUtr || !confirmed}>{busy ? 'Saving...' : 'Mark disbursed'}</Button>
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+const REVIEW_STAGES = [
+  ['pan', 'PAN'], ['aadhaar', 'Aadhaar / DigiLocker'], ['liveness', 'Live selfie'], ['faceMatch', 'Face match'],
+  ['bank', 'Bank account'], ['upi', 'UPI ID'], ['bankStatement', 'Bank statement'], ['credit', 'Credit report'],
+]
+
+const stageTone = (status) => {
+  const value = normalize(status)
+  if (value === 'VERIFIED') return 'success'
+  if (value === 'FAILED') return 'danger'
+  if (value === 'REVIEW') return 'warning'
+  if (value === 'PENDING') return 'info'
+  return 'secondary'
+}
+
+const LoanDetailModal = ({ loanId, onHide, onChanged, onApprove, onReject, onDisburse, processing }) => {
+  const [loan, setLoan] = useState(null)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [detailError, setDetailError] = useState('')
+  const [reviewing, setReviewing] = useState(null)
+  const [reviewNote, setReviewNote] = useState('')
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  const load = useCallback(async () => {
+    if (!loanId) return
+    try {
+      setLoadingDetail(true)
+      setDetailError('')
+      const res = await api.get(`/admin/loans/${loanId}`)
+      setLoan(res.data?.data || null)
+    } catch (err) {
+      setDetailError(err.response?.data?.message || 'Loan details could not be loaded')
+    } finally {
+      setLoadingDetail(false)
+    }
+  }, [loanId])
+
+  useEffect(() => {
+    setLoan(null)
+    setNotice('')
+    setReviewing(null)
+    load()
+  }, [load])
+
+  const submitReview = async (decision) => {
+    if (!reviewing || reviewNote.trim().length < 3) return
+    try {
+      setReviewBusy(true)
+      const res = await api.post(`/admin/loans/${loan._id}/verification/${reviewing}/review`, { decision, note: reviewNote.trim() })
+      setNotice(res.data?.message || 'Verification updated.')
+      setReviewing(null)
+      setReviewNote('')
+      await load()
+      onChanged?.()
+    } catch (err) {
+      setNotice(err.response?.data?.message || 'Verification review failed')
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  const refreshSignature = async () => {
+    try {
+      setSyncing(true)
+      const res = await api.post(`/admin/loans/${loan._id}/agreement/refresh`)
+      setNotice(res.data?.message || 'Signature status refreshed.')
+      await load()
+      onChanged?.()
+    } catch (err) {
+      setNotice(err.response?.data?.message || 'Signature status could not be refreshed')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  if (!loanId) return null
+
+  if (!loan) {
+    return (
+      <Modal show onHide={onHide} size="xl" centered>
+        <Modal.Header closeButton><Modal.Title>Loan Details</Modal.Title></Modal.Header>
+        <Modal.Body>
+          {detailError
+            ? <AlertStrip tone="danger" onRetry={load}>{detailError}</AlertStrip>
+            : <div className="loans-loading"><div className="spinner-border text-primary" role="status" /><p>{loadingDetail ? 'Loading details...' : ''}</p></div>}
+        </Modal.Body>
+      </Modal>
+    )
+  }
+
   const status = statusMap[normalize(loan.status || 'PENDING')] || statusMap.PENDING
+  const open = OPEN_STATUSES.includes(normalize(loan.status))
   const personal = loan.application?.personal || {}
   const employment = loan.application?.employment || {}
   const bank = loan.application?.bankDetails || {}
   const docs = loan.application?.documents || {}
+  const uploadStatus = docs.uploadStatus || {}
   const aadhaarEkyc = docs.aadhaarEkyc || {}
-  const aadhaarData = aadhaarEkyc.aadhaarData || {}
+  const signcare = loan.signcareVerification || null
+  const aadhaarData = { ...(signcare?.aadhaar?.data || {}), ...(aadhaarEkyc.aadhaarData || {}) }
   const aadhaarAddress = aadhaarData.completeAddress || aadhaarData.address || [
-    aadhaarData.careOf,
-    aadhaarData.house,
-    aadhaarData.street,
-    aadhaarData.locality,
-    aadhaarData.postOffice,
-    aadhaarData.district,
-    aadhaarData.state,
-    aadhaarData.pincode,
+    aadhaarData.careOf, aadhaarData.house, aadhaarData.street, aadhaarData.locality,
+    aadhaarData.postOffice, aadhaarData.district, aadhaarData.state, aadhaarData.pincode,
   ].filter(Boolean).join(', ')
   const panVerification = getPanVerification(loan)
   const panData = getPanData(loan)
-  const panResponse = panVerification.response || panData.raw || {}
   const panName = getPanName(loan)
   const panNumber = getPanNumber(loan)
-  const panVerified = getPanStatus(loan)
+  const panVerified = normalize(signcare?.pan?.status) === 'VERIFIED' || getPanStatus(loan)
   const nextDue = getNextDue(loan)
-  const signcare = loan.signcareVerification || null
   const bsaData = signcare?.bankStatement?.data || {}
   const bsaReport = bsaData.jsonDetails || bsaData.json_details || null
   const statementAccount = bsaReport?.statementAccount || {}
@@ -601,18 +872,13 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
   const underwriting = loan.underwriting || loan.verification?.snapshot?.underwriting || null
   const underwritingMetrics = underwriting?.metrics || {}
   const underwritingFlags = Array.isArray(underwriting?.flags) ? underwriting.flags : []
-  const creditArchive = loan.creditReport || loan.userKyc?.creditReport || null
-  const signcareStages = [
-    ['Consent', signcare?.consent?.accepted ? { status: 'VERIFIED', message: 'Customer consent recorded' } : null],
-    ['PAN', signcare?.pan], ['Aadhaar OVSE', signcare?.aadhaar],
-    ['Face liveness', signcare?.liveness], ['Face match', signcare?.faceMatch],
-    ['Bank account', signcare?.bank], ['UPI ID', signcare?.upi], ['Bank statement analysis', signcare?.bankStatement], ['Experian', signcare?.credit],
-    ['Account Aggregator', signcare?.accountAggregator], ['Agreement', signcare?.agreement],
-    ['eStamp', signcare?.eStamp], ['Aadhaar eSign', signcare?.eSign], ['Audit trail', signcare?.auditTrail],
-  ]
+  const policy = loan.verificationPolicy || {}
+  const requiredStages = new Set(policy.required || [])
+  const agreement = loan.agreementDetails || {}
+  const agreementStatus = agreement.status || getAgreementStatus(loan)
 
   return (
-    <Modal show={Boolean(loan)} onHide={onHide} size="xl" centered>
+    <Modal show onHide={onHide} size="xl" centered>
       <Modal.Header closeButton>
         <Modal.Title>Loan Details</Modal.Title>
       </Modal.Header>
@@ -627,11 +893,82 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
             <Badge bg={status.bg}>{status.label}</Badge>
           </div>
 
+          {notice && <AlertStrip tone="info">{notice}</AlertStrip>}
+
           <Row className="g-3">
             <Col lg={4}><DetailBox icon={UserRound} label="Borrower" value={getUserName(loan)} meta={`${getUserMobile(loan)} | ${loan.userId?.email || personal.email || 'No email'}`} /></Col>
-            <Col lg={4}><DetailBox icon={IndianRupee} label="Requested" value={formatCurrency(getRequestedAmount(loan))} meta={loan.application?.purpose || 'No purpose'} /></Col>
-            <Col lg={4}><DetailBox icon={Banknote} label="Approved" value={formatCurrency(getApprovedAmount(loan))} meta={`${loan.decision?.rateAPR || 0}% APR / ${loan.decision?.tenureMonths || 0} months`} /></Col>
+            <Col lg={4}><DetailBox icon={IndianRupee} label="Requested" value={formatCurrency(getRequestedAmount(loan))} meta={`${loan.application?.tenureMonths || 0} months | ${loan.application?.purpose || 'No purpose'}`} /></Col>
+            <Col lg={4}><DetailBox icon={Banknote} label="Approved" value={formatCurrency(getApprovedAmount(loan))} meta={loan.decision?.amountApproved ? `${loan.decision?.rateAPR ?? 0}% p.a. / ${loan.decision?.tenureMonths || 0} months / EMI ${formatCurrency(loan.decision?.emi)}` : 'Not decided'} /></Col>
           </Row>
+
+          <div className="detail-section">
+            <div className="section-heading-row">
+              <h4>Verification review</h4>
+              <Badge bg={policy.approvable ? 'success' : 'warning'}>
+                {policy.approvable ? 'Ready for approval' : `Clear: ${(policy.approvalBlockingLabels || []).join(', ')}`}
+              </Badge>
+            </div>
+            <div className="detail-grid">
+              {REVIEW_STAGES.map(([key, label]) => {
+                const stage = signcare?.[key] || {}
+                const stageStatus = normalize(stage.status || 'NOT_STARTED')
+                const required = requiredStages.has(key)
+                const canReview = open && required && stageStatus !== 'VERIFIED'
+                return (
+                  <div className={`info-box stage-box ${required ? '' : 'optional'}`} key={key}>
+                    <span>{label}{required ? '' : ' (not required)'}</span>
+                    <div className="d-flex align-items-center gap-2 mb-1"><Badge bg={stageTone(stageStatus)}>{stageStatus.replaceAll('_', ' ')}</Badge></div>
+                    <strong>{stage.message || 'Awaiting customer action'}</strong>
+                    {stage.reviewedAt && <small>Reviewed {formatDate(stage.reviewedAt)}: {stage.reviewNote}</small>}
+                    {stage.verifiedAt && <small>Verified: {formatDate(stage.verifiedAt)}</small>}
+                    {canReview && reviewing !== key && (
+                      <Button size="sm" variant="outline-primary" className="mt-2" onClick={() => { setReviewing(key); setReviewNote('') }}>
+                        Review manually
+                      </Button>
+                    )}
+                    {reviewing === key && (
+                      <div className="review-box">
+                        <Form.Control as="textarea" rows={2} value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="What did you check? (required)" />
+                        <div className="d-flex gap-2 mt-2">
+                          <Button size="sm" variant="success" disabled={reviewBusy || reviewNote.trim().length < 3} onClick={() => submitReview('VERIFIED')}>Mark verified</Button>
+                          <Button size="sm" variant="outline-danger" disabled={reviewBusy || reviewNote.trim().length < 3} onClick={() => submitReview('FAILED')}>Mark failed</Button>
+                          <Button size="sm" variant="light" disabled={reviewBusy} onClick={() => setReviewing(null)}>Cancel</Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="detail-section">
+            <div className="section-heading-row">
+              <h4>Digital Loan Agreement</h4>
+              <div className="d-flex align-items-center gap-2 flex-wrap">
+                <Badge bg={agreementTone(agreementStatus)}>{agreementLabel(agreementStatus)}</Badge>
+                {['SIGNING', 'FAILED'].includes(agreementStatus) && (
+                  <Button size="sm" variant="outline-primary" onClick={refreshSignature} disabled={syncing}>
+                    <RefreshCcw size={14} className={syncing ? 'spin me-1' : 'me-1'} />
+                    {syncing ? 'Checking...' : 'Refresh signature status'}
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="detail-grid">
+              <Info label="SignCare document" value={agreement.documentId || 'Not created'} />
+              <Info label="Signer status" value={agreement.signerStatus || agreement.providerStatus || 'N/A'} />
+              <Info label="Signed at" value={formatDate(agreement.signedAt)} />
+              <Info label="Last checked" value={formatDate(agreement.lastSyncedAt)} />
+              <Info label="Audit trail" value={agreement.auditTrailStatus || 'NOT_STARTED'} />
+              <Info label="Signing attempts" value={agreement.attempts ?? 0} />
+              {agreement.lastError && <Info label="Last issue" value={agreement.lastError} />}
+            </div>
+            <div className="d-flex flex-wrap gap-2 mt-3">
+              {agreement.agreementUrl && <Button as="a" size="sm" variant="outline-primary" href={agreement.agreementUrl} target="_blank" rel="noreferrer">View approved agreement PDF</Button>}
+              {agreement.signedAgreementUrl && <Button as="a" size="sm" variant="success" href={agreement.signedAgreementUrl} target="_blank" rel="noreferrer">View signed agreement</Button>}
+            </div>
+          </div>
 
           <div className="detail-section">
             <div className="section-heading-row">
@@ -650,8 +987,6 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
               <Info label="Outstanding balance" value={formatCurrency(underwritingMetrics.outstandingBalance || 0)} />
               <Info label="Past due amount" value={formatCurrency(underwritingMetrics.overdueAmount || 0)} />
               <Info label="Recent enquiries" value={underwritingMetrics.inquiries30Days ?? 'N/A'} />
-              <Info label="BSA transactions" value={underwritingMetrics.bankStatementTransactions ?? 'N/A'} />
-              <Info label="Incomplete stages" value={underwritingMetrics.incompleteStages?.length ? underwritingMetrics.incompleteStages.join(', ') : 'None'} />
             </div>
             <div className="risk-flag-list">
               {underwritingFlags.length ? underwritingFlags.map((flag) => (
@@ -664,7 +999,7 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
                 <div className="risk-flag muted">
                   <Badge bg="success">CLEAR</Badge>
                   <strong>No risk flags</strong>
-                  <span>All available SignCare checks are within configured thresholds.</span>
+                  <span>All available checks are within configured thresholds.</span>
                 </div>
               )}
             </div>
@@ -683,28 +1018,7 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
           </div>
 
           <div className="detail-section">
-            <div className="section-heading-row">
-              <h4>Digital Loan Agreement</h4>
-              <Badge bg={loan.decision?.agreementStatus === 'SIGNED' ? 'success' : 'warning'}>
-                {(loan.decision?.agreementStatus || 'PENDING SIGNATURE').replaceAll('_', ' ')}
-              </Badge>
-            </div>
-            <div className="detail-grid">
-              <Info label="Agreement reference" value={loan.decision?.agreementDocumentId || signcare?.eSign?.providerReference || 'Not created'} />
-              <Info label="Signed at" value={formatDate(loan.decision?.agreementSignedAt || signcare?.eSign?.verifiedAt)} />
-              <Info label="Aadhaar eSign" value={signcare?.eSign?.status || 'NOT_STARTED'} />
-              <Info label="Audit trail" value={signcare?.auditTrail?.status || 'NOT_STARTED'} />
-              <Info label="Generated agreement" value={loan.decision?.agreementUrl ? 'Available' : 'Not available'} />
-              <Info label="Signed agreement" value={loan.decision?.signedAgreementUrl ? 'Available' : 'Pending'} />
-            </div>
-            <div className="d-flex flex-wrap gap-2 mt-3">
-              {loan.decision?.agreementUrl && <Button as="a" size="sm" variant="outline-primary" href={loan.decision.agreementUrl} target="_blank" rel="noreferrer">View agreement PDF</Button>}
-              {loan.decision?.signedAgreementUrl && <Button as="a" size="sm" variant="success" href={loan.decision.signedAgreementUrl} target="_blank" rel="noreferrer">View signed agreement</Button>}
-            </div>
-          </div>
-
-          <div className="detail-section">
-            <h4>Aadhaar eKYC Verification</h4>
+            <h4>Aadhaar eKYC (DigiLocker)</h4>
             <div className="detail-grid">
               {aadhaarData.photoBase64 && (
                 <div className="info-box">
@@ -712,32 +1026,21 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
                   <img
                     className="ekyc-photo"
                     alt="Aadhaar"
-                    src={aadhaarData.photoBase64.startsWith('data:') ? aadhaarData.photoBase64 : `data:image/jpeg;base64,${aadhaarData.photoBase64}`}
+                    src={String(aadhaarData.photoBase64).startsWith('data:') ? aadhaarData.photoBase64 : `data:image/jpeg;base64,${aadhaarData.photoBase64}`}
                   />
                 </div>
               )}
               <Info label="Aadhaar Number" value={maskAadhaar(aadhaarEkyc.aadhaarNumber) || aadhaarData.maskedAadhaar || 'N/A'} />
-              <Info label="Aadhaar Verified" value={aadhaarEkyc.verified ? 'Verified' : 'Not verified'} />
+              <Info label="Aadhaar Verified" value={normalize(signcare?.aadhaar?.status) === 'VERIFIED' ? 'Verified' : 'Not verified'} />
               <Info label="Name (Aadhaar)" value={aadhaarData.fullName || 'N/A'} />
               <Info label="Care of / Guardian" value={aadhaarData.careOf || 'N/A'} />
               <Info label="Date of Birth" value={aadhaarData.dob || 'N/A'} />
               <Info label="Gender" value={aadhaarData.gender || 'N/A'} />
               <Info label="Complete Address (Aadhaar)" value={aadhaarAddress || 'N/A'} />
-              <Info label="House / Street" value={[aadhaarData.house, aadhaarData.street].filter(Boolean).join(', ') || 'N/A'} />
-              <Info label="Locality" value={aadhaarData.locality || 'N/A'} />
-              <Info label="Post Office" value={aadhaarData.postOffice || 'N/A'} />
               <Info label="District" value={aadhaarData.district || 'N/A'} />
               <Info label="State" value={aadhaarData.state || 'N/A'} />
               <Info label="Pincode" value={aadhaarData.pincode || 'N/A'} />
-              <Info label="Mobile Matched" value={aadhaarData.mobileMatched === undefined || aadhaarData.mobileMatched === null ? 'N/A' : (aadhaarData.mobileMatched ? 'Yes' : 'No')} />
             </div>
-            {aadhaarData.raw && (
-              <details className="ekyc-raw">
-                <summary>View Aadhaar provider response</summary>
-                <div className="ekyc-raw-label">Aadhaar e-KYC response</div>
-                <pre>{JSON.stringify(aadhaarData.raw, null, 2)}</pre>
-              </details>
-            )}
           </div>
 
           <div className="detail-section pan-detail-section">
@@ -746,51 +1049,30 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
               <Badge bg={panVerified ? 'success' : 'warning'}>{panVerified ? 'Verified' : 'Not verified'}</Badge>
             </div>
             <div className="detail-grid">
-              <Info label="PAN Number" value={panNumber || 'N/A'} />
+              <Info label="PAN Number" value={maskPan(panNumber) || 'N/A'} />
               <Info label="Name on PAN" value={panName || 'N/A'} />
-              <Info label="First Name" value={panData.firstName || 'N/A'} />
-              <Info label="Middle Name" value={panData.middleName || 'N/A'} />
-              <Info label="Last Name" value={panData.lastName || 'N/A'} />
-              <Info label="Provider Status" value={panResponse.status || panData.status || (panVerified ? 'SUCCESS' : 'N/A')} />
-              <Info label="Order ID" value={panVerification.orderId || panResponse.orderId || 'N/A'} />
-              <Info label="Transaction ID" value={panResponse.transId || panVerification.transId || 'N/A'} />
-              <Info label="Point Used" value={panResponse.pointUsed || panVerification.pointUsed || 'N/A'} />
-              <Info label="Verified At" value={formatDate(panVerification.verifiedAt)} />
+              <Info label="Provider Status" value={panData.panStatus || panData.status || 'N/A'} />
               <Info label="Aadhaar Seeding" value={panData.aadhaarSeedingStatus || 'N/A'} />
-              <Info label="PAN Document" value={docs.panUrl ? 'Uploaded' : 'Not uploaded'} />
+              <Info label="Verified At" value={formatDate(panVerification.verifiedAt || signcare?.pan?.verifiedAt)} />
             </div>
-            {(Object.keys(panResponse || {}).length > 0 || Object.keys(panData || {}).length > 0) && (
-              <details className="ekyc-raw">
-                <summary>View full PAN provider response</summary>
-                <div className="ekyc-raw-label">PAN verification response</div>
-                <pre>{JSON.stringify(panResponse && Object.keys(panResponse).length ? panResponse : panData, null, 2)}</pre>
-              </details>
-            )}
           </div>
 
           <div className="detail-section credit-report-section">
             <div className="section-heading-row">
               <h4>Bank Statement Analysis</h4>
-              <Badge bg={signcare?.bankStatement?.status === 'VERIFIED' ? 'success' : 'secondary'}>
-                {signcare?.bankStatement?.status || 'Not analysed'}
-              </Badge>
+              <Badge bg={stageTone(signcare?.bankStatement?.status)}>{signcare?.bankStatement?.status || 'Not analysed'}</Badge>
             </div>
             <div className="detail-grid">
               <Info label="Bank" value={statementAccount.bank || 'N/A'} />
               <Info label="Account" value={statementAccount.accountNo ? `****${String(statementAccount.accountNo).slice(-4)}` : 'N/A'} />
               <Info label="Account Type" value={statementAccount.accountType || statementAccount.accountSubType || 'N/A'} />
-              <Info label="IFSC" value={statementAccount.ifsc || 'N/A'} />
-              <Info label="Branch" value={statementAccount.branch || 'N/A'} />
               <Info label="Current Balance" value={statementAccount.currentBalance || 'N/A'} />
               <Info label="Statement Period" value={[statementSummary.startDate, statementSummary.endDate].filter(Boolean).join(' to ') || 'N/A'} />
               <Info label="Transactions Analysed" value={statementTransactions.length || 'N/A'} />
-              <Info label="Analysis Order" value={signcare?.bankStatement?.providerReference || 'N/A'} />
-              <Info label="Analysed At" value={formatDate(signcare?.bankStatement?.verifiedAt)} />
             </div>
             {bsaReport && (
               <details className="ekyc-raw">
                 <summary>View complete bank statement analysis</summary>
-                <div className="ekyc-raw-label">SignCare BSA response</div>
                 <pre>{JSON.stringify(bsaReport, null, 2)}</pre>
               </details>
             )}
@@ -798,41 +1080,11 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
 
           <ExperianReport
             stage={signcare?.credit}
-            archive={creditArchive}
+            archive={loan.creditReport || null}
             userId={loan.userId?._id || loan.userId}
             customerName={panName || getUserName(loan)}
             panMasked={maskPan(panNumber)}
           />
-
-          <div className="detail-section">
-            <div className="section-heading-row">
-              <h4>SignCare Verification Flow</h4>
-              <Badge bg={signcare ? 'info' : 'secondary'}>{signcare ? 'Live record' : 'Not started'}</Badge>
-            </div>
-            <div className="detail-grid">
-              {signcareStages.map(([label, stage]) => {
-                const stageStatus = normalize(stage?.status || 'NOT_STARTED')
-                const tone = stageStatus === 'VERIFIED' ? 'success' : stageStatus === 'FAILED' ? 'danger' : stageStatus === 'PENDING' ? 'warning' : 'secondary'
-                return (
-                  <div className="info-box" key={label}>
-                    <span>{label}</span>
-                    <div className="d-flex align-items-center gap-2 mb-1"><Badge bg={tone}>{stageStatus.replaceAll('_', ' ')}</Badge></div>
-                    <strong>{stage?.message || 'Awaiting customer action'}</strong>
-                    {stage?.requestId && <small>Request: {stage.requestId}</small>}
-                    {stage?.providerReference && <small>Provider ref: {stage.providerReference}</small>}
-                    {stage?.verifiedAt && <small>Verified: {formatDate(stage.verifiedAt)}</small>}
-                  </div>
-                )
-              })}
-            </div>
-            {signcare && (
-              <details className="ekyc-raw">
-                <summary>View complete SignCare evidence</summary>
-                <div className="ekyc-raw-label">Provider responses and audit metadata</div>
-                <pre>{JSON.stringify(signcare, null, 2)}</pre>
-              </details>
-            )}
-          </div>
 
           <div className="detail-section">
             <h4>Employment & Bank</h4>
@@ -840,22 +1092,25 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
               <Info label="Employment" value={employment.employmentType || 'N/A'} />
               <Info label="Monthly income" value={formatCurrency(employment.monthlyIncome || 0)} />
               <Info label="Employer / Business" value={employment.employerOrBusiness || 'N/A'} />
-              <Info label="Experience" value={`${employment.experienceYears || 0} years`} />
               <Info label="Bank" value={bank.bankName || 'N/A'} />
               <Info label="Account holder" value={bank.accountHolderName || 'N/A'} />
               <Info label="Account number" value={maskAccount(bank.accountNumber)} />
               <Info label="IFSC" value={bank.ifscCode || 'N/A'} />
+              <Info label="UPI ID" value={bank.upiId || 'Not provided'} />
             </div>
           </div>
 
           <div className="detail-section">
             <h4>Documents</h4>
+            {docs.uploadReview?.status === 'REVIEW' && (
+              <div className="reject-warning mb-3"><AlertTriangle size={18} />{docs.uploadReview.message}</div>
+            )}
             <div className="doc-grid">
-              <DocLink label="Aadhaar Front" url={docs.aadhaarFrontUrl} />
-              <DocLink label="Aadhaar Back" url={docs.aadhaarBackUrl} />
-              <DocLink label="PAN" url={docs.panUrl} />
-              <DocLink label="Selfie" url={docs.selfieUrl} />
-              <DocLink label={`Income Proof${docs.incomeProofType ? ` (${incomeProofLabel(docs.incomeProofType)})` : ''}`} url={docs.incomeProofUrl} />
+              <DocLink label="Aadhaar Front" url={docs.aadhaarFrontUrl} upload={uploadStatus.aadhaarFrontUrl} />
+              <DocLink label="Aadhaar Back" url={docs.aadhaarBackUrl} upload={uploadStatus.aadhaarBackUrl} />
+              <DocLink label="PAN" url={docs.panUrl} upload={uploadStatus.panUrl} />
+              <DocLink label="Selfie" url={docs.selfieUrl} upload={uploadStatus.selfieUrl} />
+              <DocLink label={`Income Proof${docs.incomeProofType ? ` (${incomeProofLabel(docs.incomeProofType)})` : ''}`} url={docs.incomeProofUrl} upload={uploadStatus.incomeProofUrl} />
             </div>
           </div>
 
@@ -865,7 +1120,7 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
               <Info label="Next EMI" value={nextDue ? formatCurrency(nextDue.total) : 'N/A'} />
               <Info label="Next due date" value={nextDue ? formatDate(nextDue.dueDate) : 'N/A'} />
               <Info label="Paid installments" value={`${loan.schedule?.filter((item) => item.paid).length || 0} / ${loan.schedule?.length || 0}`} />
-              <Info label="Auto debit" value={loan.autoDebit?.enabled ? 'Enabled' : 'Disabled'} />
+              <Info label="Total repayment" value={loan.decision?.totalRepaymentAmount ? formatCurrency(loan.decision.totalRepaymentAmount) : 'N/A'} />
             </div>
             <div className="schedule-table-wrap">
               <Table responsive hover className="schedule-table">
@@ -890,29 +1145,45 @@ const LoanDetailModal = ({ loan, onHide, onApprove, onReject, onDisburse, proces
                       <td><Badge bg={item.paid ? 'success' : new Date(item.dueDate) < new Date() ? 'danger' : 'warning'}>{item.paid ? 'Paid' : new Date(item.dueDate) < new Date() ? 'Overdue' : 'Pending'}</Badge></td>
                     </tr>
                   )) : (
-                    <tr><td colSpan="6" className="loans-empty">No repayment schedule generated yet.</td></tr>
+                    <tr><td colSpan="6" className="loans-empty">The EMI schedule is created at disbursal.</td></tr>
                   )}
                 </tbody>
               </Table>
+            </div>
+          </div>
+
+          <div className="detail-section">
+            <h4>History</h4>
+            <div className="history-list">
+              {(loan.statusHistory || []).slice().reverse().map((row, index) => (
+                <div className="history-row" key={`${row.status}-${index}`}>
+                  <Badge bg="light" text="dark">{String(row.status || '').replaceAll('_', ' ')}</Badge>
+                  <div>
+                    <strong>{row.title || row.status}</strong>
+                    <small>{row.message}{row.reason ? ` - ${row.reason}` : ''}</small>
+                  </div>
+                  <span>{formatDate(row.createdAt)}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       </Modal.Body>
       <Modal.Footer>
         <Button variant="light" onClick={onHide}>Close</Button>
-        {normalize(loan.status) === 'PENDING' && (
+        {open && (
           <>
             <Button variant="outline-danger" onClick={() => onReject(loan)}>Reject</Button>
-            <Button variant="success" onClick={() => onApprove(loan)}>Approve</Button>
+            <Button variant="success" onClick={() => onApprove(loan)} disabled={!policy.approvable} title={policy.approvable ? 'Approve' : 'Clear verification first'}>Approve</Button>
           </>
         )}
         {normalize(loan.status) === 'APPROVED' && (
           <Button
             onClick={() => onDisburse(loan)}
-            disabled={processing || loan.decision?.agreementStatus !== 'SIGNED'}
-            title={loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
+            disabled={processing || agreementStatus !== 'SIGNED'}
+            title={agreementStatus === 'SIGNED' ? 'Disburse loan' : 'Awaiting borrower agreement signature'}
           >
-            {loan.decision?.agreementStatus === 'SIGNED' ? 'Disburse' : 'Awaiting signature'}
+            {agreementStatus === 'SIGNED' ? 'Disburse' : 'Awaiting signature'}
           </Button>
         )}
       </Modal.Footer>
@@ -952,28 +1223,23 @@ const Info = ({ label, value }) => (
   </div>
 )
 
-const DocLink = ({ label, url }) => (
-  url ? (
-    <a className="doc-link" href={url} target="_blank" rel="noreferrer">
+const DocLink = ({ label, url, upload }) => {
+  if (url) {
+    return (
+      <a className="doc-link" href={url} target="_blank" rel="noreferrer">
+        <FileText size={17} />
+        {label}
+      </a>
+    )
+  }
+  const state = normalize(upload?.status)
+  const text = state === 'FAILED' ? 'upload failed' : state === 'UPLOADING' ? 'uploading...' : 'not uploaded'
+  return (
+    <div className={`doc-link disabled ${state === 'FAILED' ? 'failed' : ''}`} title={upload?.message || ''}>
       <FileText size={17} />
-      {label}
-    </a>
-  ) : (
-    <div className="doc-link disabled">
-      <FileText size={17} />
-      {label} not uploaded
+      {label} {text}
     </div>
   )
-)
-
-const daysFromNow = (date) => {
-  if (!date) return Infinity
-  return Math.ceil((new Date(date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-}
-
-const dueTime = (loan) => {
-  const due = getNextDue(loan)?.dueDate
-  return due ? new Date(due).getTime() : Infinity
 }
 
 const isOverdue = (loan) => {
@@ -1531,8 +1797,84 @@ const loansStyles = `
       grid-template-columns: 1fr;
       align-items: flex-start;
     }
+
+    .offer-preview {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .history-row {
+      grid-template-columns: 1fr;
+    }
   }
 
+  .blocker-box {
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    border: 1px solid #FCD34D;
+    background: #FFFBEB;
+    border-radius: 8px;
+    color: #92400E;
+  }
+
+  .blocker-box strong {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .offer-preview {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    background: #F0FDFA;
+    border: 1px solid #99F6E4;
+  }
+
+  .stage-box.optional {
+    opacity: 0.7;
+  }
+
+  .review-box {
+    margin-top: 10px;
+  }
+
+  .doc-link.disabled.failed {
+    color: #B91C1C;
+    border-color: #FECACA;
+    background: #FEF2F2;
+  }
+
+  .history-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .history-row {
+    display: grid;
+    grid-template-columns: 170px 1fr auto;
+    gap: 12px;
+    align-items: start;
+    padding: 10px 12px;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+  }
+
+  .history-row div {
+    display: grid;
+    gap: 2px;
+  }
+
+  .history-row small,
+  .history-row span {
+    color: #64748B;
+    font-size: 12px;
+  }
 `
 
 export default Loans
