@@ -86,7 +86,7 @@ class _State extends ConsumerState<BusinessBankPage> {
       title: 'Settlement bank account',
       children: [
         const BusinessFormHeader(
-          stepLabel: 'Step 3 of 6',
+          stepLabel: 'Settlement account',
           title: 'Where should we send your money?',
           subtitle: 'Payments collected on your QR are settled to this account.',
           icon: Icons.account_balance_rounded,

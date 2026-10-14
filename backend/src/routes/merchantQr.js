@@ -6,12 +6,12 @@ import MerchantQR from '../models/MerchantQR.js';
 import MerchantPayment from '../models/MerchantPayment.js';
 import MerchantLedger from '../models/MerchantLedger.js';
 import { fail, ok } from '../utils/response.js';
-import { razorpayPartnerV1Request } from '../services/razorpayPartner.js';
+import { isRazorpayConnected, razorpayRequestForBusiness } from '../services/razorpayPartner.js';
 
 const router = Router();
 router.get('/public/:merchantId', async (req, res, next) => {
   try {
-    const business = await MerchantBusiness.findOne({ publicId: req.params.merchantId, 'razorpay.productStatus': 'activated' }).select('publicId businessName category status razorpay.productStatus');
+    const business = await MerchantBusiness.findOne({ publicId: req.params.merchantId, $or: [{ 'razorpay.productStatus': 'activated' }, { 'razorpay.oauthConnectedAt': { $ne: null } }] }).select('publicId businessName category status razorpay.productStatus');
     if (!business) return fail(res, 'MERCHANT_UNAVAILABLE', 'This merchant is not accepting payments right now.', 404);
     const qr = await MerchantQR.findOne({ businessId: business._id });
     if (qr?.status === 'DISABLED') return fail(res, 'MERCHANT_QR_DISABLED', 'This merchant QR is not accepting payments right now.', 404);
@@ -21,13 +21,16 @@ router.get('/public/:merchantId', async (req, res, next) => {
 router.post('/', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid });
-    if (!business?.razorpay?.accountId || String(business.razorpay.productStatus || '').toLowerCase() !== 'activated') return fail(res, 'PRODUCT_NOT_ACTIVE', 'Your Razorpay payment product must be activated before creating a QR.', 409);
+    if (!business) return fail(res, 'PROFILE_REQUIRED', 'Create your business profile first.', 409);
+    if (['REJECTED', 'SUSPENDED'].includes(business.status)) return fail(res, 'BUSINESS_ON_HOLD', 'Your business is on hold. Please contact KhatuPay support.', 409);
+    const activated = business.razorpay?.accountId && String(business.razorpay.productStatus || '').toLowerCase() === 'activated';
+    if (!isRazorpayConnected(business) && !activated) return fail(res, 'PRODUCT_NOT_ACTIVE', 'Connect your Razorpay account before creating a QR.', 409);
     const existing = await MerchantQR.findOne({ businessId: business._id, provider: 'RAZORPAY_PARTNER', status: 'ACTIVE' });
     if (existing) return ok(res, existing, 'Business QR is already active.');
-    const providerQr = await razorpayPartnerV1Request('post', '/v1/payments/qr_codes', {
+    const providerQr = await razorpayRequestForBusiness(business, 'post', '/v1/payments/qr_codes', {
       type: 'upi_qr', name: business.businessName, usage: 'multiple_use', fixed_amount: false,
       description: `KhatuPay business QR ${business.publicId}`, notes: { khatupay_business_id: business.publicId },
-    }, { accountId: business.razorpay.accountId });
+    });
     const qr = await MerchantQR.findOneAndUpdate({ businessId: business._id }, {
       userId: business.userId, qrReference: providerQr.id, providerQrId: providerQr.id,
       payload: providerQr.image_url || providerQr.id, paymentUrl: providerQr.image_url,
@@ -43,11 +46,10 @@ router.post('/sync-payments', requireAuth, async (req, res, next) => {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid });
     const qr = await MerchantQR.findOne({ businessId: business?._id, provider: 'RAZORPAY_PARTNER' });
     if (!business || !qr?.providerQrId) return fail(res, 'QR_NOT_READY', 'Create a Razorpay business QR first.', 409);
-    const data = await razorpayPartnerV1Request(
+    const data = await razorpayRequestForBusiness(
+      business,
       'get',
       `/v1/payments/qr_codes/${encodeURIComponent(qr.providerQrId)}/payments?count=100`,
-      undefined,
-      { accountId: business.razorpay.accountId },
     );
     for (const item of data.items || []) {
       const status = String(item.status || '').toLowerCase() === 'captured' ? 'SUCCESS' : String(item.status || '').toLowerCase() === 'refunded' ? 'REFUNDED' : String(item.status || '').toLowerCase() === 'failed' ? 'FAILED' : 'PENDING';

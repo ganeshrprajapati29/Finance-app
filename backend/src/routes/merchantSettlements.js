@@ -4,7 +4,7 @@ import MerchantBusiness from '../models/MerchantBusiness.js';
 import MerchantBankAccount from '../models/MerchantBankAccount.js';
 import MerchantSettlement from '../models/MerchantSettlement.js';
 import { fail, ok } from '../utils/response.js';
-import { razorpayPartnerV1Request } from '../services/razorpayPartner.js';
+import { razorpayRequestForBusiness } from '../services/razorpayPartner.js';
 
 const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
@@ -28,18 +28,14 @@ router.post('/sync', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid });
     if (!business?.razorpay?.accountId) return fail(res, 'RAZORPAY_ONBOARDING_REQUIRED', 'Complete Razorpay business onboarding before syncing settlements.', 409);
+    // Connected merchants are settled by Razorpay to the bank on their own
+    // Razorpay account, so a KhatuPay bank record is optional here.
     const bank = await MerchantBankAccount.findOne({ businessId: business._id });
-    if (!bank) return fail(res, 'BANK_DETAILS_REQUIRED', 'Add your settlement bank account before syncing settlements.', 409);
-    const data = await razorpayPartnerV1Request(
-      'get',
-      '/v1/settlements?count=100',
-      undefined,
-      { accountId: business.razorpay.accountId },
-    );
+    const data = await razorpayRequestForBusiness(business, 'get', '/v1/settlements?count=100');
     for (const item of data.items || []) {
       const state = String(item.status || '').toLowerCase();
       const status = ['processed', 'settled'].includes(state) ? 'SETTLED' : ['failed', 'reversed'].includes(state) ? 'FAILED' : state === 'created' ? 'REQUESTED' : 'PROCESSING';
-      await MerchantSettlement.findOneAndUpdate({ settlementId: item.id }, { businessId: business._id, userId: business.userId, bankAccountId: bank._id, settlementId: item.id, amount: Number(item.amount || 0) / 100, status, providerReference: item.utr || item.id, utr: item.utr, ...(status === 'SETTLED' ? { settledAt: new Date(Number(item.created_at || Math.floor(Date.now() / 1000)) * 1000) } : {}) }, { upsert: true, new: true });
+      await MerchantSettlement.findOneAndUpdate({ settlementId: item.id }, { businessId: business._id, userId: business.userId, ...(bank ? { bankAccountId: bank._id } : {}), settlementId: item.id, amount: Number(item.amount || 0) / 100, status, providerReference: item.utr || item.id, utr: item.utr, ...(status === 'SETTLED' ? { settledAt: new Date(Number(item.created_at || Math.floor(Date.now() / 1000)) * 1000) } : {}) }, { upsert: true, new: true });
     }
     ok(res, { synced: (data.items || []).length }, 'Settlement history updated.');
   } catch (error) { next(error); }

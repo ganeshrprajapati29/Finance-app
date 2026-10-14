@@ -71,6 +71,18 @@ Future<void> renderScreen(
   for (var i = 0; i < 6; i++) {
     await tester.pump(const Duration(milliseconds: 250));
   }
+  // Asset images decode on real async time, outside the fake test clock.
+  await tester.runAsync(() async {
+    for (final element in find.byType(Image).evaluate().toList()) {
+      final image = (element.widget as Image).image;
+      try {
+        await precacheImage(image, element).timeout(const Duration(seconds: 3));
+      } catch (_) {}
+    }
+  });
+  for (var i = 0; i < 3; i++) {
+    await tester.pump(const Duration(milliseconds: 200));
+  }
   if (beforeShot != null) await beforeShot(tester);
   if (scrollBy != 0) {
     final scrollable = find.byType(Scrollable).first;

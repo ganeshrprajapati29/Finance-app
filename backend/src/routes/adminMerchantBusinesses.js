@@ -8,7 +8,7 @@ import MerchantPayment from '../models/MerchantPayment.js';
 import MerchantSettlement from '../models/MerchantSettlement.js';
 import { fail, ok } from '../utils/response.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
-import { fetchRazorpayProductConfiguration, fetchRazorpaySubMerchant, mapRazorpayAccountStatus, razorpayPartnerV1Request } from '../services/razorpayPartner.js';
+import { fetchRazorpayProductConfiguration, fetchRazorpaySubMerchant, mapRazorpayAccountStatus, razorpayRequestForBusiness } from '../services/razorpayPartner.js';
 import User from '../models/User.js';
 import { buildOnboardingChecklist, submitProviderOnboarding } from '../services/merchantOnboarding.js';
 
@@ -172,11 +172,10 @@ router.post('/:id/qr-status', requireAdmin, async (req, res, next) => {
     } else {
       if (!qr) return fail(res, 'QR_NOT_FOUND', 'Business QR has not been generated yet.', 404);
       if (qr.provider === 'RAZORPAY_PARTNER' && qr.providerQrId) {
-        await razorpayPartnerV1Request(
+        await razorpayRequestForBusiness(
+          business,
           'post',
           `/v1/payments/qr_codes/${encodeURIComponent(qr.providerQrId)}/close`,
-          undefined,
-          { accountId: business.razorpay.accountId },
         );
       }
       qr.status = 'DISABLED';

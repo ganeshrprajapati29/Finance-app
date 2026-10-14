@@ -45,27 +45,9 @@ class LoanApplySuccessPage extends StatelessWidget {
                     const LoanVisual(
                       asset: 'assets/loans/generated/loan_success.png',
                       fallbackIcon: Icons.task_alt_rounded,
-                      size: 106,
+                      size: 132,
                     ),
-                    SizedBox(height: 4.h),
-                    Container(
-                      width: 76.w,
-                      height: 76.w,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE4F7F1),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: KhatuColors.teal.withValues(alpha: 0.22),
-                          width: 2,
-                        ),
-                      ),
-                      child: Icon(
-                        Icons.check_rounded,
-                        color: KhatuColors.teal,
-                        size: 46.sp,
-                      ),
-                    ),
-                    SizedBox(height: 18.h),
+                    SizedBox(height: 14.h),
                     Text(
                       'Application received',
                       textAlign: TextAlign.center,

@@ -18,7 +18,6 @@ import '../widgets/app_back_button.dart';
 import '../widgets/credit_check_card.dart';
 import '../widgets/kp_widgets.dart';
 import '../widgets/loan_visual.dart';
-import '../widgets/offer_banner_carousel.dart';
 
 const _kLoanTypes = [
   'Personal',
@@ -48,6 +47,9 @@ const _kIncomeProofTypes = [
 ];
 
 class LoanApplyWizardPage extends StatefulWidget {
+  /// Step to open on. Used only by the UI review renderer.
+  static int debugInitialStep = 0;
+
   const LoanApplyWizardPage({super.key});
 
   @override
@@ -59,14 +61,15 @@ class LoanApplyWizardPage extends StatefulWidget {
 const _kStepTitles = ['Loan', 'Income', 'KYC', 'Bank', 'Review'];
 
 class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
-  final _pageController = PageController();
+  final _pageController =
+      PageController(initialPage: LoanApplyWizardPage.debugInitialStep);
   final _formKeys = List.generate(5, (_) => GlobalKey<FormState>());
   final _draft = LoanApplicationDraft();
 
   /// Index of the read-only review step.
   static const int _reviewStep = 4;
 
-  int _step = 0;
+  int _step = LoanApplyWizardPage.debugInitialStep;
   bool _submitting = false;
   bool _checkingEligibility = true;
   bool _canApply = true;
@@ -1291,11 +1294,6 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
       body: Column(
         children: [
           _ProgressHeader(step: _step, totalSteps: _formKeys.length),
-          if (_step == 0)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: OfferBannerCarousel(placement: 'LOAN_APPLY', height: 130),
-            ),
           if (_checkingEligibility ||
               (_eligibilityMessage != null && !_canApply))
             _LoanEligibilityBanner(
@@ -1450,6 +1448,7 @@ class _LoanApplyWizardPageState extends State<LoanApplyWizardPage> {
           sending: _aadhaarOtpSending,
           verifying: _aadhaarOtpVerifying,
           verified: _aadhaarEkycVerified,
+          started: (_aadhaarOtpSessionId ?? '').isNotEmpty,
           message: _aadhaarMessage,
           onSendOtp: _sendAadhaarOtp,
           onVerifyOtp: _verifyAadhaarOtp,
@@ -1884,119 +1883,98 @@ class _ProgressHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final progress = (step + 1) / totalSteps;
-
     return Container(
-      padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 14.h),
+      padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 12.h),
       decoration: const BoxDecoration(
         color: Colors.white,
         border: Border(bottom: BorderSide(color: KhatuColors.line)),
       ),
-      child: Column(
+      // Numbered stepper: completed steps show a tick, the current one is
+      // filled, and the connector fills as the borrower moves forward.
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                width: 38.w,
-                height: 38.w,
-                padding: EdgeInsets.all(5.w),
-                decoration: BoxDecoration(
-                  color: KhatuColors.softTeal,
-                  borderRadius: BorderRadius.circular(10.r),
-                ),
-                child: Image.asset(
-                  'assets/khatulogo-removebg-preview.png',
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.savings_rounded,
-                    color: KhatuColors.deepTeal,
-                    size: 20,
-                  ),
-                ),
-              ),
-              SizedBox(width: 10.w),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'Khatu Pay Credit',
-                      style: TextStyle(
-                        color: KhatuColors.text,
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w900,
+          for (var i = 0; i < totalSteps; i++)
+            Expanded(
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          height: 3,
+                          color: i == 0
+                              ? Colors.transparent
+                              : i <= step
+                                  ? KhatuColors.teal
+                                  : KhatuColors.line,
+                        ),
                       ),
-                    ),
-                    Text(
-                      'Step ${step + 1} of $totalSteps • ${_kStepTitles[step.clamp(0, _kStepTitles.length - 1)]}',
-                      style: const TextStyle(
-                        color: KhatuColors.muted,
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 220),
+                        width: 26,
+                        height: 26,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: i < step
+                              ? KhatuColors.teal
+                              : i == step
+                                  ? KhatuColors.deepTeal
+                                  : Colors.white,
+                          border: Border.all(
+                            color: i <= step
+                                ? Colors.transparent
+                                : KhatuColors.lineStrong,
+                            width: 1.5,
+                          ),
+                        ),
+                        child: i < step
+                            ? const Icon(Icons.check_rounded,
+                                size: 15, color: Colors.white)
+                            : Text(
+                                '${i + 1}',
+                                style: TextStyle(
+                                  fontFamily: 'Roboto',
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w900,
+                                  color: i == step
+                                      ? Colors.white
+                                      : KhatuColors.faint,
+                                ),
+                              ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(
-                  color: KhatuColors.softTeal,
-                  borderRadius: BorderRadius.circular(KhatuRadius.pill),
-                ),
-                child: Text(
-                  '${(progress * 100).round()}%',
-                  style: const TextStyle(
-                    color: KhatuColors.deepTeal,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w900,
+                      Expanded(
+                        child: Container(
+                          height: 3,
+                          color: i == totalSteps - 1
+                              ? Colors.transparent
+                              : i < step
+                                  ? KhatuColors.teal
+                                  : KhatuColors.line,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 12.h),
-          // Segmented bar rather than one continuous track: at a glance the
-          // user can see how many discrete steps are left, not just a ratio.
-          Row(
-            children: [
-              for (var i = 0; i < totalSteps; i++) ...[
-                if (i > 0) SizedBox(width: 4.w),
-                Expanded(
-                  child: Container(
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: i <= step ? KhatuColors.teal : KhatuColors.line,
-                      borderRadius: BorderRadius.circular(KhatuRadius.pill),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          SizedBox(height: 10.h),
-          Row(
-            children: [
-              for (var i = 0; i < totalSteps; i++)
-                Expanded(
-                  child: Text(
-                    _kStepTitles[i],
-                    textAlign: i == 0
-                        ? TextAlign.left
-                        : i == totalSteps - 1
-                            ? TextAlign.right
-                            : TextAlign.center,
+                  const SizedBox(height: 6),
+                  Text(
+                    _kStepTitles[i.clamp(0, _kStepTitles.length - 1)],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color:
-                          i == step ? KhatuColors.deepTeal : KhatuColors.faint,
-                      fontSize: 10,
+                      fontFamily: 'Roboto',
+                      color: i == step
+                          ? KhatuColors.deepTeal
+                          : i < step
+                              ? KhatuColors.text
+                              : KhatuColors.faint,
+                      fontSize: 10.5,
                       fontWeight: i == step ? FontWeight.w900 : FontWeight.w700,
                     ),
                   ),
-                ),
-            ],
-          ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -2339,41 +2317,52 @@ class _StepScaffold extends StatelessWidget {
     return Form(
       key: formKey,
       child: ListView(
-        padding: EdgeInsets.fromLTRB(16.w, 18.h, 16.w, 24.h),
+        padding: EdgeInsets.fromLTRB(16.w, 14.h, 16.w, 24.h),
         children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: LoanVisual(
-                asset: visual.$1, fallbackIcon: visual.$2, size: 86.w),
-          ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 5,
-                height: 42,
-                margin: EdgeInsets.only(right: 12.w, top: 2.h),
-                decoration: BoxDecoration(
-                  color: KhatuColors.saffron,
-                  borderRadius: BorderRadius.circular(KhatuRadius.pill),
+          // One compact header card per step: what this step is for on the
+          // left, its illustration on the right.
+          Container(
+            padding: EdgeInsets.fromLTRB(16.w, 14.h, 10.w, 14.h),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFFE8F8F4), Color(0xFFF4FBF9)],
+              ),
+              borderRadius: BorderRadius.circular(KhatuRadius.lg),
+              border: Border.all(
+                  color: KhatuColors.teal.withValues(alpha: 0.18)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: TextStyle(
+                              fontFamily: 'Roboto',
+                              color: KhatuColors.ink,
+                              fontSize: 20.sp,
+                              height: 1.15,
+                              fontWeight: FontWeight.w900)),
+                      SizedBox(height: 6.h),
+                      Text(subtitle,
+                          style: TextStyle(
+                              fontFamily: 'Roboto',
+                              color: KhatuColors.muted,
+                              fontSize: 12.5.sp,
+                              height: 1.4,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                child: Text(title,
-                    style: TextStyle(
-                        color: KhatuColors.text,
-                        fontSize: 22.sp,
-                        height: 1.1,
-                        fontWeight: FontWeight.w900)),
-              ),
-            ],
+                SizedBox(width: 8.w),
+                LoanVisual(
+                    asset: visual.$1, fallbackIcon: visual.$2, size: 78.w),
+              ],
+            ),
           ),
-          SizedBox(height: 6.h),
-          Text(subtitle,
-              style: TextStyle(
-                  color: KhatuColors.muted,
-                  fontSize: 13.sp,
-                  fontWeight: FontWeight.w600)),
           SizedBox(height: 18.h),
           ...children,
         ],
@@ -2386,6 +2375,7 @@ class _AadhaarEkycPanel extends StatelessWidget {
   final bool sending;
   final bool verifying;
   final bool verified;
+  final bool started;
   final String? message;
   final VoidCallback onSendOtp;
   final VoidCallback onVerifyOtp;
@@ -2397,11 +2387,13 @@ class _AadhaarEkycPanel extends StatelessWidget {
     required this.message,
     required this.onSendOtp,
     required this.onVerifyOtp,
+    this.started = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final color = verified ? Colors.green : KhatuColors.saffron;
+    final color = verified ? KhatuColors.success : KhatuColors.saffron;
+    final busy = sending || verifying;
     return Card(
       child: Padding(
         padding: EdgeInsets.all(14.w),
@@ -2414,63 +2406,75 @@ class _AadhaarEkycPanel extends StatelessWidget {
                     color: color),
                 SizedBox(width: 10.w),
                 const Expanded(
-                  child: Text('DigiLocker identity verification',
+                  child: Text('Aadhaar via DigiLocker',
                       style: TextStyle(
+                          fontFamily: 'Roboto',
                           fontWeight: FontWeight.w900,
                           color: KhatuColors.text)),
                 ),
-                Chip(
-                  label: Text(verified ? 'VERIFIED' : 'REQUIRED',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 11)),
-                  backgroundColor: color,
-                ),
-              ],
-            ),
-            SizedBox(height: 12.h),
-            const Text(
-                'Continue with secure DigiLocker consent inside Khatu Pay. Your Aadhaar number and OTP are never entered in Khatu Pay.'),
-            SizedBox(height: 12.h),
-            Row(
-              children: [
-                Expanded(
-                    child: OutlinedButton.icon(
-                  onPressed: sending || verified ? null : onSendOtp,
-                  icon: const Icon(Icons.verified_user_outlined),
-                  label: sending
-                      ? SizedBox(
-                          width: 16.w,
-                          height: 16.w,
-                          child:
-                              const CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Verify securely'),
-                )),
+                _StageChip(
+                    label: verified ? 'Verified' : 'Required', color: color),
               ],
             ),
             SizedBox(height: 10.h),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: verifying || verified ? null : onVerifyOtp,
-                icon: verifying
-                    ? SizedBox(
-                        width: 16.w,
-                        height: 16.w,
-                        child: const CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.verified_outlined),
-                label: Text(verified
-                    ? 'Identity verified'
-                    : 'Check verification status'),
+            Text(
+                verified
+                    ? 'Your identity is verified through DigiLocker.'
+                    : 'Verify with secure DigiLocker consent. Your Aadhaar number and OTP are entered only on the DigiLocker page, never in Khatu Pay.',
+                style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: KhatuColors.muted,
+                    fontSize: 12.5,
+                    height: 1.45,
+                    fontWeight: FontWeight.w600)),
+            if (!verified) ...[
+              SizedBox(height: 12.h),
+              // One clear action. "Check status" only makes sense after the
+              // DigiLocker session has been started.
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: busy ? null : onSendOtp,
+                  icon: sending
+                      ? SizedBox(
+                          width: 16.w,
+                          height: 16.w,
+                          child: const CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.verified_user_outlined),
+                  label: Text(sending
+                      ? 'Opening DigiLocker...'
+                      : started
+                          ? 'Verify again with DigiLocker'
+                          : 'Verify with DigiLocker'),
+                ),
               ),
-            ),
+              if (started) ...[
+                SizedBox(height: 8.h),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: busy ? null : onVerifyOtp,
+                    icon: verifying
+                        ? SizedBox(
+                            width: 16.w,
+                            height: 16.w,
+                            child: const CircularProgressIndicator(
+                                strokeWidth: 2))
+                        : const Icon(Icons.sync_rounded),
+                    label: Text(verifying
+                        ? 'Checking...'
+                        : 'I finished - check status'),
+                  ),
+                ),
+              ],
+            ],
             if (message != null && message!.isNotEmpty) ...[
               SizedBox(height: 10.h),
               Text(message!,
                   style: TextStyle(
-                      color: verified ? Colors.green : KhatuColors.muted,
+                      fontFamily: 'Roboto',
+                      color: verified ? KhatuColors.success : KhatuColors.muted,
                       fontWeight: FontWeight.w800)),
             ],
           ],
@@ -2478,6 +2482,28 @@ class _AadhaarEkycPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Small status pill used on the verification cards.
+class _StageChip extends StatelessWidget {
+  const _StageChip({required this.label, required this.color});
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(KhatuRadius.pill),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontFamily: 'Roboto',
+                color: color == KhatuColors.saffron ? KhatuColors.gold : color,
+                fontWeight: FontWeight.w900,
+                fontSize: 11)),
+      );
 }
 
 class _PanVerifyPanel extends StatelessWidget {
@@ -2525,14 +2551,9 @@ class _PanVerifyPanel extends StatelessWidget {
                           fontWeight: FontWeight.w900,
                           color: KhatuColors.text)),
                 ),
-                Chip(
-                  label: Text(verified ? 'VERIFIED' : 'REQUIRED',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 11)),
-                  backgroundColor: color,
-                ),
+                _StageChip(
+                    label: verified ? 'Verified' : 'Required',
+                    color: verified ? KhatuColors.success : KhatuColors.saffron),
               ],
             ),
             SizedBox(height: 12.h),
@@ -2704,21 +2725,17 @@ class _LiveSelfiePanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                Chip(
-                  label: Text(
-                    verified
-                        ? 'VERIFIED'
+                _StageChip(
+                    label: verified
+                        ? 'Verified'
                         : submittedForReview
-                            ? 'SUBMITTED'
-                            : 'REQUIRED',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 11,
-                    ),
-                  ),
-                  backgroundColor: statusColor,
-                ),
+                            ? 'In review'
+                            : 'Required',
+                    color: verified
+                        ? KhatuColors.success
+                        : submittedForReview
+                            ? KhatuColors.info
+                            : KhatuColors.saffron),
               ],
             ),
             SizedBox(height: 8.h),
@@ -2824,14 +2841,9 @@ class _IncomeProofPanel extends StatelessWidget {
                           fontWeight: FontWeight.w900,
                           color: KhatuColors.text)),
                 ),
-                Chip(
-                  label: Text(hasFile ? 'ADDED' : 'REQUIRED',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 11)),
-                  backgroundColor: hasFile ? Colors.green : KhatuColors.saffron,
-                ),
+                _StageChip(
+                    label: hasFile ? 'Added' : 'Required',
+                    color: hasFile ? KhatuColors.success : KhatuColors.saffron),
               ],
             ),
             SizedBox(height: 6.h),

@@ -27,6 +27,7 @@ import UserAuth from './pages/UserAuth.jsx'
 import UserPortal from './pages/UserPortal.jsx'
 import PaymentReturn from './pages/PaymentReturn.jsx'
 import MerchantPay from './pages/MerchantPay.jsx'
+import SigningComplete from './pages/SigningComplete.jsx'
 
 // Auth Pages
 import Login from './pages/Login.jsx'
@@ -141,6 +142,7 @@ export function AppContent() {
         <Route path="/refund-success" element={<PaymentReturn />} />
         <Route path="/payment-history" element={<Navigate to="/user/portal" replace />} />
         <Route path="/pay/merchant/:merchantId" element={<MerchantPay />} />
+        <Route path="/loan-signing-complete" element={<SigningComplete />} />
       </Route>
 
       {/* Login Routes */}

@@ -170,7 +170,7 @@ class _RazorpayBusinessOnboardingPageState
 
     return KpAppShell(title: 'Business details', children: [
       const BusinessFormHeader(
-        stepLabel: 'Step 4 of 6',
+        stepLabel: 'Business details',
         title: 'Details for payment activation',
         subtitle: 'Enter them exactly as on your business documents.',
         icon: Icons.fact_check_rounded,

@@ -23,7 +23,7 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
 
   Object.assign(process.env, {
     JWT_ACCESS_SECRET: 'e2e-jwt', RAZORPAY_PARTNER_CLIENT_ID: 'client', RAZORPAY_PARTNER_CLIENT_SECRET: 'secret',
-    RAZORPAY_PARTNER_MODE: 'test', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
+    RAZORPAY_PARTNER_MODE: 'test', MERCHANT_ONBOARDING_MODE: 'api', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
     MAIL_HOST: '127.0.0.1', MAIL_PORT: '9', MAIL_USER: 'x', MAIL_PASS: 'x',
   });
 

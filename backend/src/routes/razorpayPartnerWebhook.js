@@ -16,7 +16,7 @@ const businessForEvent = async (event) => {
   const account = event.payload?.account?.entity || event.payload?.account || {};
   const product = event.payload?.product?.entity || event.payload?.product || {};
   const accountId = account.id || product.account_id || payment.account_id;
-  if (accountId) return MerchantBusiness.findOne({ 'razorpay.accountId': accountId });
+  if (accountId) return MerchantBusiness.findOne({ $or: [{ 'razorpay.accountId': accountId }, { 'razorpay.oauthAccountId': accountId }] });
   const publicId = payment.notes?.khatupay_business_id || event.notes?.khatupay_business_id;
   return publicId ? MerchantBusiness.findOne({ publicId }) : null;
 };

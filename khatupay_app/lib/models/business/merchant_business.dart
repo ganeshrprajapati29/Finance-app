@@ -90,7 +90,15 @@ class MerchantOnboarding {
       this.canCreateQr = false,
       this.qrActive = false,
       this.requirements = const [],
-      this.providerState = 'NOT_STARTED'});
+      this.providerState = 'NOT_STARTED',
+      this.mode = 'api',
+      this.connected = false});
+
+  /// 'oauth': the owner connects a Razorpay account on Razorpay's page.
+  /// 'api': KhatuPay submits the business details to Razorpay.
+  final String mode;
+  final bool connected;
+  bool get usesConnect => mode == 'oauth';
   final List<MerchantStep> steps;
   final String? nextStep;
   final int progress;
@@ -120,7 +128,9 @@ class MerchantOnboarding {
         canCreateQr: json?['canCreateQr'] == true,
         qrActive: json?['qrActive'] == true,
         requirements: list(json?['requirements'], MerchantRequirement.fromJson),
-        providerState: (json?['providerState'] ?? 'NOT_STARTED').toString());
+        providerState: (json?['providerState'] ?? 'NOT_STARTED').toString(),
+        mode: (json?['mode'] ?? 'api').toString(),
+        connected: json?['connected'] == true);
   }
 }
 

@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/app_theme.dart';
 import '../../../core/friendly_error.dart';
@@ -54,6 +55,33 @@ class _State extends ConsumerState<BusinessVerificationPage> {
       if (mounted) setState(() => busy = false);
     }
   }
+
+  /// Opens Razorpay's own sign-in / sign-up page inside the app. The server
+  /// redirects to khatupay.com/loan-signing-complete when Razorpay is done,
+  /// which closes the page; the dashboard then says whether it worked.
+  Future<void> connectRazorpay({bool inBrowser = false}) =>
+      _run('Opening Razorpay...', () async {
+        final url = await MerchantBusinessService().startRazorpayOAuth();
+        if (url.isEmpty) {
+          throw Exception('Razorpay connection could not be started. Please try again.');
+        }
+        if (inBrowser) {
+          final opened = await launchUrl(Uri.parse(url),
+              mode: LaunchMode.externalApplication);
+          if (!opened) throw Exception('Could not open the browser.');
+          return 'Finish connecting in your browser, then come back and pull down to refresh.';
+        }
+        await router.push<bool>(
+          '/loan-aadhaar-verification?title=${Uri.encodeComponent('Connect Razorpay')}'
+          '&url=${Uri.encodeComponent(url)}',
+        );
+        ref.invalidate(merchantDashboardProvider);
+        final dashboard = await ref.read(merchantDashboardProvider.future);
+        if (!dashboard.onboarding.connected) {
+          throw Exception('Razorpay was not connected. Please try again and tap Authorise on the Razorpay page.');
+        }
+        return 'Razorpay connected. You can create your business QR now.';
+      });
 
   Future<void> refreshStatus() => _run('Checking status...', () async {
         final result = await MerchantBusinessService().syncRazorpayOnboarding();
@@ -145,6 +173,17 @@ class _State extends ConsumerState<BusinessVerificationPage> {
               );
             }
             final onboarding = data.onboarding;
+            if (onboarding.usesConnect) {
+              return _ConnectView(
+                dashboard: data,
+                busy: busy,
+                busyLabel: busyLabel,
+                notice: notice,
+                error: error,
+                onConnect: () => connectRazorpay(),
+                onConnectInBrowser: () => connectRazorpay(inBrowser: true),
+              );
+            }
             final activation = onboarding.step('activation');
             final status = activation?.status ?? 'LOCKED';
             final style = businessStepStyle(status);
@@ -339,6 +378,167 @@ class _State extends ConsumerState<BusinessVerificationPage> {
       ],
     );
   }
+}
+
+/// "Connect Razorpay" step: what it is, one button, and the result.
+class _ConnectView extends StatelessWidget {
+  const _ConnectView({
+    required this.dashboard,
+    required this.busy,
+    required this.busyLabel,
+    required this.notice,
+    required this.error,
+    required this.onConnect,
+    required this.onConnectInBrowser,
+  });
+  final MerchantDashboard dashboard;
+  final bool busy;
+  final String? busyLabel, notice, error;
+  final VoidCallback onConnect, onConnectInBrowser;
+
+  @override
+  Widget build(BuildContext context) {
+    final onboarding = dashboard.onboarding;
+    final step = onboarding.step('activation');
+    final status = step?.status ?? 'LOCKED';
+    final connected = onboarding.connected;
+    final style = businessStepStyle(status);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _StatusHero(
+        business: dashboard.business!.businessName,
+        status: status,
+        title: connected
+            ? 'Razorpay is connected'
+            : status == 'FAILED'
+                ? 'Business on hold'
+                : 'Connect your Razorpay account',
+        message: connected
+            ? 'Payments on your QR are processed by Razorpay and settled to the bank account on your Razorpay account.'
+            : (step?.message ?? ''),
+        color: connected ? KhatuColors.success : style.color,
+        icon: connected ? Icons.verified_rounded : Icons.link_rounded,
+      ),
+      const SizedBox(height: 12),
+      if (notice != null) ...[
+        KpNoticeBanner(
+            icon: Icons.check_circle_outline,
+            color: KhatuColors.success,
+            message: notice!),
+        const SizedBox(height: 12),
+      ],
+      if (error != null) ...[
+        KpErrorBanner(message: error!),
+        const SizedBox(height: 12),
+      ],
+      if (connected)
+        BusinessPrimaryButton(
+            label: onboarding.qrActive ? 'Open my business QR' : 'Create my business QR',
+            icon: Icons.qr_code_2_rounded,
+            onPressed: () => router.push('/business/qr'))
+      else if (status == 'LOCKED')
+        BusinessPrimaryButton(
+            label: 'Verify PAN & Aadhaar first',
+            onPressed: () => router.push('/kyc'))
+      else if (status != 'FAILED') ...[
+        const KpCard(
+          radius: KhatuRadius.lg,
+          child: Column(children: [
+            _ConnectPoint(
+                number: '1',
+                title: 'Sign in or create a free Razorpay account',
+                text: 'Use your business mobile number or email on the Razorpay page.'),
+            _ConnectPoint(
+                number: '2',
+                title: 'Tap Authorise',
+                text: 'This lets KhatuPay create your QR and show your payments.'),
+            _ConnectPoint(
+                number: '3',
+                title: 'Come back and create your QR',
+                text: 'This page closes by itself when Razorpay is done.',
+                last: true),
+          ]),
+        ),
+        const SizedBox(height: 16),
+        BusinessPrimaryButton(
+            label: 'Connect Razorpay',
+            busyLabel: busyLabel,
+            icon: Icons.link_rounded,
+            busy: busy,
+            onPressed: onConnect),
+        const SizedBox(height: 6),
+        Center(
+          child: TextButton(
+              onPressed: busy ? null : onConnectInBrowser,
+              child: const Text('Having trouble? Open in browser')),
+        ),
+        const BusinessTrustRow(
+            text:
+                'You sign in on Razorpay\'s own secure page. KhatuPay never sees your Razorpay password.'),
+      ] else
+        BusinessPrimaryButton(
+            label: 'Contact support',
+            icon: Icons.support_agent_rounded,
+            onPressed: () => router.push('/support?subject=Business%20activation')),
+      const KpSectionHeader(title: 'Your setup'),
+      KpCard(
+        radius: KhatuRadius.lg,
+        child: Column(children: [
+          for (var i = 0; i < onboarding.steps.length; i++)
+            BusinessStepTile(
+              index: i,
+              step: onboarding.steps[i],
+              isLast: i == onboarding.steps.length - 1,
+            ),
+        ]),
+      ),
+    ]);
+  }
+}
+
+class _ConnectPoint extends StatelessWidget {
+  const _ConnectPoint(
+      {required this.number, required this.title, required this.text, this.last = false});
+  final String number, title, text;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.only(bottom: last ? 0 : 14),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: const BoxDecoration(
+                color: KhatuColors.softTeal, shape: BoxShape.circle),
+            child: Text(number,
+                style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w900,
+                    color: KhatuColors.deepTeal,
+                    fontSize: 13)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 2),
+                  Text(text,
+                      style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 12.5,
+                          height: 1.4,
+                          color: KhatuColors.muted)),
+                ]),
+          ),
+        ]),
+      );
 }
 
 class _StatusHero extends StatelessWidget {

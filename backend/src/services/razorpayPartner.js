@@ -121,7 +121,10 @@ export async function razorpayMerchantRequest(accessToken, method, path, data, {
     return body;
   } catch (error) {
     console.error('[razorpay-partner] merchant request failed:', method, path, error.httpStatus || error.message);
-    throw new RazorpayPartnerError(error.httpStatus === 401 ? 'Your Razorpay connection has expired. Connect the account again.' : 'Razorpay could not complete this request. Please try again.', { status: error.httpStatus === 401 ? 401 : 502, code: 'RAZORPAY_MERCHANT_REQUEST_FAILED' });
+    // Never answer the app with 401 here: that status means "your KhatuPay
+    // session expired" to the app and would sign the owner out.
+    if (error.httpStatus === 401) throw new RazorpayPartnerError('Your Razorpay connection has expired. Connect the account again.', { status: 409, code: 'RAZORPAY_OAUTH_REQUIRED' });
+    throw new RazorpayPartnerError('Razorpay could not complete this request. Please try again.', { status: 502, code: 'RAZORPAY_MERCHANT_REQUEST_FAILED' });
   }
 }
 
@@ -225,4 +228,61 @@ export const fetchRazorpayTerms = () => razorpayPartnerRequest('get', '/products
 
 export function mapRazorpayAccountStatus(status) {
   return ({ created: 'SUBMITTED', under_review: 'UNDER_REVIEW', needs_clarification: 'NEEDS_CLARIFICATION', activated: 'APPROVED', rejected: 'REJECTED', suspended: 'SUSPENDED' })[String(status || '').toLowerCase()] || 'SUBMITTED';
+}
+
+// ---- Connected (OAuth) merchants -------------------------------------------
+// A merchant who authorised KhatuPay on Razorpay's own page is called with
+// their access token. Tokens expire, so they are refreshed and re-saved here.
+
+export async function refreshRazorpayOAuthToken(refreshToken) {
+  const config = partnerConfig();
+  try {
+    const response = await fetch('https://auth.razorpay.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: config.clientId, client_secret: config.clientSecret }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.access_token) throw new Error(data?.error?.description || `OAuth HTTP ${response.status}`);
+    return data;
+  } catch (error) {
+    console.error('[razorpay-partner] OAuth token refresh failed:', error.message);
+    throw new RazorpayPartnerError('Your Razorpay connection has expired. Connect the account again.', { status: 409, code: 'RAZORPAY_OAUTH_REQUIRED' });
+  }
+}
+
+export const isRazorpayConnected = (business) => Boolean(business?.razorpay?.oauthAccessToken && business?.razorpay?.oauthConnectedAt);
+
+export function storeRazorpayOAuthToken(business, token) {
+  if (!business.razorpay) business.razorpay = {};
+  business.razorpay.oauthAccessToken = encryptRazorpayOAuthSecret(token.access_token);
+  if (token.refresh_token) business.razorpay.oauthRefreshToken = encryptRazorpayOAuthSecret(token.refresh_token);
+  business.razorpay.oauthScope = token.scope || business.razorpay.oauthScope || 'read_write';
+  const accountId = token.razorpay_account_id || token.account_id;
+  if (accountId) {
+    business.razorpay.oauthAccountId = accountId;
+    // Webhooks identify the merchant by account id.
+    if (!business.razorpay.accountId) business.razorpay.accountId = accountId;
+  }
+  business.razorpay.oauthExpiresAt = token.expires_in ? new Date(Date.now() + Number(token.expires_in) * 1000) : undefined;
+}
+
+export async function razorpayAccessTokenFor(business) {
+  const razorpay = business?.razorpay || {};
+  const expiresAt = razorpay.oauthExpiresAt ? new Date(razorpay.oauthExpiresAt).getTime() : 0;
+  if (expiresAt && expiresAt < Date.now() + 5 * 60 * 1000) {
+    const refreshToken = decryptRazorpayOAuthSecret(razorpay.oauthRefreshToken);
+    if (!refreshToken) throw new RazorpayPartnerError('Your Razorpay connection has expired. Connect the account again.', { status: 409, code: 'RAZORPAY_OAUTH_REQUIRED' });
+    storeRazorpayOAuthToken(business, await refreshRazorpayOAuthToken(refreshToken));
+    await business.save();
+  }
+  return decryptRazorpayOAuthSecret(business.razorpay.oauthAccessToken);
+}
+
+/** Calls Razorpay for this business: with its own token when connected, else as the partner. */
+export async function razorpayRequestForBusiness(business, method, path, data) {
+  if (isRazorpayConnected(business)) {
+    return razorpayMerchantRequest(await razorpayAccessTokenFor(business), method, path, data);
+  }
+  return razorpayPartnerV1Request(method, path, data, { accountId: business?.razorpay?.accountId });
 }

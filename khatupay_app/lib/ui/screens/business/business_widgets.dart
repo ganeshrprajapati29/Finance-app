@@ -42,7 +42,11 @@ String businessStepAction(MerchantStep step) => switch (step.key) {
       'personalKyc' => 'Verify identity',
       'bank' => step.status == 'FAILED' ? 'Update bank account' : 'Add bank account',
       'businessDetails' => 'Add business details',
-      'activation' => step.status == 'FAILED' ? 'View details' : 'Complete verification',
+      'activation' => step.status == 'FAILED'
+          ? 'View details'
+          : step.title.contains('Razorpay')
+              ? 'Connect Razorpay'
+              : 'Complete verification',
       'qr' => 'Create my QR',
       _ => 'Continue',
     };

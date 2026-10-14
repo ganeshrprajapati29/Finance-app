@@ -129,7 +129,7 @@ class _VerifyMobilePageState extends State<VerifyMobilePage> {
       title: 'Verify mobile number',
       subtitle: 'We will send a secure code to +91 $_masked',
       icon: Icons.phone_android_rounded,
-      illustrationAsset: 'assets/auth_secure_access.png',
+      illustrationAsset: 'assets/auth/mobile_otp.png',
       compactIllustration: true,
       showBack: true,
       footerText: 'Change mobile number',

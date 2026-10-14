@@ -1,7 +1,7 @@
 name: khatupay_app
 description: Khatu Pay mobile app
 publish_to: "none"
-version: 1.0.2+47
+version: 1.0.3+48
 environment:
   sdk: ">=3.3.0 <4.0.0"
 
@@ -52,6 +52,12 @@ flutter:
     - assets/illustrations/
     - assets/services/
     - assets/loans/
+    # Flutter does not include sub-folders automatically; every folder that
+    # holds images used by the app must be listed.
+    - assets/loans/generated/
+    - assets/operators/
+    - assets/auth/
+    - assets/brand/
     - assets/business/
     - assets/profile/
     - assets/notifications/

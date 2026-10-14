@@ -61,6 +61,7 @@ final _me = KPUser.fromJson({'_id': 'u1', 'name': 'Ramesh Kumar', 'email': 'rame
 
 void main() {
   setUpAll(loadAppFonts);
+  connectTests();
 
   final balance = merchantBalanceProvider.overrideWith((ref) async => <String, dynamic>{'available': 12450, 'pending': 800, 'settled': 98200});
   final me = meProvider.overrideWith((ref) async => _me);
@@ -138,6 +139,34 @@ void main() {
   testWidgets('qr create', (tester) async {
     await renderScreen(tester, 'biz_12_qr_create', const MerchantQrPage(), overrides: [
       merchantDashboardProvider.overrideWith((ref) async => _dashboard(['DONE', 'DONE', 'DONE', 'DONE', 'DONE', 'CURRENT'], next: 'qr', progress: 83, canCreateQr: true, status: 'APPROVED')),
+    ]);
+  });
+}
+
+MerchantDashboard connectDashboard({required bool connected}) => MerchantDashboard.fromJson({
+      'business': {'_id': 'b1', 'publicId': 'KPB1760000000123', 'businessName': 'Sunita Tiffin Centre', 'ownerName': 'Sunita Devi', 'category': 'Food and beverages', 'status': connected ? 'APPROVED' : 'DRAFT'},
+      'personalKyc': {'panVerified': true, 'aadhaarVerified': true},
+      'onboarding': {
+        'mode': 'oauth', 'connected': connected, 'progress': connected ? 75 : 50, 'nextStep': connected ? 'qr' : 'activation', 'canCreateQr': connected,
+        'steps': [
+          {'key': 'profile', 'title': 'Business profile', 'status': 'DONE', 'message': 'Sunita Tiffin Centre'},
+          {'key': 'personalKyc', 'title': 'Owner PAN & Aadhaar', 'status': 'DONE', 'message': 'Your identity is verified.'},
+          {'key': 'activation', 'title': 'Connect Razorpay', 'status': connected ? 'DONE' : 'CURRENT', 'message': connected ? 'Your Razorpay account is connected.' : 'Sign in to Razorpay (or create a free account) and allow KhatuPay to create your QR.'},
+          {'key': 'qr', 'title': 'Business QR', 'status': connected ? 'CURRENT' : 'LOCKED', 'message': connected ? 'Create your QR and start collecting payments.' : 'Available right after you connect Razorpay.'},
+        ],
+      },
+    });
+
+void connectTests() {
+  testWidgets('connect home', (tester) async {
+    await renderScreen(tester, 'biz_13_connect_home', const BusinessHomePage(), size: const Size(390, 980), overrides: [
+      merchantDashboardProvider.overrideWith((ref) async => connectDashboard(connected: false)),
+      merchantBalanceProvider.overrideWith((ref) async => <String, dynamic>{}),
+    ]);
+  });
+  testWidgets('connect page', (tester) async {
+    await renderScreen(tester, 'biz_14_connect_page', const BusinessVerificationPage(), size: const Size(390, 1150), overrides: [
+      merchantDashboardProvider.overrideWith((ref) async => connectDashboard(connected: false)),
     ]);
   });
 }

@@ -197,17 +197,55 @@ export function describeRequirements(requirements) {
 const step = (key, title, status, message, extra = {}) => ({ key, title, status, message, ...extra });
 
 /**
+ * 'oauth' (default): the owner connects (or creates) a Razorpay account on
+ * Razorpay's own page and KhatuPay creates the QR with their authorisation.
+ * 'api': KhatuPay creates the Razorpay account itself - needs Razorpay to
+ * enable the partner onboarding API for the account.
+ */
+export const merchantOnboardingMode = () =>
+  (String(process.env.MERCHANT_ONBOARDING_MODE || 'oauth').trim().toLowerCase() === 'api' ? 'api' : 'oauth');
+
+function buildConnectChecklist({ business, qr, user }) {
+  const razorpay = business.razorpay || {};
+  const personalDone = user?.kyc?.panVerified === true && user?.kyc?.aadhaarVerified === true;
+  const connected = Boolean(razorpay.oauthConnectedAt);
+  const blocked = ['REJECTED', 'SUSPENDED'].includes(business.status);
+  const qrActive = Boolean(qr && qr.provider === 'RAZORPAY_PARTNER' && qr.status === 'ACTIVE');
+  const steps = [
+    step('profile', 'Business profile', 'DONE', business.businessName),
+    personalDone
+      ? step('personalKyc', 'Owner PAN & Aadhaar', 'DONE', 'Your identity is verified.')
+      : step('personalKyc', 'Owner PAN & Aadhaar', 'CURRENT', 'Verify your PAN and Aadhaar once. It takes about 2 minutes.'),
+  ];
+  if (blocked) steps.push(step('activation', 'Connect Razorpay', 'FAILED', business.rejectionReason || 'Your business is on hold. Contact KhatuPay support for help.'));
+  else if (connected) steps.push(step('activation', 'Connect Razorpay', 'DONE', 'Your Razorpay account is connected.'));
+  else steps.push(step('activation', 'Connect Razorpay', personalDone ? 'CURRENT' : 'LOCKED', 'Sign in to Razorpay (or create a free account) and allow KhatuPay to create your QR.'));
+  if (qrActive) steps.push(step('qr', 'Business QR', 'DONE', 'Your QR is live. Display it at your counter.'));
+  else steps.push(step('qr', 'Business QR', connected && !blocked ? 'CURRENT' : 'LOCKED', connected ? 'Create your QR and start collecting payments.' : 'Available right after you connect Razorpay.'));
+  const done = steps.filter((item) => item.status === 'DONE').length;
+  const next = steps.find((item) => ['CURRENT', 'FAILED'].includes(item.status));
+  return {
+    mode: 'oauth', steps, nextStep: next?.key || null, progress: Math.round((done / steps.length) * 100),
+    canCreateQr: connected && !blocked && !qrActive, qrActive, connected, requirements: [],
+    providerState: connected ? 'CONNECTED' : 'NOT_STARTED',
+  };
+}
+
+/**
  * The single description of "where is this business in setup" used by the app.
  * Statuses: DONE, CURRENT (customer must act), REVIEW (waiting on KhatuPay or
  * Razorpay), FAILED (customer must fix), LOCKED.
  */
-export function buildOnboardingChecklist({ business, bank, qr, user } = {}) {
+export function buildOnboardingChecklist({ business, bank, qr, user, mode = merchantOnboardingMode() } = {}) {
   if (!business) {
     return {
+      mode, connected: false,
       steps: [step('profile', 'Create business profile', 'CURRENT', 'Tell us about your shop or service.')],
       nextStep: 'profile', progress: 0, canCreateQr: false, qrActive: false, requirements: [], providerState: 'NOT_STARTED',
     };
   }
+  // A business that already went through API onboarding stays on that path.
+  if (mode === 'oauth' && !business.razorpay?.productId) return buildConnectChecklist({ business, qr, user });
   const razorpay = business.razorpay || {};
   const productStatus = lower(razorpay.productStatus || razorpay.accountStatus);
   const personalDone = user?.kyc?.panVerified === true && user?.kyc?.aadhaarVerified === true;
@@ -255,6 +293,7 @@ export function buildOnboardingChecklist({ business, bank, qr, user } = {}) {
   const done = steps.filter((item) => item.status === 'DONE').length;
   const next = steps.find((item) => ['CURRENT', 'FAILED'].includes(item.status));
   return {
+    mode: 'api', connected: false,
     steps,
     nextStep: next?.key || null,
     progress: Math.round((done / steps.length) * 100),

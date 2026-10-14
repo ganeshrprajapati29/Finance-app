@@ -11,7 +11,7 @@ import { created, fail, ok } from '../utils/response.js';
 import { verifyBankAccount, signcareRequestId } from '../services/signcare.js';
 import { normalizeSigncarePennyDrop } from '../utils/signcareBankVerification.js';
 import { notifyUserSmart } from '../services/smartNotifications.js';
-import { encryptRazorpayOAuthSecret, exchangeRazorpayOAuthCode, fetchRazorpayProductConfiguration, fetchRazorpaySubMerchant, fetchRazorpayTerms, mapRazorpayAccountStatus, razorpayOAuthAuthorizationUrl, updateRazorpayProductConfiguration, updateRazorpaySubMerchant, uploadRazorpayAccountDocument } from '../services/razorpayPartner.js';
+import { exchangeRazorpayOAuthCode, storeRazorpayOAuthToken, fetchRazorpayProductConfiguration, fetchRazorpaySubMerchant, fetchRazorpayTerms, mapRazorpayAccountStatus, razorpayOAuthAuthorizationUrl, updateRazorpayProductConfiguration, updateRazorpaySubMerchant, uploadRazorpayAccountDocument } from '../services/razorpayPartner.js';
 import { SignCareError } from '../services/signcare.js';
 import {
   RAZORPAY_CATEGORY_BY_BUSINESS_CATEGORY, applyProviderProduct, buildOnboardingChecklist, gstinProblem,
@@ -20,6 +20,7 @@ import {
 
 const router = Router();
 const oauthStateHash = (state) => crypto.createHash('sha256').update(state).digest('hex');
+const connectReturnUrl = () => String(process.env.MERCHANT_CONNECT_RETURN_URL || 'https://khatupay.com/loan-signing-complete').trim();
 const safeBusiness = (business) => {
   if (!business) return business;
   const value = business.toObject ? business.toObject() : { ...business };
@@ -198,6 +199,11 @@ router.post('/razorpay/oauth/start', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid });
     if (!business) return fail(res, 'PROFILE_REQUIRED', 'Create your business profile first.', 409);
+    if (['REJECTED', 'SUSPENDED'].includes(business.status)) return fail(res, 'BUSINESS_ON_HOLD', 'Your business is on hold. Please contact KhatuPay support.', 409);
+    const owner = await User.findById(req.user.uid).select('kyc.panVerified kyc.aadhaarVerified').lean();
+    if (owner?.kyc?.panVerified !== true || owner?.kyc?.aadhaarVerified !== true) {
+      return fail(res, 'PERSONAL_KYC_REQUIRED', 'Verify your PAN and Aadhaar before connecting Razorpay.', 409);
+    }
     const state = crypto.randomBytes(32).toString('base64url');
     business.razorpay = {
       ...(business.razorpay?.toObject?.() || business.razorpay || {}),
@@ -212,32 +218,37 @@ router.get('/razorpay/oauth/callback', async (req, res) => {
   const state = String(req.query?.state || '');
   const code = String(req.query?.code || '');
   const providerError = String(req.query?.error_description || req.query?.error || '');
-  const safePage = (title, message, success = false) => res.status(success ? 200 : 400).type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head><body style="font-family:Arial,sans-serif;background:#f7fbfa;padding:48px;color:#13312c"><main style="max-width:460px;margin:auto;background:#fff;padding:28px;border-radius:12px"><h2>${title}</h2><p>${message}</p><p>You may return to the KhatuPay app.</p></main></body></html>`);
-  if (!state || !code || providerError) return safePage('Connection not completed', providerError || 'Razorpay did not return an authorisation code.');
+  // The app shows this flow in a WebView that closes itself on this URL; in a
+  // normal browser the website shows the same result.
+  const finish = (status, message) => res.redirect(303, `${connectReturnUrl()}?flow=razorpay&status=${status}${message ? `&message=${encodeURIComponent(message)}` : ''}`);
+  if (!state || !code || providerError) return finish('failed', /denied|cancel/i.test(providerError) ? 'You cancelled the Razorpay connection.' : 'Razorpay connection was not completed.');
   try {
     const business = await MerchantBusiness.findOne({ 'razorpay.oauthStateHash': oauthStateHash(state), 'razorpay.oauthStateExpiresAt': { $gt: new Date() } });
-    if (!business) return safePage('Connection expired', 'Please restart the Razorpay connection from the KhatuPay app.');
+    if (!business) return finish('failed', 'This link expired. Please start the Razorpay connection again from the app.');
     const token = await exchangeRazorpayOAuthCode(code);
-    business.razorpay.oauthAccessToken = encryptRazorpayOAuthSecret(token.access_token);
-    business.razorpay.oauthRefreshToken = encryptRazorpayOAuthSecret(token.refresh_token);
-    business.razorpay.oauthScope = token.scope || 'read_write';
-    business.razorpay.oauthAccountId = token.razorpay_account_id || token.account_id || undefined;
-    business.razorpay.oauthExpiresAt = token.expires_in ? new Date(Date.now() + Number(token.expires_in) * 1000) : undefined;
+    storeRazorpayOAuthToken(business, token);
     business.razorpay.oauthConnectedAt = new Date();
     business.razorpay.oauthStateHash = undefined;
     business.razorpay.oauthStateExpiresAt = undefined;
+    business.razorpay.providerState = 'CONNECTED';
+    if (['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_CLARIFICATION'].includes(business.status)) business.status = 'APPROVED';
     await business.save();
-    return safePage('Razorpay account connected', 'Your business account was authorised successfully.', true);
+    return finish('completed');
   } catch (error) {
     console.error('[razorpay-partner] OAuth callback failed:', error.message);
-    return safePage('Connection not completed', 'The Razorpay account could not be connected. Please return to the app and try again.');
+    return finish('failed', 'The Razorpay account could not be connected. Please try again.');
   }
 });
 
 router.post('/razorpay/sync', requireAuth, async (req, res, next) => {
   try {
     const business = await MerchantBusiness.findOne({ userId: req.user.uid });
-    if (!business?.razorpay?.accountId && !business?.onboardingRequest) return fail(res, 'ONBOARDING_NOT_STARTED', 'Submit your business details first.', 409);
+    if (!business) return fail(res, 'PROFILE_REQUIRED', 'Create your business profile first.', 409);
+    // A merchant connected through Razorpay's own page has nothing to sync here.
+    if (business.razorpay?.oauthConnectedAt && !business.razorpay?.productId) {
+      return ok(res, { ...(await dashboardFor(req.user.uid)), queued: false, requirements: [] }, 'Your Razorpay account is connected.');
+    }
+    if (!business?.razorpay?.accountId && !business?.onboardingRequest) return fail(res, 'ONBOARDING_NOT_STARTED', 'Connect your Razorpay account first.', 409);
     // A queued or half-finished application: refreshing simply tries the
     // remaining provider steps again.
     if (!business.razorpay?.productId) {

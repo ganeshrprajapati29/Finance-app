@@ -110,7 +110,7 @@ class _State extends ConsumerState<BusinessRegistrationPage> {
       title: editing ? 'Edit business profile' : 'Business profile',
       children: [
         const BusinessFormHeader(
-          stepLabel: 'Step 1 of 6',
+          stepLabel: 'Step 1',
           title: 'Tell us about your business',
           subtitle: 'This name appears on your QR and to customers who pay you.',
           icon: Icons.storefront_rounded,
