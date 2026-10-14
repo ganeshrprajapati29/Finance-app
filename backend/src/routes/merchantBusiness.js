@@ -341,7 +341,10 @@ router.patch('/razorpay/product', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// Owner (stakeholder) KYC document types.
+const stakeholderDocumentTypes = new Set(['aadhar_front', 'aadhar_back', 'personal_pan', 'passport_front', 'passport_back', 'voter_id_front', 'voter_id_back']);
 const providerDocumentTypes = new Set([
+  ...stakeholderDocumentTypes,
   'shop_establishment_certificate',
   'gst_certificate',
   'msme_certificate',
@@ -377,9 +380,13 @@ router.post('/razorpay/documents', requireAuth, async (req, res, next) => {
     }
     const uploads = [];
     for (const document of documentsToUpload) {
+      const forOwner = stakeholderDocumentTypes.has(document.documentType);
+      if (forOwner && !business.razorpay.stakeholderId) {
+        return fail(res, 'STAKEHOLDER_NOT_READY', 'Your owner profile is still being created at Razorpay. Please try again in a minute.', 409);
+      }
       const providerResponse = await uploadRazorpayAccountDocument(
         business.razorpay.accountId,
-        document,
+        { ...document, ...(forOwner ? { stakeholderId: business.razorpay.stakeholderId } : {}) },
       );
       uploads.push({
         documentType: document.documentType,

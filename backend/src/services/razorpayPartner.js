@@ -167,9 +167,12 @@ export async function razorpayPartnerRequest(method, path, data) {
   }
 }
 
+// Business documents go to the account; the owner's KYC documents
+// (Aadhaar, PAN) go to the stakeholder when stakeholderId is given.
 export async function uploadRazorpayAccountDocument(accountId, {
   documentType,
   fileUrl,
+  stakeholderId,
 }) {
   const sourceUrl = String(fileUrl || '').startsWith('private://') ? privateBusinessDocumentDeliveryUrl(fileUrl) : String(fileUrl || '');
   if (!/^https:\/\//i.test(sourceUrl)) {
@@ -201,7 +204,9 @@ export async function uploadRazorpayAccountDocument(accountId, {
     );
     form.append('document_type', documentType);
     const response = await fetch(
-      `https://api.razorpay.com/v2/accounts/${encodeURIComponent(accountId)}/documents`,
+      stakeholderId
+        ? `https://api.razorpay.com/v2/accounts/${encodeURIComponent(accountId)}/stakeholders/${encodeURIComponent(stakeholderId)}/documents`
+        : `https://api.razorpay.com/v2/accounts/${encodeURIComponent(accountId)}/documents`,
       {
         method: 'POST',
         headers: { Authorization: await partnerAuthorization() },

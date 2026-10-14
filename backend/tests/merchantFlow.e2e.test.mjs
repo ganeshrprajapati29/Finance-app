@@ -23,7 +23,7 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
 
   Object.assign(process.env, {
     JWT_ACCESS_SECRET: 'e2e-jwt', RAZORPAY_PARTNER_CLIENT_ID: 'client', RAZORPAY_PARTNER_CLIENT_SECRET: 'secret',
-    RAZORPAY_PARTNER_MODE: 'test', MERCHANT_ONBOARDING_MODE: 'api', RAZORPAY_PARTNER_KEY_ID: 'rzp_test_partner', RAZORPAY_PARTNER_KEY_SECRET: 'partner-secret', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
+    RAZORPAY_PARTNER_MODE: 'test', MERCHANT_ONBOARDING_MODE: 'api', RAZORPAY_PARTNER_KEY_ID: 'rzp_test_partner', RAZORPAY_PARTNER_KEY_SECRET: 'partner-secret', RAZORPAY_PARTNER_WEBHOOK_SECRET: 'hook-secret', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
     MAIL_HOST: '127.0.0.1', MAIL_PORT: '9', MAIL_USER: 'x', MAIL_PASS: 'x',
   });
 
@@ -88,7 +88,9 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
   const { retryQueuedMerchantOnboarding } = await import('../src/jobs/merchantOnboardingRetryJob.js');
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf); } }));
+  const partnerWebhook = (await import('../src/routes/razorpayPartnerWebhook.js')).default;
+  app.use('/api/webhooks/razorpay/partner', partnerWebhook);
   app.use('/api/merchant-business', merchantBusiness);
   app.use('/api/merchant-qr', merchantQr);
   app.use('/api/admin/merchant-businesses', adminMerchant);
@@ -185,6 +187,30 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
   assert.equal(me.onboarding.qrActive, true);
   assert.equal(me.onboarding.progress, 100);
   assert.equal(me.onboarding.nextStep, null);
+
+  // 7. Verified webhooks: a QR payment is tied to the business by account_id,
+  //    a late "authorized" event cannot undo it, and a bare account event
+  //    does not wipe the product.
+  const crypto = await import('node:crypto');
+  const MerchantPayment = (await import('../src/models/MerchantPayment.js')).default;
+  const hook = async (event, secret = 'hook-secret') => {
+    const body = JSON.stringify(event);
+    const signature = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    return realFetch(`${base}/api/webhooks/razorpay/partner`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': signature }, body });
+  };
+  const paid = { id: 'pay_QR1', amount: 15000, currency: 'INR', status: 'captured', method: 'upi', acquirer_data: { rrn: '998877665544' } };
+  assert.equal((await hook({ event: 'qr_code.credited', account_id: 'acc_TEST1', payload: { payment: { entity: paid }, qr_code: { entity: { id: 'qr_TEST1' } } } })).status, 200);
+  assert.equal((await hook({ event: 'payment.authorized', account_id: 'acc_TEST1', payload: { payment: { entity: { ...paid, status: 'authorized' } } } })).status, 200);
+  assert.equal((await hook({ event: 'payment.captured', account_id: 'acc_TEST1', payload: { payment: { entity: paid } } }, 'wrong-secret')).status, 400);
+  const credited = await MerchantPayment.find({ providerTransactionId: 'pay_QR1' }).lean();
+  assert.equal(credited.length, 1);
+  assert.equal(credited[0].status, 'SUCCESS');
+  assert.equal(credited[0].amount, 150);
+  assert.equal(credited[0].utr, '998877665544');
+  assert.equal((await hook({ event: 'account.under_review', payload: { account: { entity: { id: 'acc_TEST1', status: 'under_review' } } } })).status, 200);
+  stored = await MerchantBusiness.findOne({ userId: owner._id }).lean();
+  assert.equal(stored.razorpay.productId, 'acc_prd_1');
+  assert.equal(stored.status, 'APPROVED');
 
   const adminList = await call('GET', '/api/admin/merchant-businesses', { user: admin });
   assert.equal(adminList.body.data[0].onboarding.progress, 100);

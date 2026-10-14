@@ -138,6 +138,33 @@ class _State extends ConsumerState<BusinessVerificationPage> {
         return 'Document uploaded. It will be reviewed with your application.';
       });
 
+  /// Picks a file and sends it straight to Razorpay as [documentType]
+  /// (business documents to the account, owner KYC to the stakeholder).
+  Future<void> uploadRequirement(String documentType, String label) async {
+    final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf', 'jpg', 'jpeg', 'png']);
+    final file = picked?.files.single;
+    if (file?.path == null || !mounted) return;
+    final isPdf = file!.name.toLowerCase().endsWith('.pdf');
+    if (file.size > (isPdf ? 2 : 4) * 1024 * 1024) {
+      setState(() => error = isPdf
+          ? 'PDF must be 2 MB or smaller.'
+          : 'Photo must be 4 MB or smaller.');
+      return;
+    }
+    await _run('Uploading $label...', () async {
+      final service = MerchantBusinessService();
+      final url = await service.uploadBusinessDocument(file.path!);
+      if (url.isEmpty) throw Exception('The document could not be uploaded.');
+      await service.submitRazorpayDocuments([
+        {'documentType': documentType, 'fileUrl': url}
+      ]);
+      await service.syncRazorpayOnboarding();
+      return '$label sent for verification.';
+    });
+  }
+
   Future<void> resubmitDetails() => _run('Submitting...', () async {
         if (details.text.trim().length < 10) {
           throw Exception('Describe your business activity in at least 10 characters.');
@@ -260,9 +287,14 @@ class _State extends ConsumerState<BusinessVerificationPage> {
                       for (final item in onboarding.requirements)
                         _RequirementRow(
                           requirement: item,
+                          busy: busy,
                           onFix: item.kind == 'BANK'
                               ? () => router.push('/business/bank')
                               : null,
+                          uploads: item.kind == 'DOCUMENT'
+                              ? requirementDocuments(item.field)
+                              : const [],
+                          onUpload: uploadRequirement,
                         ),
                     ]),
                   ),
@@ -608,10 +640,38 @@ class _StatusHero extends StatelessWidget {
       );
 }
 
+/// Which document(s) satisfy a Razorpay requirement: (document type, label).
+List<(String, String)> requirementDocuments(String field) => switch (field) {
+      'individual_proof_of_address' => const [
+          ('aadhar_front', 'Aadhaar front'),
+          ('aadhar_back', 'Aadhaar back'),
+        ],
+      'individual_proof_of_identification' || 'kyc.pan' => const [
+          ('personal_pan', 'PAN card'),
+        ],
+      'gst_certificate' => const [('gst_certificate', 'GST certificate')],
+      'shop_establishment_certificate' => const [
+          ('shop_establishment_certificate', 'Shop licence'),
+        ],
+      'msme_certificate' => const [('msme_certificate', 'Udyam / MSME certificate')],
+      'cancelled_cheque' => const [('cancelled_cheque', 'Cancelled cheque')],
+      'business_pan_url' => const [('business_pan_url', 'Business PAN')],
+      _ => const [('business_proof_url', 'Business proof')],
+    };
+
 class _RequirementRow extends StatelessWidget {
-  const _RequirementRow({required this.requirement, this.onFix});
+  const _RequirementRow({
+    required this.requirement,
+    this.onFix,
+    this.uploads = const [],
+    this.onUpload,
+    this.busy = false,
+  });
   final MerchantRequirement requirement;
   final VoidCallback? onFix;
+  final List<(String, String)> uploads;
+  final Future<void> Function(String documentType, String label)? onUpload;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -649,6 +709,24 @@ class _RequirementRow extends StatelessWidget {
                             fontFamily: 'Roboto',
                             fontSize: 12,
                             color: KhatuColors.muted)),
+                  if (uploads.isNotEmpty && onUpload != null) ...[
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 8, runSpacing: 6, children: [
+                      for (final doc in uploads)
+                        OutlinedButton.icon(
+                          onPressed: busy ? null : () => onUpload!(doc.$1, doc.$2),
+                          icon: const Icon(Icons.upload_file_rounded, size: 16),
+                          label: Text('Upload ${doc.$2}'),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(
+                                fontFamily: 'Roboto',
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                    ]),
+                  ],
                 ]),
           ),
           if (onFix != null)

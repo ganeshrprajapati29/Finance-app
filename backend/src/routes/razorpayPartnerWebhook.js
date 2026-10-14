@@ -5,6 +5,7 @@ import MerchantLedger from '../models/MerchantLedger.js';
 import MerchantPayment from '../models/MerchantPayment.js';
 import MerchantSettlement from '../models/MerchantSettlement.js';
 import MerchantBankAccount from '../models/MerchantBankAccount.js';
+import MerchantQR from '../models/MerchantQR.js';
 import { mapRazorpayAccountStatus } from '../services/razorpayPartner.js';
 
 const router = Router();
@@ -15,21 +16,34 @@ const businessForEvent = async (event) => {
   const payment = event.payload?.payment?.entity || event.payload?.payment || {};
   const account = event.payload?.account?.entity || event.payload?.account || {};
   const product = event.payload?.product?.entity || event.payload?.product || {};
-  const accountId = account.id || product.account_id || payment.account_id;
-  if (accountId) return MerchantBusiness.findOne({ $or: [{ 'razorpay.accountId': accountId }, { 'razorpay.oauthAccountId': accountId }] });
-  const publicId = payment.notes?.khatupay_business_id || event.notes?.khatupay_business_id;
+  const qrCode = event.payload?.qr_code?.entity || event.payload?.qr_code || {};
+  const accountId = clean(event.account_id) || account.id || product.account_id || payment.account_id;
+  if (accountId) {
+    const business = await MerchantBusiness.findOne({ $or: [{ 'razorpay.accountId': accountId }, { 'razorpay.oauthAccountId': accountId }] });
+    if (business) return business;
+  }
+  if (qrCode.id) {
+    const qr = await MerchantQR.findOne({ providerQrId: qrCode.id }).select('businessId').lean();
+    if (qr) return MerchantBusiness.findById(qr.businessId);
+  }
+  const publicId = payment.notes?.khatupay_business_id || qrCode.notes?.khatupay_business_id || event.notes?.khatupay_business_id;
   return publicId ? MerchantBusiness.findOne({ publicId }) : null;
 };
+
+// A later "authorized"/"pending" event must never undo a confirmed payment.
+const PAYMENT_RANK = { PENDING: 1, FAILED: 2, SUCCESS: 3, REFUNDED: 4 };
 
 const syncPayment = async (business, event) => {
   const payment = event.payload?.payment?.entity || event.payload?.payment || {};
   const paymentId = clean(payment.id);
   if (!paymentId) return;
   const eventName = clean(event.event).toLowerCase();
-  const captured = eventName === 'payment.captured' || payment.status === 'captured';
+  const captured = eventName === 'payment.captured' || eventName === 'qr_code.credited' || payment.status === 'captured';
   const failed = eventName === 'payment.failed' || payment.status === 'failed';
   const amount = paiseToRupees(payment.amount);
-  const status = captured ? 'SUCCESS' : failed ? 'FAILED' : 'PENDING';
+  let status = captured ? 'SUCCESS' : failed ? 'FAILED' : 'PENDING';
+  const existing = await MerchantPayment.findOne({ providerTransactionId: paymentId }).select('status').lean();
+  if (existing && (PAYMENT_RANK[existing.status] || 0) > (PAYMENT_RANK[status] || 0)) status = existing.status;
   const record = await MerchantPayment.findOneAndUpdate(
     { providerTransactionId: paymentId },
     {
@@ -41,12 +55,12 @@ const syncPayment = async (business, event) => {
         utr: payment.acquirer_data?.rrn || payment.acquirer_data?.upi_transaction_id || undefined,
         customer: { email: payment.email || undefined, phone: payment.contact || undefined },
         provider: { paymentId, orderId: payment.order_id, method: payment.method, vpa: payment.vpa, status: payment.status },
-        ...(captured ? { creditedAt: new Date() } : {}),
-        ...(failed ? { failedAt: new Date() } : {}),
+        ...(status === 'SUCCESS' && captured ? { creditedAt: new Date() } : {}),
+        ...(status === 'FAILED' ? { failedAt: new Date() } : {}),
       },
     }, { upsert: true, new: true, setDefaultsOnInsert: true },
   );
-  if (captured) {
+  if (status === 'SUCCESS') {
     await MerchantLedger.findOneAndUpdate(
       { idempotencyKey: `razorpay:payment:${paymentId}:credit` },
       { $setOnInsert: { businessId: business._id, userId: business.userId, paymentId: record._id, idempotencyKey: `razorpay:payment:${paymentId}:credit`, type: 'COLLECTION_CREDIT', amount, status: 'AVAILABLE', availableOn: new Date(), description: 'Razorpay QR collection' } },
@@ -79,7 +93,6 @@ const syncSettlement = async (business, event) => {
   const settlementId = clean(settlement.id);
   if (!settlementId) return;
   const bank = await MerchantBankAccount.findOne({ businessId: business._id });
-  if (!bank) return;
   const state = clean(settlement.status).toLowerCase();
   const status = ['processed', 'settled'].includes(state)
     ? 'SETTLED'
@@ -93,7 +106,7 @@ const syncSettlement = async (business, event) => {
     {
       businessId: business._id,
       userId: business.userId,
-      bankAccountId: bank._id,
+      ...(bank ? { bankAccountId: bank._id } : {}),
       settlementId,
       amount: paiseToRupees(settlement.amount),
       status,
@@ -119,19 +132,25 @@ router.post('/', async (req, res) => {
     const account = event.payload?.account?.entity || event.payload?.account || {};
     const product = event.payload?.product?.entity || event.payload?.product || {};
     const accountId = account.id || product.account_id;
-    if (accountId) {
-      const status = product.status || account.status;
-      await MerchantBusiness.findOneAndUpdate({ 'razorpay.accountId': accountId }, {
-        $set: {
-          status: mapRazorpayAccountStatus(status), 'razorpay.accountStatus': account.status || status,
-          'razorpay.productStatus': product.status, 'razorpay.productId': product.id,
-          'razorpay.requirements': product.requirements || account.requirements, 'razorpay.lastSyncedAt': new Date(),
-        },
-      });
+    if (accountId && (account.status || product.status)) {
+      const update = { 'razorpay.lastSyncedAt': new Date() };
+      if (account.status) update['razorpay.accountStatus'] = account.status;
+      if (product.id) update['razorpay.productId'] = product.id;
+      if (product.status) update['razorpay.productStatus'] = product.status;
+      if (product.requirements || account.requirements) update['razorpay.requirements'] = product.requirements || account.requirements;
+      // Payment activation is decided by the product; a bare account event
+      // only moves the status when no product exists yet.
+      if (product.status) update.status = mapRazorpayAccountStatus(product.status);
+      else if (account.status) {
+        const current = await MerchantBusiness.findOne({ 'razorpay.accountId': accountId }).select('razorpay.productId').lean();
+        if (!current?.razorpay?.productId) update.status = mapRazorpayAccountStatus(account.status);
+      }
+      await MerchantBusiness.findOneAndUpdate({ 'razorpay.accountId': accountId }, { $set: update });
     }
     const business = await businessForEvent(event);
     if (business) {
-      if (String(event.event || '').startsWith('payment.')) await syncPayment(business, event);
+      const name = String(event.event || '');
+      if (name.startsWith('payment.') || name === 'qr_code.credited') await syncPayment(business, event);
       if (String(event.event || '') === 'refund.processed') await syncRefund(business, event);
       if (String(event.event || '').startsWith('settlement.')) await syncSettlement(business, event);
     }
