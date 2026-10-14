@@ -64,7 +64,7 @@ import adminClubAPI from './routes/adminClubAPI.js';
 import loanVerificationRoutes from './routes/loanVerification.js';
 import signcareWebhookRoutes from './routes/signcareWebhook.js';
 import upiConsumerRoutes from './routes/upiConsumer.js';
-import merchantBusinessRoutes from './routes/merchantBusiness.js';
+import merchantBusinessRoutes, { razorpayOAuthCallback } from './routes/merchantBusiness.js';
 import merchantQrRoutes from './routes/merchantQr.js';
 import merchantPaymentsRoutes from './routes/merchantPayments.js';
 import merchantSettlementsRoutes from './routes/merchantSettlements.js';
@@ -289,6 +289,8 @@ app.use("/api/admin/rewards", adminRewards);
 app.use("/api/admin/earnings", adminEarnings);
 app.use("/api/admin/clubapi", adminClubAPI);
 app.use('/api/merchant-business', merchantBusinessRoutes);
+// Redirect URL registered on the Razorpay partner app.
+app.get('/api/razorpay-partner/oauth/callback', razorpayOAuthCallback);
 app.use('/api/merchant-qr', merchantQrRoutes);
 app.use('/api/merchant-payments', merchantPaymentsRoutes);
 app.use('/api/merchant-settlements', merchantSettlementsRoutes);

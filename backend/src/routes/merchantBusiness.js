@@ -83,9 +83,33 @@ router.get('/me', requireAuth, async (req, res, next) => {
 router.patch('/me', requireAuth, async (req, res, next) => {
   try {
     const payload = await profileSchema.validateAsync(req.body, { abortEarly: false, stripUnknown: true });
-    const business = await MerchantBusiness.findOneAndUpdate({ userId: req.user.uid, status: { $in: ['DRAFT', 'REJECTED'] } }, payload, { new: true });
-    if (!business) return fail(res, 'PROFILE_LOCKED', 'Submitted business details cannot be edited right now.', 409);
+    // Editable until the business is created at, or connected to, Razorpay.
+    const business = await MerchantBusiness.findOneAndUpdate({
+      userId: req.user.uid,
+      status: { $in: ['DRAFT', 'SUBMITTED', 'REJECTED'] },
+      'razorpay.accountId': { $in: [null, ''] },
+      'razorpay.oauthConnectedAt': null,
+    }, payload, { new: true });
+    if (!business) return fail(res, 'PROFILE_LOCKED', 'Your business is already linked to Razorpay. Contact support to change these details.', 409);
     ok(res, business, 'Business profile updated.');
+  } catch (error) { next(error); }
+});
+
+// Start the application again (new details, different business type, a fresh
+// Razorpay connection). Only before anything exists at Razorpay.
+router.post('/me/restart', requireAuth, async (req, res, next) => {
+  try {
+    const business = await MerchantBusiness.findOne({ userId: req.user.uid });
+    if (!business) return fail(res, 'PROFILE_REQUIRED', 'Create your business profile first.', 409);
+    if (business.razorpay?.accountId || business.razorpay?.oauthConnectedAt) {
+      return fail(res, 'APPLICATION_LOCKED', 'Your business is already linked to Razorpay and cannot be restarted. Contact support for changes.', 409);
+    }
+    business.status = 'DRAFT';
+    business.rejectionReason = undefined;
+    business.onboardingRequest = undefined;
+    business.razorpay = {};
+    await business.save();
+    ok(res, await dashboardFor(req.user.uid), 'Your application was reset. You can fill it again.');
   } catch (error) { next(error); }
 });
 
@@ -214,17 +238,26 @@ router.post('/razorpay/oauth/start', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.get('/razorpay/oauth/callback', async (req, res) => {
+// Razorpay redirects here after the owner authorises KhatuPay. The same handler
+// is also mounted at /api/razorpay-partner/oauth/callback, the redirect URL
+// registered on the Razorpay partner app, so either registration works.
+export async function razorpayOAuthCallback(req, res) {
   const state = String(req.query?.state || '');
   const code = String(req.query?.code || '');
   const providerError = String(req.query?.error_description || req.query?.error || '');
   // The app shows this flow in a WebView that closes itself on this URL; in a
   // normal browser the website shows the same result.
   const finish = (status, message) => res.redirect(303, `${connectReturnUrl()}?flow=razorpay&status=${status}${message ? `&message=${encodeURIComponent(message)}` : ''}`);
-  if (!state || !code || providerError) return finish('failed', /denied|cancel/i.test(providerError) ? 'You cancelled the Razorpay connection.' : 'Razorpay connection was not completed.');
+  if (!state || !code || providerError) {
+    if (state || providerError) console.warn('[razorpay-partner] OAuth callback without code:', providerError || 'no code');
+    return finish('failed', /denied|cancel/i.test(providerError) ? 'You cancelled the Razorpay connection.' : 'Razorpay connection was not completed.');
+  }
   try {
     const business = await MerchantBusiness.findOne({ 'razorpay.oauthStateHash': oauthStateHash(state), 'razorpay.oauthStateExpiresAt': { $gt: new Date() } });
-    if (!business) return finish('failed', 'This link expired. Please start the Razorpay connection again from the app.');
+    if (!business) {
+      console.warn('[razorpay-partner] OAuth callback with unknown or expired state');
+      return finish('failed', 'This link expired. Please start the Razorpay connection again from the app.');
+    }
     const token = await exchangeRazorpayOAuthCode(code);
     storeRazorpayOAuthToken(business, token);
     business.razorpay.oauthConnectedAt = new Date();
@@ -238,7 +271,8 @@ router.get('/razorpay/oauth/callback', async (req, res) => {
     console.error('[razorpay-partner] OAuth callback failed:', error.message);
     return finish('failed', 'The Razorpay account could not be connected. Please try again.');
   }
-});
+}
+router.get('/razorpay/oauth/callback', razorpayOAuthCallback);
 
 router.post('/razorpay/sync', requireAuth, async (req, res, next) => {
   try {

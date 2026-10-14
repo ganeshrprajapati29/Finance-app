@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/app_theme.dart';
+import '../../../core/friendly_error.dart';
+import '../../../services/business/merchant_business_service.dart';
 import '../../../models/business/merchant_business.dart';
 import '../../../providers/business/merchant_business_provider.dart';
 import '../../../routes/app_router.dart';
@@ -18,6 +20,40 @@ class BusinessHomePage extends ConsumerWidget {
     // Any setup screen may have changed the checklist.
     ref.invalidate(merchantDashboardProvider);
     ref.invalidate(merchantBalanceProvider);
+  }
+
+  Future<void> _restart(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Start the application again?'),
+        content: const Text(
+            'Your business details and Razorpay connection request will be cleared so you can fill them again. Your PAN and Aadhaar verification stays.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Start again')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await MerchantBusinessService().restartApplication();
+      ref.invalidate(merchantDashboardProvider);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Application reset. Start with your business details.')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(friendlyErrorMessage(e,
+                fallback: 'The application could not be reset. Please try again.'))));
+      }
+    }
   }
 
   @override
@@ -64,6 +100,14 @@ class BusinessHomePage extends ConsumerWidget {
                         ),
                     ]),
                   ),
+                  if (!onboarding.connected &&
+                      (business.razorpay?['accountId'] ?? '').toString().isEmpty) ...[
+                    const SizedBox(height: 8),
+                    _ApplicationActions(
+                      onEdit: () => _open(ref, '/business/register'),
+                      onRestart: () => _restart(context, ref),
+                    ),
+                  ],
                   if (onboarding.nextStep == null) ...[
                     const SizedBox(height: 12),
                     KpNoticeBanner(
@@ -224,6 +268,30 @@ class _BusinessHero extends StatelessWidget {
       ]),
     );
   }
+}
+
+class _ApplicationActions extends StatelessWidget {
+  const _ApplicationActions({required this.onEdit, required this.onRestart});
+  final VoidCallback onEdit, onRestart;
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: onEdit,
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            label: const Text('Edit details'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextButton.icon(
+            onPressed: onRestart,
+            icon: const Icon(Icons.restart_alt_rounded, size: 18),
+            label: const Text('Start again'),
+          ),
+        ),
+      ]);
 }
 
 class _QrReadyCard extends StatelessWidget {

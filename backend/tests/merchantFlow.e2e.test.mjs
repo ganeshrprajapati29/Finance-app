@@ -23,7 +23,7 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
 
   Object.assign(process.env, {
     JWT_ACCESS_SECRET: 'e2e-jwt', RAZORPAY_PARTNER_CLIENT_ID: 'client', RAZORPAY_PARTNER_CLIENT_SECRET: 'secret',
-    RAZORPAY_PARTNER_MODE: 'test', MERCHANT_ONBOARDING_MODE: 'api', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
+    RAZORPAY_PARTNER_MODE: 'test', MERCHANT_ONBOARDING_MODE: 'api', RAZORPAY_PARTNER_KEY_ID: 'rzp_test_partner', RAZORPAY_PARTNER_KEY_SECRET: 'partner-secret', SIGNCARE_BASE_URL: 'http://127.0.0.1:9', SIGNCARE_API_KEY: 'k', SIGNCARE_APP_ID: 'a',
     MAIL_HOST: '127.0.0.1', MAIL_PORT: '9', MAIL_USER: 'x', MAIL_PASS: 'x',
   });
 
@@ -41,6 +41,8 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
     if (url.endsWith('/v2/accounts') && method === 'POST') {
       if (provider.accessDenied) return json(400, { error: { code: 'BAD_REQUEST_ERROR', description: 'Access Denied' } });
       provider.calls.account += 1;
+      // Sub-merchant APIs use the partner's own API keys.
+      assert.equal(init.headers.Authorization, `Basic ${Buffer.from('rzp_test_partner:partner-secret').toString('base64')}`);
       assert.equal(body.legal_info.gst, '08ABCDE1234F1Z5');
       assert.equal(body.profile.addresses.registered.state, 'RAJASTHAN');
       return json(200, { id: 'acc_TEST1', status: 'created', requirements: [] });
@@ -58,6 +60,7 @@ test('merchant onboarding: queued while Razorpay access is denied, resumes witho
     if (url.endsWith('/v1/payments/qr_codes') && method === 'POST') {
       provider.calls.qr += 1;
       assert.equal(init.headers['X-Razorpay-Account'], 'acc_TEST1');
+      assert.match(init.headers.Authorization, /^Basic /);
       return json(200, { id: 'qr_TEST1', image_url: 'https://rzp.io/i/qrTEST', status: 'active' });
     }
     return json(404, { error: { description: `unexpected ${method} ${url}` } });

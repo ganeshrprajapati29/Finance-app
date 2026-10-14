@@ -12,6 +12,20 @@ const partnerConfig = () => ({
 
 let tokenCache = null;
 
+// Razorpay's sub-merchant (Accounts / Route linked account) APIs are called with
+// the partner account's own API key and secret (Basic auth). When those keys
+// are configured they are used; otherwise the partner OAuth app token is used.
+const partnerApiKeys = () => ({
+  keyId: clean(process.env.RAZORPAY_PARTNER_KEY_ID),
+  keySecret: clean(process.env.RAZORPAY_PARTNER_KEY_SECRET),
+});
+export const hasPartnerApiKeys = () => Boolean(partnerApiKeys().keyId && partnerApiKeys().keySecret);
+async function partnerAuthorization() {
+  const { keyId, keySecret } = partnerApiKeys();
+  if (keyId && keySecret) return `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`;
+  return `Bearer ${await getRazorpayPartnerToken()}`;
+}
+
 export class RazorpayPartnerError extends Error {
   constructor(message, { status = 503, code = 'RAZORPAY_PARTNER_UNAVAILABLE', details } = {}) {
     super(message);
@@ -103,13 +117,13 @@ export function decryptRazorpayOAuthSecret(value) {
   } catch { return ''; }
 }
 
-export async function razorpayMerchantRequest(accessToken, method, path, data, { accountId } = {}) {
-  if (!accessToken) throw new RazorpayPartnerError('Connect your Razorpay business account before using QR collections.', { status: 409, code: 'RAZORPAY_OAUTH_REQUIRED' });
+export async function razorpayMerchantRequest(accessToken, method, path, data, { accountId, authorization } = {}) {
+  if (!accessToken && !authorization) throw new RazorpayPartnerError('Connect your Razorpay business account before using QR collections.', { status: 409, code: 'RAZORPAY_OAUTH_REQUIRED' });
   try {
     const response = await fetch(`https://api.razorpay.com${path}`, {
       method: method.toUpperCase(),
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: authorization || `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         ...(accountId ? { 'X-Razorpay-Account': accountId } : {}),
       },
@@ -129,13 +143,7 @@ export async function razorpayMerchantRequest(accessToken, method, path, data, {
 }
 
 export async function razorpayPartnerV1Request(method, path, data, options = {}) {
-  return razorpayMerchantRequest(
-    await getRazorpayPartnerToken(),
-    method,
-    path,
-    data,
-    options,
-  );
+  return razorpayMerchantRequest(null, method, path, data, { ...options, authorization: await partnerAuthorization() });
 }
 
 export const requestRazorpayProductConfiguration = (accountId, payload) =>
@@ -146,9 +154,9 @@ export const fetchRazorpayProductConfiguration = (accountId, productId) =>
   razorpayPartnerRequest('get', `/accounts/${encodeURIComponent(accountId)}/products/${encodeURIComponent(productId)}`);
 
 export async function razorpayPartnerRequest(method, path, data) {
-  const accessToken = await getRazorpayPartnerToken();
+  const authorization = await partnerAuthorization();
   try {
-    const response = await fetch(`https://api.razorpay.com/v2${path}`, { method: method.toUpperCase(), headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(`https://api.razorpay.com/v2${path}`, { method: method.toUpperCase(), headers: { Authorization: authorization, 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(30_000) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { const providerError = new Error(body?.error?.description || body?.error?.reason || `Razorpay HTTP ${response.status}`); providerError.httpStatus = response.status; throw providerError; }
     return body;
@@ -192,12 +200,11 @@ export async function uploadRazorpayAccountDocument(accountId, {
       filename,
     );
     form.append('document_type', documentType);
-    const accessToken = await getRazorpayPartnerToken();
     const response = await fetch(
       `https://api.razorpay.com/v2/accounts/${encodeURIComponent(accountId)}/documents`,
       {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: await partnerAuthorization() },
         body: form,
         signal: AbortSignal.timeout(30_000),
       },

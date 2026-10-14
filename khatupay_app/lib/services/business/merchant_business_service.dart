@@ -36,6 +36,11 @@ class MerchantBusinessService {
   Future<void> updateProfile(Map<String, dynamic> payload) async =>
       _api.patch('/merchant-business/me', data: payload);
 
+  /// Clears the application so the owner can fill it again. Allowed only
+  /// before the business is linked to Razorpay.
+  Future<MerchantDashboard> restartApplication() async => MerchantDashboard.fromJson(
+      _map(await _api.post('/merchant-business/me/restart')));
+
   Future<void> submitKyc(Map<String, dynamic> payload) async =>
       _api.post('/merchant-business/kyc', data: payload, options: _wait(45));
 

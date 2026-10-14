@@ -202,8 +202,12 @@ const step = (key, title, status, message, extra = {}) => ({ key, title, status,
  * 'api': KhatuPay creates the Razorpay account itself - needs Razorpay to
  * enable the partner onboarding API for the account.
  */
-export const merchantOnboardingMode = () =>
-  (String(process.env.MERCHANT_ONBOARDING_MODE || 'oauth').trim().toLowerCase() === 'api' ? 'api' : 'oauth');
+export const merchantOnboardingMode = () => {
+  const configured = String(process.env.MERCHANT_ONBOARDING_MODE || '').trim().toLowerCase();
+  if (configured === 'api' || configured === 'oauth') return configured;
+  // Partner API keys mean KhatuPay can create sub-merchants itself.
+  return String(process.env.RAZORPAY_PARTNER_KEY_ID || '').trim() ? 'api' : 'oauth';
+};
 
 function buildConnectChecklist({ business, qr, user }) {
   const razorpay = business.razorpay || {};

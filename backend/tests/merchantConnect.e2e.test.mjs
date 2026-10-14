@@ -85,6 +85,8 @@ test('merchant connects Razorpay, token is refreshed, QR is created once and pay
   app.use(express.json());
   app.use('/api/merchant-business', merchantBusiness);
   app.use('/api/merchant-qr', merchantQr);
+  const { razorpayOAuthCallback } = await import('../src/routes/merchantBusiness.js');
+  app.get('/api/razorpay-partner/oauth/callback', razorpayOAuthCallback);
   app.use(errorHandler);
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   t.after(() => server.close());
@@ -116,6 +118,15 @@ test('merchant connects Razorpay, token is refreshed, QR is created once and pay
   assert.equal(early.status, 409);
   assert.equal(early.body.code, 'PERSONAL_KYC_REQUIRED');
 
+  // Before connecting, the owner can edit the profile and restart the application.
+  const edited = await call('PATCH', '/api/merchant-business/me', { body: profile('Sunita Tiffin & Snacks', '9876543211', 'sunita@example.com') });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  await call('POST', '/api/merchant-business/razorpay/oauth/start');
+  const restarted = await call('POST', '/api/merchant-business/me/restart');
+  assert.equal(restarted.status, 200, JSON.stringify(restarted.body));
+  assert.equal(restarted.body.data.business.status, 'DRAFT');
+  assert.equal(restarted.body.data.business.businessName, 'Sunita Tiffin & Snacks');
+
   // 3. Start -> Razorpay page -> callback.
   const start = await call('POST', '/api/merchant-business/razorpay/oauth/start');
   assert.equal(start.status, 200, JSON.stringify(start.body));
@@ -131,7 +142,8 @@ test('merchant connects Razorpay, token is refreshed, QR is created once and pay
   assert.match(cancelled.headers.get('location'), /status=failed.*cancelled/);
   assert.equal(calls.exchange, 0);
 
-  const done = await realFetch(`${base}/api/merchant-business/razorpay/oauth/callback?code=auth-code-1&state=${state}`, { redirect: 'manual' });
+  // Razorpay redirects to the URL registered on the partner app.
+  const done = await realFetch(`${base}/api/razorpay-partner/oauth/callback?code=auth-code-1&state=${state}`, { redirect: 'manual' });
   assert.equal(done.status, 303);
   assert.match(done.headers.get('location'), /loan-signing-complete\?flow=razorpay&status=completed$/);
   // The one-time state cannot be replayed.
@@ -164,6 +176,10 @@ test('merchant connects Razorpay, token is refreshed, QR is created once and pay
   const payment = await MerchantPayment.findOne({ orderId: 'pay_1' }).lean();
   assert.equal(payment.amount, 250);
   assert.equal(payment.status, 'SUCCESS');
+
+  // Once connected, the application is locked against restart and edits.
+  assert.equal((await call('POST', '/api/merchant-business/me/restart')).body.code, 'APPLICATION_LOCKED');
+  assert.equal((await call('PATCH', '/api/merchant-business/me', { body: profile('Other', '9876543211', 'sunita@example.com') })).body.code, 'PROFILE_LOCKED');
 
   // 6. Refresh status is harmless for a connected merchant.
   const refresh = await call('POST', '/api/merchant-business/razorpay/sync');
